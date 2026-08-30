@@ -24,3 +24,73 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ---------------------------------------------------------------------------
+   Thermal receipt printing (80mm)
+
+   The receipt is printed straight from the page it is displayed on rather than
+   from a popup or an iframe: the modal is already showing the exact lines that
+   should print, so the stylesheet's only job is to remove everything else.
+
+   `visibility` rather than `display` does the hiding. Collapsing the app with
+   `display: none` would take the receipt down with it — it lives inside the
+   modal, which lives inside the app — whereas visibility is inherited and can
+   be turned back on for one subtree. The receipt is then lifted out of the
+   modal's scroll box and positioned at the top-left of the sheet.
+   --------------------------------------------------------------------------- */
+@media print {
+  @page {
+    size: 80mm auto;
+    margin: 0;
+  }
+
+  html,
+  body {
+    width: 80mm;
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    /* Chrome and Safari otherwise drop backgrounds and lighten text when
+       printing, which on a thermal printer reads as a faint receipt. */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Every element is hidden, including nav, sidebar, buttons and the modal
+     frame; only the receipt subtree is turned back on. */
+  body * {
+    visibility: hidden;
+  }
+
+  .receipt-print,
+  .receipt-print * {
+    visibility: visible;
+  }
+
+  /* Out of the dialog's scroll container and onto the paper. */
+  .receipt-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 80mm;
+    box-sizing: border-box;
+    padding: 4mm 3mm;
+    margin: 0;
+    background: #fff;
+    color: #000;
+    font-family: ui-monospace, "Courier New", Courier, monospace;
+    /* 12 CPI: 32 columns across 80mm, matching lib/receipt.ts#RECEIPT_WIDTH
+       and the PDF written by lib/receipt-pdf.ts. */
+    font-size: 10pt;
+    line-height: 1.35;
+    white-space: pre;
+  }
+
+  /* The backdrop would otherwise paint a full sheet of grey behind the
+     receipt on printers that honour backgrounds. */
+  .receipt-overlay {
+    position: static;
+    background: none;
+    padding: 0;
+  }
+}
