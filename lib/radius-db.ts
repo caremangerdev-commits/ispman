@@ -390,46 +390,57 @@ export type RadiusUsage = {
 }
 
 /**
- * Session history for a MAC from `radacct`.
+ * Session history for one RADIUS identity from `radacct`.
+ *
+ * The identity is the MAC for DHCP customers and the PPPoE username for PPPoE
+ * ones — the same rule the radcheck writes use, so the two tables agree.
  *
  * Note on the octet columns: on this NAS they are frequently 0 even for live
  * sessions, because the hotspot is not reporting interim accounting updates.
  * The sum is therefore correct but often reads as zero — that is the data, not
  * a bug in this query.
  */
-export async function getRadiusUsage(mac: string): Promise<RadiusUsage> {
-  const username = normaliseUsername(mac)
+export async function getRadiusUsage(identity: string): Promise<RadiusUsage> {
+  const username = normaliseUsername(identity)
 
-  return withRetry(async () => {
-  const pool = radiusPool()
-
-  const [latestRows] = await pool.execute(
-    `SELECT acctstarttime, acctstoptime
-       FROM radacct
-      WHERE username = ?
-      ORDER BY acctstarttime DESC
-      LIMIT 1`,
-    [username]
+  // One round trip, not two. Both figures come from the same index range scan
+  // on radacct(username), so splitting them into a 'latest session' query and a
+  // 'this month' query read the same rows twice for no gain.
+  //
+  // last_open_start is the newest session that has no stop time. Comparing it
+  // to last_seen answers 'is the MOST RECENT session still open' — which is
+  // what online means here, and is not the same as 'any session is open'.
+  const [rows] = await withRetry(() =>
+    radiusPool().execute(
+      `SELECT MAX(acctstarttime)                                         AS last_seen,
+              MAX(CASE WHEN acctstoptime IS NULL THEN acctstarttime END) AS last_open_start,
+              COALESCE(SUM(CASE WHEN acctstarttime >= DATE_FORMAT(NOW(), '%Y-%m-01')
+                                THEN acctinputoctets + acctoutputoctets END), 0) AS bytes_month,
+              COALESCE(SUM(CASE WHEN acctstarttime >= DATE_FORMAT(NOW(), '%Y-%m-01')
+                                THEN 1 END), 0)                          AS sessions_month
+         FROM radacct
+        WHERE username = ?`,
+      [username]
+    )
   )
-  const latest = (latestRows as { acctstarttime: Date | null; acctstoptime: Date | null }[])[0]
 
-  const [usageRows] = await pool.execute(
-    `SELECT COALESCE(SUM(acctinputoctets), 0)  AS inb,
-            COALESCE(SUM(acctoutputoctets), 0) AS outb,
-            COUNT(*)                           AS sessions
-       FROM radacct
-      WHERE username = ?
-        AND acctstarttime >= DATE_FORMAT(NOW(), '%Y-%m-01')`,
-    [username]
-  )
-  const usage = (usageRows as { inb: string | number; outb: string | number; sessions: number }[])[0]
+  const r = (rows as {
+    last_seen: Date | null
+    last_open_start: Date | null
+    bytes_month: string | number
+    sessions_month: string | number
+  }[])[0]
+
+  const lastSeen = r?.last_seen ? new Date(r.last_seen) : null
 
   return {
-    lastSeen: latest?.acctstarttime ? new Date(latest.acctstarttime) : null,
-    online: Boolean(latest && latest.acctstarttime && latest.acctstoptime === null),
+    lastSeen,
+    online: Boolean(
+      r?.last_open_start && lastSeen &&
+      new Date(r.last_open_start).getTime() === lastSeen.getTime()
+    ),
     // SUM() of a BIGINT comes back as a string from the driver.
-    bytesThisMonth: Number(usage?.inb ?? 0) + Number(usage?.outb ?? 0),
-    sessionsThisMonth: Number(usage?.sessions ?? 0),
+    bytesThisMonth: Number(r?.bytes_month ?? 0),
+    sessionsThisMonth: Number(r?.sessions_month ?? 0),
   }
-  })
 }

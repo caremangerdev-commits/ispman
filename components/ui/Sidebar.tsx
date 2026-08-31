@@ -4,8 +4,8 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   AlertTriangle, Building2, CalendarX2, CreditCard, FileText, Globe,
-  LayoutDashboard, LifeBuoy, LogOut, Network, Receipt, Router, Settings,
-  Shield, Sliders, UserPlus, Users, UsersRound, Wifi, type LucideIcon,
+  LayoutDashboard, LifeBuoy, LogOut, MessageSquare, Network, Receipt, Router,
+  Settings, Shield, Sliders, UserPlus, Users, UsersRound, Wifi, type LucideIcon,
 } from 'lucide-react'
 
 import { signOut } from '@/app/actions/auth'
@@ -24,6 +24,7 @@ const ICONS: Record<IconKey, LucideIcon> = {
   network: Network,
   router: Router,
   lifeBuoy: LifeBuoy,
+  messageSquare: MessageSquare,
   sliders: Sliders,
   settings: Settings,
   usersRound: UsersRound,

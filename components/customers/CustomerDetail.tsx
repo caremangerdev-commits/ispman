@@ -627,7 +627,6 @@ export function CustomerDetail({
 
           <Row label="Cut Off Date" value={c.cut_off_date ? 'Day ' + c.cut_off_date : '—'} editing={editing} name="cut_off_date" type="number" defaultValue={c.cut_off_date ?? ''} />
           <Row label="Bill Due Date" value={c.bill_due_date ? 'Day ' + c.bill_due_date : '—'} editing={editing} name="bill_due_date" type="number" defaultValue={c.bill_due_date ?? ''} />
-          <Row label="Last Bill Date" value={dateFmt(c.last_bill_date)} />
           {/* From the registry, not last_bill_date. The billing date is kept
               in Postgres for record keeping but never drives a displayed or
               calculated expiry. */}
@@ -766,26 +765,6 @@ export function CustomerDetail({
               <Row label="PPPoE Username" value={c.pppoeUsername} mono />
             ) : null}
 
-            <Row
-              label="Network State"
-              value={
-                !radius.available ? (
-                  <span className="text-gray-500">Unable to reach network</span>
-                ) : (
-                  <StatusBadge status={status} />
-                )
-              }
-            />
-            <Row
-              label="Current Expiry Date"
-              value={
-                radius.expiry ? (
-                  <span className="font-mono text-gray-200">{radius.expiry}</span>
-                ) : (
-                  <span className="text-gray-500">—</span>
-                )
-              }
-            />
             <Row
               label="Last Seen Online"
               value={

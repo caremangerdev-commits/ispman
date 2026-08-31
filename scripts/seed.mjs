@@ -217,12 +217,15 @@ async function main() {
   }
 
   // 1. company
+  //    Deliberately does NOT set ddns_hostname or nas_secret. Both columns
+  //    exist on `companies` but nothing reads them — the app's copies live on
+  //    `settings` (ddns_hostname, radius_secret). Seeding the companies copy
+  //    put the value somewhere the application never looks.
   const companies = await insert('companies', [{
     name: 'Demo ISP Jamaica',
     email: 'billing@demoisp.jm',
     phone: '+1-876-555-0100',
     address: '14 Constant Spring Road, Kingston 10, Jamaica',
-    ddns_hostname: 'demoisp.ddns.net',
     plan: 'professional',
     status: 'active',
   }])
@@ -244,6 +247,9 @@ async function main() {
     sms_enabled: true,
     email_enabled: true,
     timezone: 'America/Jamaica',
+    // The copy the app actually reads and writes. See the note on the
+    // companies insert above.
+    ddns_hostname: 'demoisp.ddns.net',
   }])
 
   // 2c. catalogue (migration 0005 seeded these once — the seed owns them now)

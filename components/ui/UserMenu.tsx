@@ -2,9 +2,10 @@
 
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, LogOut, Settings } from 'lucide-react'
+import { ChevronDown, KeyRound, LogOut, Settings } from 'lucide-react'
 
 import { signOut } from '@/app/actions/auth'
+import { ChangePasswordModal } from '@/components/ui/ChangePasswordModal'
 
 export function UserMenu({
   name,
@@ -18,6 +19,7 @@ export function UserMenu({
   initials: string
 }) {
   const [open, setOpen] = useState(false)
+  const [changingPassword, setChangingPassword] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -72,6 +74,18 @@ export function UserMenu({
             Settings
           </Link>
 
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false)
+              setChangingPassword(true)
+            }}
+            className={linkClass + ' w-full'}
+          >
+            <KeyRound className="h-4 w-4" aria-hidden />
+            Change Password
+          </button>
+
           <div className="my-1 border-t border-gray-800" />
 
           <form action={signOut}>
@@ -85,6 +99,10 @@ export function UserMenu({
           </form>
         </div>
       )}
+
+      {changingPassword ? (
+        <ChangePasswordModal onClose={() => setChangingPassword(false)} />
+      ) : null}
     </div>
   )
 }

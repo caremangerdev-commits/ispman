@@ -1,10 +1,11 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Plus } from 'lucide-react'
 
 import { CustomerDetail } from '@/components/customers/CustomerDetail'
 import { NetworkHistory } from '@/components/customers/NetworkHistory'
+import { TicketPriorityBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges'
 import { listNetworkHistory } from '@/lib/data/network-events'
 import {
   getCustomerAddonIds, listAdditionalServices, listMiscCategories, listServicePlans,
@@ -13,23 +14,12 @@ import {
   getCustomer, getCustomerPayments, getCustomerTickets,
 } from '@/lib/data/customers'
 import { formatCurrency, fullName, timeAgo } from '@/lib/format'
+import { can } from '@/lib/permissions'
 import { getRadiusStatus } from '@/lib/radius/client'
+import { radiusIdentity } from '@/lib/radius/format'
 import { requirePermission } from '@/lib/session'
 
 export const metadata: Metadata = { title: 'Customer · ISPMan' }
-
-const PRIORITY: Record<string, string> = {
-  high: 'bg-red-500/15 text-red-400',
-  medium: 'bg-amber-500/15 text-amber-400',
-  low: 'bg-green-500/15 text-green-400',
-}
-
-const STATUS: Record<string, { label: string; cls: string }> = {
-  open: { label: 'Open', cls: 'bg-blue-500/15 text-blue-400' },
-  in_progress: { label: 'In Progress', cls: 'bg-amber-500/15 text-amber-400' },
-  resolved: { label: 'Resolved', cls: 'bg-green-500/15 text-green-400' },
-  closed: { label: 'Closed', cls: 'bg-gray-600/30 text-gray-400' },
-}
 
 export default async function CustomerDetailPage({
   params,
@@ -47,10 +37,17 @@ export default async function CustomerDetailPage({
   ] = await Promise.all([
       getCustomerPayments(company.id, customerId),
       getCustomerTickets(company.id, customerId),
-      getRadiusStatus(customer.mac_address, {
-        companyId: company.id,
-        customerId: customer.id,
-      }),
+      // MAC for DHCP, PPPoE username for PPPoE — radcheck and radacct are both
+      // keyed on that identity, so looking a PPPoE customer up by MAC finds
+      // nothing at all.
+      getRadiusStatus(
+        radiusIdentity({
+          customerType: customer.customerType,
+          macAddress: customer.mac_address,
+          pppoeUsername: customer.pppoeUsername,
+        }),
+        { companyId: company.id, customerId: customer.id }
+      ),
       listNetworkHistory(company.id, customerId, 10),
       listServicePlans(company.id),
       listAdditionalServices(company.id),
@@ -185,12 +182,23 @@ export default async function CustomerDetailPage({
 
       {/* Support tickets */}
       <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
-        {/* No "New Ticket" action: ticket creation has not been built yet. */}
         <header className="flex items-center justify-between gap-3 border-b border-gray-800 px-5 py-3">
           <h2 className="text-sm font-semibold text-white">Support Tickets</h2>
-          <p className="text-xs text-gray-500">
-            {tickets.length} {tickets.length === 1 ? 'ticket' : 'tickets'}
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="text-xs text-gray-500">
+              {tickets.length} {tickets.length === 1 ? 'ticket' : 'tickets'}
+            </p>
+            {/* Pre-fills this customer on the create form. */}
+            {can(profile.role, 'create_ticket') ? (
+              <Link
+                href={'/dashboard/tickets/new?customer=' + customer.id}
+                className="inline-flex items-center gap-1 rounded-md bg-gray-800 px-2 py-1 text-[11px] font-semibold text-gray-300 transition hover:bg-gray-700"
+              >
+                <Plus className="h-3 w-3" aria-hidden />
+                New Ticket
+              </Link>
+            ) : null}
+          </div>
         </header>
 
         {tickets.length === 0 ? (
@@ -200,29 +208,16 @@ export default async function CustomerDetailPage({
         ) : (
           <ul className="divide-y divide-gray-800">
             {tickets.map((t) => {
-              const s = STATUS[t.status ?? ''] ?? {
-                label: t.status ?? 'Unknown',
-                cls: 'bg-gray-700/40 text-gray-400',
-              }
               return (
                 <li key={t.id} className="flex items-center gap-3 px-5 py-2.5">
-                  <p className="min-w-0 flex-1 truncate text-sm text-gray-200">{t.title}</p>
-                  <span
-                    className={
-                      'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ' +
-                      (PRIORITY[t.priority ?? ''] ?? 'bg-gray-700/40 text-gray-400')
-                    }
+                  <Link
+                    href={'/dashboard/tickets/' + t.id}
+                    className="min-w-0 flex-1 truncate text-sm text-gray-200 transition hover:text-blue-400"
                   >
-                    {t.priority ?? 'none'}
-                  </span>
-                  <span
-                    className={
-                      'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ' +
-                      s.cls
-                    }
-                  >
-                    {s.label}
-                  </span>
+                    {t.title}
+                  </Link>
+                  <TicketPriorityBadge priority={t.priority} />
+                  <TicketStatusBadge status={t.status} />
                   <span className="shrink-0 text-xs text-gray-500">{timeAgo(t.created_at)}</span>
                 </li>
               )

@@ -23,6 +23,11 @@ export type Permission =
   | 'view_checkoff'
   | 'view_revenue_reports'
   | 'view_support_tickets'
+  | 'create_ticket'
+  | 'edit_ticket'
+  | 'assign_ticket'
+  | 'resolve_ticket'
+  | 'reopen_ticket'
   | 'view_network_infrastructure'
   | 'view_nas_management'
   | 'manage_users'
@@ -52,10 +57,26 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   delete_payment: ['super_admin', 'company_admin'],
   view_checkoff: ['super_admin', 'company_admin', 'manager'],
   view_revenue_reports: ['super_admin', 'company_admin', 'manager'],
-  view_support_tickets: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
+  // Cashier included deliberately: they already see tickets on a customer
+  // record, so excluding them from the dashboard panel only made the two
+  // surfaces disagree.
+  view_support_tickets: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  // Every role raises, edits, assigns and resolves. Support work is not
+  // rank-gated here the way money is: whoever takes the call owns the
+  // ticket. Reopen is named separately from resolve so undoing a colleague's
+  // resolution can be narrowed later without touching the other three.
+  create_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  edit_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  assign_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  resolve_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  reopen_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
   view_network_infrastructure: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
   view_nas_management: ['super_admin', 'company_admin', 'manager'],
-  manage_users: ['super_admin', 'company_admin'],
+  // Manager included: they run the team day to day. The guardrails that matter
+  // live in app/actions/users.ts and are checked against the TARGET row, not
+  // the caller — nobody may touch their own account, an admin row, or hand out
+  // an admin role, whichever role they hold.
+  manage_users: ['super_admin', 'company_admin', 'manager'],
   manage_company_settings: ['super_admin', 'company_admin', 'manager'],
   view_super_admin_dashboard: ['super_admin'],
   assign_company_admin: ['super_admin'],

@@ -67,9 +67,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
 /**
  * Sections a role may open.
  *
- * Driven purely by the permission map: `manage_company_settings` covers
- * super_admin, company_admin and manager, while Users sits behind
- * `manage_users` so managers cannot reach it.
+ * Driven purely by the permission map, and that is the only rule — the sidebar,
+ * this nav, the page guard and the server actions all read the same permission,
+ * so granting a role `manage_users` opens every one of them at once. Do not add
+ * a second check anywhere.
+ *
+ * `manage_company_settings` and `manage_users` both currently cover super_admin,
+ * company_admin and manager.
  */
 export function visibleSettings(role: Role): SettingsSection[] {
   return SETTINGS_SECTIONS.filter((s) => can(role, s.permission))

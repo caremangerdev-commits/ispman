@@ -1,4 +1,4 @@
-import { Breadcrumb } from '@/components/ui/Breadcrumb'
+import { PageTitle } from '@/components/ui/PageTitle'
 import { GlobalSearch } from '@/components/ui/GlobalSearch'
 import { NotificationBell } from '@/components/ui/NotificationBell'
 import { UserMenu } from '@/components/ui/UserMenu'
@@ -24,7 +24,7 @@ export function Navbar({
 
   return (
     <header className="fixed inset-x-0 left-64 top-0 z-20 flex h-16 items-center gap-4 border-b border-gray-800 bg-gray-900 px-6">
-      <Breadcrumb />
+      <PageTitle />
 
       <GlobalSearch />
 

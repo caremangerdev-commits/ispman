@@ -78,6 +78,11 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
   }
 
   const [companyRes, settingsRes] = await Promise.all([
+    // DEAD COLUMNS — `companies` also carries ddns_hostname and nas_secret.
+    // Neither is read or written anywhere in this app: the live values are
+    // settings.ddns_hostname and settings.radius_secret, selected below. The
+    // columns are kept so no existing data is lost, but nothing should start
+    // writing them again — if you need a network field, add it to `settings`.
     db.from('companies').select('name, email, phone, address').eq('id', companyId).maybeSingle(),
     db.from('settings').select(cols).eq('company_id', companyId).maybeSingle(),
   ])

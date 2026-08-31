@@ -1,9 +1,10 @@
-import type { ReactNode } from 'react'
+import { Suspense, type ReactNode } from 'react'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { ArrowLeft, Shield } from 'lucide-react'
 
 import { signOut } from '@/app/actions/auth'
+import { Toast } from '@/components/ui/Toast'
 import { displayName, getSession } from '@/lib/session'
 
 /**
@@ -61,6 +62,11 @@ export default async function SuperAdminLayout({ children }: { children: ReactNo
       </header>
 
       <main className="p-6">{children}</main>
+
+      {/* Reads ?toast= from the URL, so it needs a Suspense boundary. */}
+      <Suspense fallback={null}>
+        <Toast />
+      </Suspense>
     </div>
   )
 }

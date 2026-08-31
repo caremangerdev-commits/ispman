@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
-import { Building2, DollarSign, Users } from 'lucide-react'
+import Link from 'next/link'
+import { Building2, DollarSign, Plus, Users } from 'lucide-react'
 
 import { activateCompany, suspendCompany } from '@/app/actions/platform'
 import { getPlatformStats } from '@/lib/data/platform'
@@ -19,11 +20,21 @@ export default async function SuperAdminPage() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">Platform Overview</h1>
-        <p className="mt-0.5 text-sm text-gray-500">
-          Across every company on ISPMan.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-white">Platform Overview</h1>
+          <p className="mt-0.5 text-sm text-gray-500">
+            Across every company on ISPMan.
+          </p>
+        </div>
+
+        <Link
+          href="/superadmin/companies/new"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-amber-500"
+        >
+          <Plus className="h-4 w-4" aria-hidden />
+          New Company
+        </Link>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -63,7 +74,14 @@ export default async function SuperAdminPage() {
                 const suspended = (c.status ?? '').toLowerCase() === 'suspended'
                 return (
                   <tr key={c.id} className="transition hover:bg-gray-800/40">
-                    <td className="px-5 py-2.5 font-medium text-gray-200">{c.name}</td>
+                    <td className="px-5 py-2.5">
+                      <Link
+                        href={'/superadmin/companies/' + c.id}
+                        className="font-medium text-gray-200 transition hover:text-amber-400"
+                      >
+                        {c.name}
+                      </Link>
+                    </td>
                     <td className="px-5 py-2.5 text-right tabular-nums text-gray-300">
                       {c.customerCount}
                     </td>
@@ -98,9 +116,12 @@ export default async function SuperAdminPage() {
                     </td>
                     <td className="px-5 py-2.5">
                       <div className="flex items-center justify-end gap-1.5">
-                        <span className="cursor-not-allowed rounded-md bg-gray-800 px-2 py-1 text-[11px] font-semibold text-gray-500">
+                        <Link
+                          href={'/superadmin/companies/' + c.id}
+                          className="rounded-md bg-gray-800 px-2 py-1 text-[11px] font-semibold text-gray-300 transition hover:bg-gray-700"
+                        >
                           View
-                        </span>
+                        </Link>
 
                         {suspended ? (
                           <form action={activateCompany}>
@@ -135,7 +156,8 @@ export default async function SuperAdminPage() {
 
       <p className="text-xs text-gray-600">
         Platform queries use the service-role client and are intentionally not
-        scoped by company. Companies and Settings pages are not built yet.
+        scoped by company. A company is otherwise managed from inside its own
+        dashboard.
       </p>
     </div>
   )

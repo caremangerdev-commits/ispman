@@ -19,8 +19,10 @@ async function guard() {
 
 export default async function UsersPage() {
   const { company, profile } = await guard()
-  // Scoped by company_id — another tenant's staff are never returned.
-  const users = await listCompanyUsers(company.id)
+  // Scoped by company_id — another tenant's staff are never returned — and by
+  // the caller's role, which keeps admin rows out of a manager's payload
+  // entirely rather than rendering them locked.
+  const users = await listCompanyUsers(company.id, profile.role)
 
   return (
     <div className="space-y-4">
@@ -29,7 +31,12 @@ export default async function UsersPage() {
         <p className="mt-0.5 text-sm text-gray-500">Staff accounts for {company.name}.</p>
       </div>
 
-      <UsersManager users={users} roles={ASSIGNABLE_ROLES} currentUserId={profile.id} />
+      <UsersManager
+        users={users}
+        roles={ASSIGNABLE_ROLES}
+        currentUserId={profile.id}
+        viewerRole={profile.role}
+      />
     </div>
   )
 }

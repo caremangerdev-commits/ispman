@@ -2,14 +2,16 @@
 
 import { revalidatePath } from 'next/cache'
 
-import { ASSIGNABLE_ROLES } from '@/lib/data/users'
+import { ADMIN_ROLES, ASSIGNABLE_ROLES, seesAdminRows } from '@/lib/data/users'
 import { can, type Role } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { supabaseUrl } from '@/lib/supabase/env'
 import { tenantClient } from '@/lib/supabase/tenant'
 
-export type UserResult = { ok: true } | { ok: false; error: string }
+export type UserResult =
+  | { ok: true }
+  | { ok: false; error: string; fieldErrors?: Record<string, string> }
 
 async function authorize() {
   const session = await getSession()
@@ -31,6 +33,92 @@ const idOf = (fd: FormData) => {
 
 function assignable(role: string): role is Role {
   return (ASSIGNABLE_ROLES as string[]).includes(role)
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const MIN_PASSWORD = 8
+
+/**
+ * The target of a write, once it is confirmed the caller may act on it.
+ *
+ * Every guardrail that decides WHO may be acted on lives here, so the two new
+ * actions cannot drift from each other:
+ *
+ *   1. Never yourself. Changing your own email or password from an admin screen
+ *      belongs on the self-service screen, which verifies the current password.
+ *   2. Never an admin target unless the caller is admin-level. This repeats the
+ *      list filter in lib/data/users.ts on the WRITE path, because hiding a row
+ *      from a manager does not stop them POSTing its id.
+ *
+ * The target's role is re-read from the database every time — never taken from
+ * the form — so a stale or forged role cannot get past it.
+ */
+async function loadTarget(
+  companyId: number,
+  callerRole: Role,
+  callerId: number,
+  id: number
+): Promise<
+  | { ok: true; row: { id: number; email: string; role: string | null; is_super_admin: boolean } }
+  | { ok: false; error: string }
+> {
+  if (id === callerId) {
+    return { ok: false, error: 'Use Change Password in your account menu for your own account.' }
+  }
+
+  const { data } = await tenantClient()
+    .from('users')
+    .select('id, email, role, is_super_admin')
+    .eq('company_id', companyId)
+    .eq('id', id)
+    .maybeSingle()
+
+  const row = data as unknown as {
+    id: number; email: string; role: string | null; is_super_admin: boolean
+  } | null
+
+  if (!row) return { ok: false, error: 'That user no longer exists.' }
+
+  const targetIsAdmin =
+    ADMIN_ROLES.includes(row.role ?? '') || Boolean(row.is_super_admin)
+
+  if (targetIsAdmin && !seesAdminRows(callerRole)) {
+    return { ok: false, error: 'Admin accounts can only be changed by a company admin.' }
+  }
+
+  return { ok: true, row: { ...row, is_super_admin: Boolean(row.is_super_admin) } }
+}
+
+/**
+ * Audit row for the two actions that could be used to take over an account.
+ *
+ * Same plain `log` insert every other action in this app uses. customer_id is
+ * null because a staff-account change has no customer — the column is nullable.
+ * A failure is logged and swallowed: the change already landed, and undoing it
+ * to keep the log tidy would take away what the operator asked for.
+ */
+async function logUserEvent(opts: {
+  companyId: number
+  actorId: number
+  type: 'user_email_changed' | 'user_password_reset'
+  details: string
+}) {
+  try {
+    const { error } = await tenantClient().from('log').insert({
+      company_id: opts.companyId,
+      user_id: opts.actorId,
+      customer_id: null,
+      type: opts.type,
+      details: opts.details,
+    })
+    if (error) {
+      console.error('[users] could not write a %s log row: %s', opts.type, error.message)
+    }
+  } catch (err) {
+    console.error(
+      '[users] could not write a %s log row: %s', opts.type, (err as Error).message
+    )
+  }
 }
 
 /**
@@ -190,6 +278,192 @@ export async function toggleUserActive(formData: FormData) {
   if (error) throw new Error('Could not update the account: ' + error.message)
 
   revalidatePath('/dashboard/settings/users')
+}
+
+// ---------------------------------------------------------------------------
+// Edit details
+// ---------------------------------------------------------------------------
+
+/**
+ * Edits a staff member's name, email and phone. Role is NOT changed here —
+ * updateUserRole owns that, with its own stricter guardrail.
+ *
+ * THE EMAIL IS THE JOIN KEY. `users` and the Supabase auth store are separate,
+ * matched on email alone (lib/session.ts), so changing one and not the other
+ * locks the person out: they would sign in against the old auth address and
+ * then fail to resolve a profile.
+ *
+ * The auth account is therefore updated FIRST and the users row only if that
+ * succeeded. This is the opposite order to createUser, and deliberately so —
+ * createUser is building something new, where an orphaned auth account is the
+ * harmless half. Here both halves already exist and work, so the rule is not
+ * "which orphan is safer" but "do not break what is currently working". A
+ * failed auth update leaves both stores untouched and consistent.
+ */
+export async function updateUser(
+  _prev: UserResult | null,
+  formData: FormData
+): Promise<UserResult> {
+  const { company, profile } = await authorize()
+
+  const id = idOf(formData)
+  if (id === null) return { ok: false, error: 'Missing user id.' }
+
+  const target = await loadTarget(company.id, profile.role, profile.id, id)
+  if (!target.ok) return { ok: false, error: target.error }
+
+  const first = str(formData, 'first_name')
+  const last = str(formData, 'last_name')
+  const email = str(formData, 'email').toLowerCase()
+  const phone = str(formData, 'phone')
+
+  const fieldErrors: Record<string, string> = {}
+  if (!first) fieldErrors.first_name = 'First name is required.'
+  if (!last) fieldErrors.last_name = 'Last name is required.'
+  if (!EMAIL_RE.test(email)) fieldErrors.email = 'Enter a valid email address.'
+
+  if (Object.keys(fieldErrors).length > 0) {
+    return { ok: false, error: 'Please correct the highlighted fields.', fieldErrors }
+  }
+
+  const db = tenantClient()
+  const emailChanged = email !== (target.row.email ?? '').toLowerCase()
+
+  if (emailChanged) {
+    // Same check createUser makes, minus this user's own row.
+    const { data: clash } = await db
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .neq('id', id)
+      .maybeSingle()
+
+    if (clash) {
+      return {
+        ok: false,
+        error: 'Please correct the highlighted fields.',
+        fieldErrors: { email: 'Another user already uses that email address.' },
+      }
+    }
+
+    const authUser = await findAuthUser(target.row.email)
+    if (!authUser) {
+      return {
+        ok: false,
+        error:
+          'No sign-in account exists for ' + target.row.email + ', so the email cannot be ' +
+          'changed safely. Nothing was changed.',
+      }
+    }
+
+    const admin = createAdminClient()
+    const { error: authError } = await admin.auth.admin.updateUserById(authUser.id, {
+      email,
+      email_confirm: true,
+    })
+
+    // Nothing has been written yet, so both stores are still consistent.
+    if (authError) {
+      return {
+        ok: false,
+        error:
+          'Could not update the sign-in account: ' + authError.message +
+          ' — nothing was changed.',
+      }
+    }
+  }
+
+  const { error } = await db
+    .from('users')
+    .update({ first_name: first, last_name: last, email, phone: phone || null })
+    .eq('company_id', company.id)
+    .eq('id', id)
+
+  if (error) {
+    // The auth side may already carry the new address. Say so plainly rather
+    // than let someone discover it at the login screen.
+    return {
+      ok: false,
+      error: emailChanged
+        ? 'The sign-in email was changed to ' + email + ' but the profile update failed: ' +
+          error.message + ' — this user cannot sign in until the profile row matches. ' +
+          'Set their email to ' + email + ' and try again.'
+        : 'Could not save the user: ' + error.message,
+    }
+  }
+
+  if (emailChanged) {
+    await logUserEvent({
+      companyId: company.id,
+      actorId: profile.id,
+      type: 'user_email_changed',
+      details:
+        'Sign-in email for user #' + id + ' changed from ' + target.row.email + ' to ' +
+        email + ' by ' + (profile.first_name ?? 'an operator'),
+    })
+  }
+
+  revalidatePath('/dashboard/settings/users')
+  return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
+// Reset another user's password
+// ---------------------------------------------------------------------------
+
+/**
+ * Sets a new temporary password on someone else's account.
+ *
+ * Requires manage_users. A user without it cannot reach this at all and can
+ * only change their OWN password, through the self-service screen in the
+ * account menu — which verifies the current password first. This one does not,
+ * because an admin resetting a forgotten password does not know it; that is
+ * exactly why it is logged.
+ */
+export async function resetUserPassword(
+  _prev: UserResult | null,
+  formData: FormData
+): Promise<UserResult> {
+  const { company, profile } = await authorize()
+
+  const id = idOf(formData)
+  if (id === null) return { ok: false, error: 'Missing user id.' }
+
+  const target = await loadTarget(company.id, profile.role, profile.id, id)
+  if (!target.ok) return { ok: false, error: target.error }
+
+  const password = str(formData, 'password')
+  if (password.length < MIN_PASSWORD) {
+    return {
+      ok: false,
+      error: 'Please correct the highlighted fields.',
+      fieldErrors: {
+        password: 'Temporary password must be at least ' + MIN_PASSWORD + ' characters.',
+      },
+    }
+  }
+
+  const authUser = await findAuthUser(target.row.email)
+  if (!authUser) {
+    return { ok: false, error: 'No sign-in account exists for ' + target.row.email + '.' }
+  }
+
+  const admin = createAdminClient()
+  const { error } = await admin.auth.admin.updateUserById(authUser.id, { password })
+
+  if (error) return { ok: false, error: 'Could not reset the password: ' + error.message }
+
+  await logUserEvent({
+    companyId: company.id,
+    actorId: profile.id,
+    type: 'user_password_reset',
+    details:
+      'Password for ' + target.row.email + ' (user #' + id + ') was reset by ' +
+      (profile.first_name ?? 'an operator'),
+  })
+
+  revalidatePath('/dashboard/settings/users')
+  return { ok: true }
 }
 
 /** Looks up an auth account by email; GoTrue has no direct get-by-email. */

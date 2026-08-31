@@ -1,17 +1,14 @@
 'use client'
 
-import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 
-import { sectionForPath } from '@/lib/navigation'
-
 /**
- * The standing header on every dashboard page.
+ * The standing header at the top of every dashboard page's content area.
  *
- * Company and department lead in large type; who is signed in, and the
- * company-local clock, sit beneath in small type. The department is derived
- * from the route rather than passed in, so a new page picks up the right label
- * from lib/navigation.ts without touching this.
+ * Three lines: the company-local clock in small muted type, then the company
+ * and the signed-in role in large type, then the greeting. The page's own
+ * title lives in the header bar (see PageTitle), so nothing route-derived is
+ * needed here.
  */
 export function PageHeading({
   companyName,
@@ -24,9 +21,6 @@ export function PageHeading({
   roleLabel: string
   timezone: string
 }) {
-  const pathname = usePathname()
-  const department = sectionForPath(pathname)
-
   const [now, setNow] = useState<Date | null>(null)
 
   useEffect(() => {
@@ -55,32 +49,28 @@ export function PageHeading({
 
   return (
     <header className="mb-5">
-      <h1 className="text-2xl font-bold tracking-tight text-white">
-        {companyName}
-        {department ? (
-          <>
-            <span className="mx-2 font-normal text-gray-600">·</span>
-            <span className="text-blue-400">{department}</span>
-          </>
-        ) : null}
-      </h1>
-
-      <p className="mt-1 text-sm text-gray-500">
-        {greeting ? greeting + ', ' : ''}
-        <span className="font-medium text-gray-400">{userName}</span>
-        <span className="mx-1.5 text-gray-700">·</span>
-        {roleLabel}
+      <p className="min-h-5 text-sm text-gray-500">
         {now ? (
           <>
-            <span className="mx-1.5 text-gray-700">·</span>
-            {fmt({ weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
-            <span className="mx-1.5 text-gray-700">·</span>
+            {fmt({ weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
+            <span className="mx-2" />
             <span className="tabular-nums">
-              {fmt({ hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true })}
+              {fmt({ hour: '2-digit', minute: '2-digit', hour12: true })}
             </span>
           </>
         ) : null}
       </p>
+
+      <h1 className="mt-1 text-2xl font-bold tracking-tight text-white">
+        {companyName}
+        <span className="mx-2 font-normal text-gray-600">·</span>
+        <span className="text-blue-400">{roleLabel}</span>
+      </h1>
+
+      <h2 className="mt-1 text-lg font-semibold text-gray-400">
+        {greeting ? greeting + ', ' : ''}
+        <span className="text-gray-300">{userName}</span>
+      </h2>
     </header>
   )
 }

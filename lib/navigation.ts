@@ -9,7 +9,7 @@ export type IconKey =
   | 'dashboard' | 'users' | 'userPlus' | 'calendarX' | 'alertTriangle'
   | 'creditCard' | 'fileText' | 'receipt' | 'network' | 'router'
   | 'lifeBuoy' | 'sliders' | 'settings' | 'usersRound' | 'building'
-  | 'globe' | 'shield'
+  | 'globe' | 'shield' | 'messageSquare'
 
 export type NavItem = {
   label: string
@@ -53,6 +53,14 @@ const SECTIONS: NavSection[] = [
     ],
   },
   {
+    heading: 'Support',
+    requireAny: ['view_support_tickets', 'create_ticket'],
+    items: [
+      { label: 'Tickets', href: '/dashboard/tickets', icon: 'lifeBuoy', permission: 'view_support_tickets' },
+      { label: 'New Ticket', href: '/dashboard/tickets/new', icon: 'messageSquare', permission: 'create_ticket' },
+    ],
+  },
+  {
     heading: 'Admin',
     requireAny: ['manage_users', 'manage_company_settings'],
     items: [
@@ -71,37 +79,39 @@ const SECTIONS: NavSection[] = [
 ]
 
 /**
+ * The title shown in the header bar for a route.
+ *
+ * A static table of section titles, deliberately not record names — a customer
+ * page reads "Customer Details" rather than the customer's name. Entries are
+ * tried in order, so /dashboard/customers/new is matched before the [id] entry
+ * that would otherwise swallow it.
+ */
+const TITLES: { match: RegExp; title: string }[] = [
+  { match: /^\/dashboard\/customers\/new$/, title: 'Add Customer' },
+  { match: /^\/dashboard\/customers\/[^/]+$/, title: 'Customer Details' },
+  { match: /^\/dashboard\/customers$/, title: 'Customers' },
+  { match: /^\/dashboard\/payments\/new$/, title: 'Record Payment' },
+  { match: /^\/dashboard\/payments\/[^/]+$/, title: 'Payment Details' },
+  { match: /^\/dashboard\/payments$/, title: 'Payments' },
+  { match: /^\/dashboard\/tickets\/new$/, title: 'New Ticket' },
+  { match: /^\/dashboard\/tickets\/[^/]+$/, title: 'Ticket Details' },
+  { match: /^\/dashboard\/tickets$/, title: 'Tickets' },
+  { match: /^\/dashboard\/checkoff/, title: 'Checkoff' },
+  { match: /^\/dashboard\/settings/, title: 'Settings' },
+  { match: /^\/dashboard$/, title: 'Dashboard' },
+]
+
+export function titleForPath(pathname: string): string {
+  return TITLES.find((t) => t.match.test(pathname))?.title ?? 'Dashboard'
+}
+
+/**
  * The sections and items a role may see.
  *
  * A section survives only if the role holds one of its `requireAny`
  * permissions AND at least one of its items is individually permitted — so a
  * heading never renders above an empty list.
  */
-/**
- * The section heading a route belongs to — "Billing", "Customers" and so on.
- *
- * Matched against the unfiltered section list rather than a role's visible nav,
- * so the page header names the same department whoever is looking at it. The
- * longest matching href wins, so /dashboard/payments/new resolves to Billing
- * via Record Payment rather than stopping at /dashboard.
- */
-export function sectionForPath(pathname: string): string | null {
-  let best: { heading: string; length: number } | null = null
-
-  for (const section of SECTIONS) {
-    for (const item of section.items) {
-      const path = item.href.split('?')[0]
-      const matches = pathname === path || pathname.startsWith(path + '/')
-      if (!matches) continue
-      if (!best || path.length > best.length) {
-        best = { heading: section.heading, length: path.length }
-      }
-    }
-  }
-
-  return best?.heading ?? null
-}
-
 export function visibleNav(role: Role): NavSection[] {
   const sections = SECTIONS.map((section) => ({
     ...section,

@@ -111,3 +111,22 @@ export function normaliseUsername(value: string): string {
   const looksLikeMac = /^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$/.test(trimmed)
   return looksLikeMac ? trimmed.toUpperCase().replace(/-/g, ':') : trimmed
 }
+
+/**
+ * The RADIUS username for a customer: the MAC for DHCP and hotspot, the PPPoE
+ * username for PPPoE.
+ *
+ * This is the same rule the provisioning path applies before writing radcheck
+ * (see loadNetworkTarget in app/actions/customers.ts), and it has to match, or
+ * a PPPoE customer is provisioned under one identity and read back under
+ * another — which is exactly why their accounting rows were never found.
+ */
+export function radiusIdentity(customer: {
+  customerType: string | null
+  macAddress: string | null
+  pppoeUsername: string | null
+}): string | null {
+  return (
+    customer.customerType === 'pppoe' ? customer.pppoeUsername : customer.macAddress
+  ) ?? null
+}
