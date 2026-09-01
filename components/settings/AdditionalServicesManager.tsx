@@ -1,7 +1,7 @@
 'use client'
 
 import { Pencil, Plus, Trash2 } from 'lucide-react'
-import { useActionState, useState } from 'react'
+import { useActionState, useEffect, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import {
@@ -32,11 +32,13 @@ function ServiceForm({ service, onDone }: { service: Row | null; onDone: () => v
     saveAdditionalService, null
   )
 
-  const [seen, setSeen] = useState(state)
-  if (state !== seen) {
-    setSeen(state)
+  // Closes after the commit. Calling onDone() during render updated the parent
+  // while this component was still rendering, which React does not guarantee.
+  // The action state is a fresh object per submission, so this fires once per
+  // result.
+  useEffect(() => {
     if (state?.ok) onDone()
-  }
+  }, [state, onDone])
 
   return (
     <form action={action} className="space-y-4">

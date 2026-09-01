@@ -5,7 +5,8 @@ import { usePathname } from 'next/navigation'
 import {
   AlertTriangle, Building2, CalendarX2, CreditCard, FileText, Globe,
   LayoutDashboard, LifeBuoy, LogOut, MessageSquare, Network, Receipt, Router,
-  Settings, Shield, Sliders, UserPlus, Users, UsersRound, Wifi, type LucideIcon,
+  Settings, Shield, Sliders, Upload, UserPlus, Users, UsersRound, Wifi,
+  type LucideIcon,
 } from 'lucide-react'
 
 import { signOut } from '@/app/actions/auth'
@@ -31,6 +32,7 @@ const ICONS: Record<IconKey, LucideIcon> = {
   building: Building2,
   globe: Globe,
   shield: Shield,
+  upload: Upload,
 }
 
 export type SidebarProps = {

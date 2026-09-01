@@ -31,12 +31,9 @@ export default async function NewCustomerPage() {
   return (
     <div className="mx-auto max-w-3xl space-y-4">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-white">Add New Customer</h1>
-          <p className="mt-0.5 text-sm text-gray-500">
-            New customers start a billing cycle from today.
-          </p>
-        </div>
+        <p className="text-sm text-gray-500">
+          New customers start a billing cycle from today.
+        </p>
         <Link
           href="/dashboard/customers"
           className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-1.5 text-xs font-semibold text-gray-300 transition hover:bg-gray-700"

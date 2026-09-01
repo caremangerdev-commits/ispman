@@ -34,12 +34,9 @@ export default async function GeneralSettingsPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">General Settings</h1>
-        <p className="mt-0.5 text-sm text-gray-500">
-          Profile, regional, billing and network defaults for {company.name}.
-        </p>
-      </div>
+      <p className="text-sm text-gray-500">
+        Profile, regional, billing and network defaults for {company.name}.
+      </p>
 
       {!caps.generalSettings ? (
         <div className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-4 py-3">

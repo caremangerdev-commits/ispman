@@ -1,7 +1,7 @@
 'use client'
 
 import { KeyRound, Plus, ShieldCheck } from 'lucide-react'
-import { useActionState, useState } from 'react'
+import { useActionState, useEffect, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import {
@@ -41,11 +41,16 @@ function SubmitButton({ label: text }: { label: string }) {
 function AddUserForm({ roles, onDone }: { roles: Role[]; onDone: () => void }) {
   const [state, action] = useActionState<UserResult | null, FormData>(createUser, null)
 
-  const [seen, setSeen] = useState(state)
-  if (state !== seen) {
-    setSeen(state)
+  // Closes AFTER the commit, not during it.
+  //
+  // This used to compare the action state against a copy held in state and call
+  // onDone() inline, which updated the parent while this component was still
+  // rendering — React warns that it cannot guarantee that, and the close could
+  // be dropped. useActionState hands back a fresh object per submission, so
+  // keying the effect on it fires this exactly once per result.
+  useEffect(() => {
     if (state?.ok) onDone()
-  }
+  }, [state, onDone])
 
   return (
     <form action={action} className="space-y-4">
@@ -127,17 +132,16 @@ function EditUserForm({
     updateUserRole, null
   )
 
-  const [seenDetail, setSeenDetail] = useState(detailState)
-  if (detailState !== seenDetail) {
-    setSeenDetail(detailState)
+  // Two independent forms, either of which closes the dialog once its own
+  // action succeeds. Both run after the commit for the same reason as
+  // AddUserForm — see the note there.
+  useEffect(() => {
     if (detailState?.ok) onDone()
-  }
+  }, [detailState, onDone])
 
-  const [seenRole, setSeenRole] = useState(roleState)
-  if (roleState !== seenRole) {
-    setSeenRole(roleState)
+  useEffect(() => {
     if (roleState?.ok) onDone()
-  }
+  }, [roleState, onDone])
 
   const errors = detailState && !detailState.ok ? (detailState.fieldErrors ?? {}) : {}
 

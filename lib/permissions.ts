@@ -13,6 +13,7 @@ export type Permission =
   | 'view_customer_tech_info'
   | 'add_customer'
   | 'edit_customer'
+  | 'import_customers'
   | 'activate_customer'
   | 'provision_customer'
   | 'extend_disconnect_customer'
@@ -42,6 +43,12 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   view_customer_tech_info: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
   add_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
   edit_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
+  // Deliberately NOT folded into add_customer. Adding one customer at the
+  // counter is routine CSR work; loading someone else's spreadsheet writes
+  // hundreds of rows in one unattended pass, decides how every name is split
+  // and creates service plans as a side effect. That belongs to whoever answers
+  // for the resulting data, so it stops at manager.
+  import_customers: ['super_admin', 'company_admin', 'manager'],
   activate_customer: ['super_admin', 'company_admin', 'manager', 'csr'],
   // Creating a subscriber's radcheck rows for the first time is a CSR and
   // management action. Deliberately excludes cashier (billing only) and

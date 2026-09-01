@@ -162,14 +162,11 @@ export function CheckoffClient({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-white">Checkoff</h1>
-          <p className="mt-0.5 text-sm text-gray-500">
-            {allAgents.rows.length === 0
-              ? 'Nothing outstanding'
-              : allAgents.rows.length + ' agent(s) holding ' + symbol + fmt(allAgents.total)}
-          </p>
-        </div>
+        <p className="text-sm text-gray-500">
+          {allAgents.rows.length === 0
+            ? 'Nothing outstanding'
+            : allAgents.rows.length + ' agent(s) holding ' + symbol + fmt(allAgents.total)}
+        </p>
 
         <button
           type="button"

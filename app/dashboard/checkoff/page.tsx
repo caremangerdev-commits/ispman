@@ -28,7 +28,6 @@ export default async function CheckoffPage({
   if (!caps.checkoff) {
     return (
       <div className="space-y-4">
-        <h1 className="text-xl font-semibold tracking-tight text-white">Checkoff</h1>
         <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-6">
           <p className="text-sm font-semibold text-amber-300">
             Checkoff is not set up on this system yet.

@@ -100,9 +100,8 @@ function HitList({ hits, showBalance }: { hits: CustomerHit[]; showBalance: bool
 // ---------------------------------------------------------------------------
 
 export function CsrDashboard({
-  name, data, query, hits,
+  data, query, hits,
 }: {
-  name: string
   data: CsrData
   query: string
   hits: CustomerHit[]
@@ -110,12 +109,10 @@ export function CsrDashboard({
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-white">Welcome back, {name}</h1>
-          <p className="mt-0.5 text-sm text-gray-500">
-            {data.myTickets.length} assigned to you · {data.openTicketCount} open company-wide
-          </p>
-        </div>
+        {/* PageHeading in the layout already greets by name. */}
+        <p className="text-sm text-gray-500">
+          {data.myTickets.length} assigned to you · {data.openTicketCount} open company-wide
+        </p>
         <Link
           href="/dashboard/payments/new"
           className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-blue-500"
@@ -164,19 +161,15 @@ export function CsrDashboard({
 // ---------------------------------------------------------------------------
 
 export function CashierDashboard({
-  name, data, query, hits,
+  data, query, hits,
 }: {
-  name: string
   data: CashierData
   query: string
   hits: CustomerHit[]
 }) {
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">Welcome back, {name}</h1>
-        <p className="mt-0.5 text-sm text-gray-500">Collections desk</p>
-      </div>
+      <p className="text-sm text-gray-500">Collections desk</p>
 
       <SearchForm defaultValue={query} placeholder="Search customer by name, phone or MAC..." />
 
@@ -236,21 +229,17 @@ export function CashierDashboard({
 // ---------------------------------------------------------------------------
 
 export function TechnicianDashboard({
-  name, data, query, hits,
+  data, query, hits,
 }: {
-  name: string
   data: TechData
   query: string
   hits: CustomerHit[]
 }) {
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">Welcome back, {name}</h1>
-        <p className="mt-0.5 text-sm text-gray-500">
-          {data.myTickets.length} assigned to you · {data.customersWithOpenTickets.length} customers with open issues
-        </p>
-      </div>
+      <p className="text-sm text-gray-500">
+        {data.myTickets.length} assigned to you · {data.customersWithOpenTickets.length} customers with open issues
+      </p>
 
       <SearchForm defaultValue={query} placeholder="Search customer by name, phone or MAC..." />
 

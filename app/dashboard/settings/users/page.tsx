@@ -26,10 +26,7 @@ export default async function UsersPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">Users</h1>
-        <p className="mt-0.5 text-sm text-gray-500">Staff accounts for {company.name}.</p>
-      </div>
+      <p className="text-sm text-gray-500">Staff accounts for {company.name}.</p>
 
       <UsersManager
         users={users}

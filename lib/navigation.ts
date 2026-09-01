@@ -9,7 +9,7 @@ export type IconKey =
   | 'dashboard' | 'users' | 'userPlus' | 'calendarX' | 'alertTriangle'
   | 'creditCard' | 'fileText' | 'receipt' | 'network' | 'router'
   | 'lifeBuoy' | 'sliders' | 'settings' | 'usersRound' | 'building'
-  | 'globe' | 'shield' | 'messageSquare'
+  | 'globe' | 'shield' | 'messageSquare' | 'upload'
 
 export type NavItem = {
   label: string
@@ -35,10 +35,11 @@ const SECTIONS: NavSection[] = [
   },
   {
     heading: 'Customers',
-    requireAny: ['view_customer_list', 'add_customer'],
+    requireAny: ['view_customer_list', 'add_customer', 'import_customers'],
     items: [
       { label: 'All Customers', href: '/dashboard/customers', icon: 'users', permission: 'view_customer_list' },
       { label: 'Add Customer', href: '/dashboard/customers/new', icon: 'userPlus', permission: 'add_customer' },
+      { label: 'Import Customers', href: '/dashboard/customers/import', icon: 'upload', permission: 'import_customers' },
       { label: 'Expired', href: '/dashboard/customers?filter=expired', icon: 'calendarX', permission: 'view_customer_list' },
       { label: 'Disconnected', href: '/dashboard/customers?filter=disconnected', icon: 'alertTriangle', permission: 'view_customer_list' },
     ],
@@ -88,6 +89,7 @@ const SECTIONS: NavSection[] = [
  */
 const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/customers\/new$/, title: 'Add Customer' },
+  { match: /^\/dashboard\/customers\/import$/, title: 'Import Customers' },
   { match: /^\/dashboard\/customers\/[^/]+$/, title: 'Customer Details' },
   { match: /^\/dashboard\/customers$/, title: 'Customers' },
   { match: /^\/dashboard\/payments\/new$/, title: 'Record Payment' },
@@ -97,6 +99,15 @@ const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/tickets\/[^/]+$/, title: 'Ticket Details' },
   { match: /^\/dashboard\/tickets$/, title: 'Tickets' },
   { match: /^\/dashboard\/checkoff/, title: 'Checkoff' },
+  // Named individually rather than all reading "Settings". The header bar is
+  // the only place a page title appears now, so a settings sub-page has to say
+  // which one it is — the left-hand nav shows the active section, but the
+  // title above it should not disagree with it.
+  { match: /^\/dashboard\/settings\/company$/, title: 'General Settings' },
+  { match: /^\/dashboard\/settings\/service-plans$/, title: 'Service Plans' },
+  { match: /^\/dashboard\/settings\/additional-services$/, title: 'Additional Services' },
+  { match: /^\/dashboard\/settings\/misc-categories$/, title: 'Misc Categories' },
+  { match: /^\/dashboard\/settings\/users$/, title: 'Users' },
   { match: /^\/dashboard\/settings/, title: 'Settings' },
   { match: /^\/dashboard$/, title: 'Dashboard' },
 ]

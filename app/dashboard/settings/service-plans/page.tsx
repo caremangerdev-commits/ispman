@@ -30,10 +30,7 @@ export default async function ServicePlansPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">Service Plans</h1>
-        <p className="mt-0.5 text-sm text-gray-500">Speed tiers customers can be placed on.</p>
-      </div>
+      <p className="text-sm text-gray-500">Speed tiers customers can be placed on.</p>
 
       {!caps.catalog ? (
         <div className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-4 py-3">

@@ -1,7 +1,7 @@
 'use client'
 
 import { Pencil, Plus, Trash2, X } from 'lucide-react'
-import { useActionState, useState } from 'react'
+import { useActionState, useEffect, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import { deleteMiscCategory, saveMiscCategory, type CatalogResult } from '@/app/actions/catalog'
@@ -35,11 +35,13 @@ function CategoryForm({
 }) {
   const [state, action] = useActionState<CatalogResult | null, FormData>(saveMiscCategory, null)
 
-  const [seen, setSeen] = useState(state)
-  if (state !== seen) {
-    setSeen(state)
+  // Closes after the commit. Calling onDone() during render updated the parent
+  // while this component was still rendering, which React does not guarantee.
+  // The action state is a fresh object per submission, so this fires once per
+  // result.
+  useEffect(() => {
     if (state?.ok) onDone()
-  }
+  }, [state, onDone])
 
   return (
     <form action={action} className={inline ? 'flex flex-col gap-2 px-4 py-3' : 'space-y-3 rounded-xl border border-gray-800 bg-gray-900 p-4'}>

@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { ChevronLeft, ChevronRight, Eye, Plus } from 'lucide-react'
 
+import { BulkActions } from '@/components/customers/BulkActions'
 import { CustomerSearch } from '@/components/customers/CustomerSearch'
 import { ExpiryHint, StatusBadge } from '@/components/customers/StatusBadge'
 import { disconnectCustomer, reconnectCustomer } from '@/app/actions/customers'
@@ -53,6 +54,7 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
   // the registry lookup in one batched query.
   const role = profile.role
   const mayAdd = can(role, 'add_customer')
+  const mayImport = can(role, 'import_customers')
   const mayNetwork = can(role, 'extend_disconnect_customer')
 
   const base: Record<string, string> = {}
@@ -66,27 +68,32 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-white">Customers</h1>
-          <p className="mt-0.5 text-sm text-gray-500">
-            {total} {total === 1 ? 'customer' : 'customers'}
-            {filter !== 'all' || query ? ' matching your filters' : ' in total'}
-          </p>
-        </div>
+        <CustomerSearch initial={query} />
 
-        {mayAdd ? (
-          <Link
-            href="/dashboard/customers/new"
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-blue-500"
-          >
-            <Plus className="h-4 w-4" aria-hidden />
-            Add Customer
-          </Link>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {mayAdd ? (
+            <Link
+              href="/dashboard/customers/new"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-blue-500"
+            >
+              <Plus className="h-4 w-4" aria-hidden />
+              Add Customer
+            </Link>
+          ) : null}
+
+          {/* Import, cut-off dates and provisioning live behind the overflow
+              menu: all three are migration tools and all three need
+              import_customers, so a CSR sees only Add Customer. */}
+          {mayImport ? <BulkActions /> : null}
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <CustomerSearch initial={query} />
+        {/* The page title is in the header bar; this is just the count. */}
+        <p className="text-sm text-gray-500">
+          {total} {total === 1 ? 'customer' : 'customers'}
+          {filter !== 'all' || query ? ' matching your filters' : ' in total'}
+        </p>
 
         <div className="flex flex-wrap gap-1.5">
           {FILTERS.map((f) => {

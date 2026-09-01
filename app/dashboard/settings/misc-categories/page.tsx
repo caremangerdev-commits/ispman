@@ -25,12 +25,9 @@ export default async function MiscCategoriesPage() {
 
   return (
     <div className="max-w-2xl space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">Misc Categories</h1>
-        <p className="mt-0.5 text-sm text-gray-500">
-          Classifications such as school, hotel or government.
-        </p>
-      </div>
+      <p className="text-sm text-gray-500">
+        Classifications such as school, hotel or government.
+      </p>
 
       {!caps.catalog ? (
         <div className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-4 py-3">

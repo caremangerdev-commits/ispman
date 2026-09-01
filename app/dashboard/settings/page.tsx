@@ -62,12 +62,11 @@ export default async function SettingsPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">Settings</h1>
-        <p className="mt-0.5 text-sm text-gray-500">
-          Configure {company.name}.
-        </p>
-      </div>
+      {/* No page heading here: the title lives in the header bar (PageTitle),
+          and repeating it was the same word twice on one screen. */}
+      <p className="text-sm text-gray-500">
+        Configure {company.name}.
+      </p>
 
       {!caps.catalog ? (
         <div className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-4 py-3">

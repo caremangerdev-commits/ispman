@@ -73,13 +73,11 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-white">Payments</h1>
-          <p className="mt-0.5 text-sm text-gray-500">
-            {result.total} {result.total === 1 ? 'payment' : 'payments'}
-            {filtered ? ' matching your filters' : ' recorded'}
-          </p>
-        </div>
+        {/* Count only — the page title is in the header bar. */}
+        <p className="text-sm text-gray-500">
+          {result.total} {result.total === 1 ? 'payment' : 'payments'}
+          {filtered ? ' matching your filters' : ' recorded'}
+        </p>
 
         {can(profile.role, 'record_payment') ? (
           <Link

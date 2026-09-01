@@ -34,7 +34,6 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
 
   const { profile, company } = await getSession()
   const role = profile.role
-  const name = profile.first_name ?? displayName(profile)
 
   // A cashier has no dashboard — the record-payment screen is their home.
   // requirePermission() bounces refused access to /dashboard?denied=…, so that
@@ -60,7 +59,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
       return (
         <div className="space-y-4">
           {banner}
-          <CashierDashboard name={name} data={data} query={query} hits={hits} />
+          <CashierDashboard data={data} query={query} hits={hits} />
         </div>
       )
     }
@@ -70,7 +69,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
       return (
         <div className="space-y-4">
           {banner}
-          <TechnicianDashboard name={name} data={data} query={query} hits={hits} />
+          <TechnicianDashboard data={data} query={query} hits={hits} />
         </div>
       )
     }
@@ -80,7 +79,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
     return (
       <div className="space-y-4">
         {banner}
-        <CsrDashboard name={name} data={data} query={query} hits={hits} />
+        <CsrDashboard data={data} query={query} hits={hits} />
       </div>
     )
   }
@@ -93,14 +92,11 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
     <div className="space-y-5">
       {banner}
 
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-white">
-          Welcome back, {name}
-        </h1>
-        <p className="mt-0.5 text-sm text-gray-500">
-          Here is what is happening across {company.name} today.
-        </p>
-      </div>
+      {/* PageHeading in the layout already greets by name, and the header bar
+          carries the page title, so only the summary line survives here. */}
+      <p className="text-sm text-gray-500">
+        Here is what is happening across {company.name} today.
+      </p>
 
       {/* Row 1 — KPIs */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
