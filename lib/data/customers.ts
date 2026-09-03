@@ -77,12 +77,35 @@ function withBillingDefaults<T extends Record<string, unknown>>(row: T) {
   }
 }
 
+export type CustomerListRow = CustomerWithExpiry & {
+  /**
+   * For imported customers this holds the location name — ENDEAVOUR, MT ZION,
+   * BROWN'S TOWN — which is what the list column and the address filter show.
+   *
+   * Declared here rather than on `Customer` because two dashboard reads
+   * (lib/data/dashboard.ts and lib/data/roleDashboards.ts) cast to `Customer`
+   * from selects that omit the column. Promoting it would type those rows as
+   * carrying an address they never fetched. This module's SELECT always
+   * includes it.
+   */
+  address: string | null
+}
+
 export type CustomerListResult = {
-  rows: CustomerWithExpiry[]
+  rows: CustomerListRow[]
   total: number
   page: number
   pageCount: number
   counts: Record<CustomerFilter, number>
+  /**
+   * Every distinct address in the company, sorted, for the filter dropdown.
+   *
+   * Company-wide on purpose: it is built before the search and the status
+   * filter are applied, so the list of places does not shrink as the operator
+   * narrows the rows. A dropdown that hides the option you need because the
+   * current filter excluded it is a dropdown you cannot navigate out of.
+   */
+  addresses: string[]
 }
 
 /**
@@ -96,10 +119,14 @@ export async function listCustomers(opts: {
   companyId: number
   query?: string
   filter?: CustomerFilter
+  /** Exact address to narrow to, already trimmed. Empty means every address. */
+  address?: string
   page?: number
   perPage?: number
 }): Promise<CustomerListResult> {
-  const { companyId, query = '', filter = 'all', page = 1, perPage = 10 } = opts
+  const {
+    companyId, query = '', filter = 'all', address = '', page = 1, perPage = 10,
+  } = opts
 
   const db = tenantClient()
   const { sel } = await selectWithExtras()
@@ -111,9 +138,11 @@ export async function listCustomers(opts: {
 
   if (error) throw new Error('Failed to load customers: ' + error.message)
 
-  const all = ((data ?? []) as unknown as Customer[])
-    .map((row) => withBillingDefaults(row) as Customer)
-    .map(withExpiry)
+  // withExpiry() spreads the row but its return type is fixed to Customer's
+  // fields, so address is carried back on explicitly rather than cast in.
+  const all = ((data ?? []) as unknown as (Customer & { address: string | null })[])
+    .map((row) => withBillingDefaults(row) as Customer & { address: string | null })
+    .map((row) => ({ ...withExpiry(row), address: row.address ?? null }))
 
   // One registry lookup for the whole company. A failure leaves every row
   // 'unknown' rather than falsely reporting them all unregistered.
@@ -146,9 +175,18 @@ export async function listCustomers(opts: {
   }
   for (const c of all) counts[c.radiusStatus ?? 'unknown']++
 
+  // Trimmed on both sides so a stored "ENDEAVOUR " and the option built from it
+  // are the same place. Imported rows come from a spreadsheet; some of them have
+  // trailing spaces.
+  const addresses = [
+    ...new Set(all.map((c) => (c.address ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b))
+
+  const wanted = address.trim()
   const needle = query.trim().toLowerCase()
   const matched = all.filter((c) => {
     if (filter !== 'all' && c.radiusStatus !== filter) return false
+    if (wanted && (c.address ?? '').trim() !== wanted) return false
     if (!needle) return true
     const haystack = [
       c.first_name,
@@ -170,6 +208,7 @@ export async function listCustomers(opts: {
     page: safePage,
     pageCount,
     counts,
+    addresses,
   }
 }
 

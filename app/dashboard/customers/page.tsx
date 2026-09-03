@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { ChevronLeft, ChevronRight, Eye, Plus } from 'lucide-react'
 
+import { AddressFilter } from '@/components/customers/AddressFilter'
 import { BulkActions } from '@/components/customers/BulkActions'
 import { CustomerSearch } from '@/components/customers/CustomerSearch'
 import { ExpiryHint, StatusBadge } from '@/components/customers/StatusBadge'
@@ -39,13 +40,15 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
   const query = one(sp.q) ?? ''
   const filterParam = one(sp.filter)
   const filter: CustomerFilter = isFilter(filterParam) ? filterParam : 'all'
+  const address = (one(sp.address) ?? '').trim()
   const page = Math.max(1, Number(one(sp.page) ?? '1') || 1)
 
   const { company, profile } = await requirePermission('view_customer_list')
-  const { rows, total, pageCount, counts, page: current } = await listCustomers({
+  const { rows, total, pageCount, counts, addresses, page: current } = await listCustomers({
     companyId: company.id,
     query,
     filter,
+    address,
     page,
     perPage: PER_PAGE,
   })
@@ -60,6 +63,9 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
   const base: Record<string, string> = {}
   if (query) base.q = query
   if (filter !== 'all') base.filter = filter
+  // Carried through the status tabs and the pager, so the two filters compose
+  // rather than clearing each other.
+  if (address) base.address = address
 
   // Handed to the network actions so they redirect back to this exact view —
   // same search, same filter, same page — rather than to the customer record.
@@ -92,10 +98,12 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
         {/* The page title is in the header bar; this is just the count. */}
         <p className="text-sm text-gray-500">
           {total} {total === 1 ? 'customer' : 'customers'}
-          {filter !== 'all' || query ? ' matching your filters' : ' in total'}
+          {filter !== 'all' || query || address ? ' matching your filters' : ' in total'}
         </p>
 
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <AddressFilter addresses={addresses} selected={address} />
+
           {FILTERS.map((f) => {
             const active = f.key === filter
             return (
@@ -126,7 +134,10 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
             <thead>
               <tr className="border-b border-gray-800 text-[11px] uppercase tracking-wider text-gray-500">
                 <th scope="col" className="px-4 py-2.5 font-semibold">Name</th>
-                <th scope="col" className="px-4 py-2.5 font-semibold">Phone</th>
+                {/* Phone was here. It was dropped rather than adding an eighth
+                    column to a table that already scrolls: it is on the customer
+                    record, and nobody scans a list for a phone number. */}
+                <th scope="col" className="px-4 py-2.5 font-semibold">Address</th>
                 <th scope="col" className="px-4 py-2.5 font-semibold">MAC Address</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-semibold">Monthly Rate</th>
                 <th scope="col" className="px-4 py-2.5 font-semibold">Status</th>
@@ -154,7 +165,16 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
                       {fullName(c)}
                     </Link>
                   </td>
-                  <td className="px-4 py-2.5 tabular-nums text-gray-400">{c.phone ?? '—'}</td>
+                  {/* Truncated, not wrapped: a long address must not make one
+                      row twice the height of its neighbours. The title carries
+                      the full value for anyone who needs it without leaving the
+                      list. max-w with truncate needs the cell itself bounded,
+                      hence the width on the td rather than only the span. */}
+                  <td className="max-w-[14rem] px-4 py-2.5 text-gray-400">
+                    <span className="block truncate" title={c.address ?? undefined}>
+                      {c.address ?? '—'}
+                    </span>
+                  </td>
                   <td className="px-4 py-2.5 font-mono text-xs text-gray-400">
                     {c.mac_address ?? '—'}
                   </td>
