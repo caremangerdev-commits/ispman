@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 
+import { logEvent } from '@/lib/audit'
 import { ADMIN_ROLES, ASSIGNABLE_ROLES, seesAdminRows } from '@/lib/data/users'
 import { can, type Role } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
@@ -92,10 +93,12 @@ async function loadTarget(
 /**
  * Audit row for the two actions that could be used to take over an account.
  *
- * Same plain `log` insert every other action in this app uses. customer_id is
+ * Goes through lib/audit.ts#logEvent, which every log write in this app uses:
+ * it owns the company id, the actor and the platform-operator marker, so a
+ * super admin acting inside this tenant is recorded as such. customer_id is
  * null because a staff-account change has no customer — the column is nullable.
- * A failure is logged and swallowed: the change already landed, and undoing it
- * to keep the log tidy would take away what the operator asked for.
+ * A failure is logged and swallowed there: the change already landed, and
+ * undoing it to keep the log tidy would take away what the operator asked for.
  */
 async function logUserEvent(opts: {
   companyId: number
@@ -103,22 +106,14 @@ async function logUserEvent(opts: {
   type: 'user_email_changed' | 'user_password_reset'
   details: string
 }) {
-  try {
-    const { error } = await tenantClient().from('log').insert({
-      company_id: opts.companyId,
-      user_id: opts.actorId,
-      customer_id: null,
-      type: opts.type,
-      details: opts.details,
-    })
-    if (error) {
-      console.error('[users] could not write a %s log row: %s', opts.type, error.message)
-    }
-  } catch (err) {
-    console.error(
-      '[users] could not write a %s log row: %s', opts.type, (err as Error).message
-    )
-  }
+  await logEvent({
+    companyId: opts.companyId,
+    userId: opts.actorId,
+    customerId: null,
+    type: opts.type,
+    details: opts.details,
+    tag: '[users]',
+  })
 }
 
 /**

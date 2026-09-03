@@ -4,9 +4,9 @@ import { getProvisionedIdentities } from '@/lib/radius-db'
 import { radiusIdentity } from '@/lib/radius/format'
 
 /**
- * Company-wide reads for the two bulk actions on the customer list.
+ * Company-wide reads for the bulk actions on the customer list.
  *
- * Both of them act on EVERY customer in the company, so the reads here must
+ * Every one of them acts on a whole company at once, so the reads here must
  * genuinely see every customer — see readAllCustomers for why that is not the
  * default.
  */
@@ -31,6 +31,8 @@ export type BulkCustomer = {
   mac_address: string | null
   customer_type: string | null
   pppoe_username: string | null
+  /** Day of the month, 1-28, or null when this customer has none of their own. */
+  cut_off_date: number | null
 }
 
 async function readAllCustomers(companyId: number): Promise<BulkCustomer[]> {
@@ -41,7 +43,7 @@ async function readAllCustomers(companyId: number): Promise<BulkCustomer[]> {
   // Without them radiusIdentity falls back to the MAC for everyone, which is
   // exactly how the app behaved before that migration.
   const columns =
-    'id, first_name, last_name, mac_address' +
+    'id, first_name, last_name, mac_address, cut_off_date' +
     (caps.connectionTypes ? ', customer_type, pppoe_username' : '')
 
   const out: BulkCustomer[] = []
@@ -64,6 +66,7 @@ async function readAllCustomers(companyId: number): Promise<BulkCustomer[]> {
         mac_address: (row.mac_address as string | null) ?? null,
         customer_type: (row.customer_type as string | null) ?? null,
         pppoe_username: (row.pppoe_username as string | null) ?? null,
+        cut_off_date: (row.cut_off_date as number | null) ?? null,
       })
     }
 
@@ -93,6 +96,109 @@ export async function countAllCustomers(companyId: number): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Bill All
+// ---------------------------------------------------------------------------
+
+export type PostpaidCustomer = {
+  id: number
+  name: string
+  /** Never null: a missing rate reads as 0 and is skipped by the caller. */
+  monthlyRate: number
+  carriedBalance: number
+  /**
+   * `YYYY-MM-DD` of the last period this customer was billed FOR — not the day
+   * a run happened. That distinction is the whole idempotency guard: see
+   * app/actions/bulk.ts#billBatch.
+   */
+  lastBilledDate: string | null
+}
+
+const POSTPAID_COLUMNS =
+  'id, first_name, last_name, monthly_rate, carried_balance, last_billed_date'
+
+function toPostpaid(row: Record<string, unknown>): PostpaidCustomer {
+  return {
+    id: row.id as number,
+    name:
+      [row.first_name as string | null, row.last_name as string | null]
+        .filter(Boolean)
+        .join(' ') || 'Customer #' + (row.id as number),
+    monthlyRate: Number(row.monthly_rate ?? 0) || 0,
+    carriedBalance: Number(row.carried_balance ?? 0) || 0,
+    lastBilledDate: (row.last_billed_date as string | null) ?? null,
+  }
+}
+
+/**
+ * Every postpaid customer in the company, paged past the 1000-row cap.
+ *
+ * Prepaid customers are excluded by the query, not filtered afterwards: a bill
+ * run must never see them, and a filter that lives in the caller is a filter
+ * somebody eventually forgets to apply.
+ *
+ * Returns [] when migration 0011 has not been applied — the columns do not
+ * exist and PostgREST would reject the select outright.
+ */
+export async function readPostpaidCustomers(companyId: number): Promise<PostpaidCustomer[]> {
+  const caps = await getSchemaCapabilities()
+  if (!caps.billing) return []
+
+  const db = tenantClient()
+  const out: PostpaidCustomer[] = []
+
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await db
+      .from('customers')
+      .select(POSTPAID_COLUMNS)
+      .eq('company_id', companyId)
+      .eq('billing_type', 'postpaid')
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1)
+
+    if (error) throw new Error('Failed to load postpaid customers: ' + error.message)
+
+    const rows = (data ?? []) as unknown as Record<string, unknown>[]
+    for (const row of rows) out.push(toPostpaid(row))
+    if (rows.length < PAGE) break
+  }
+
+  return out
+}
+
+/**
+ * The postpaid customers named by a batch, read back from the database.
+ *
+ * The client posts ids and nothing else. Every amount that gets added is
+ * computed here from the row the write is about to touch, so a stale or
+ * tampered preview cannot change what anybody is billed.
+ *
+ * Also re-filters on billing_type: a customer switched to prepaid between the
+ * preview and the write drops out of the result and is reported as failed
+ * rather than billed.
+ */
+export async function readPostpaidByIds(
+  companyId: number,
+  ids: number[]
+): Promise<PostpaidCustomer[]> {
+  if (ids.length === 0) return []
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.billing) return []
+
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('customers')
+    .select(POSTPAID_COLUMNS)
+    .eq('company_id', companyId)
+    .eq('billing_type', 'postpaid')
+    .in('id', ids)
+
+  if (error) throw new Error('Failed to load postpaid customers: ' + error.message)
+
+  return ((data ?? []) as unknown as Record<string, unknown>[]).map(toPostpaid)
+}
+
+// ---------------------------------------------------------------------------
 // Provision All
 // ---------------------------------------------------------------------------
 
@@ -101,6 +207,12 @@ export type ProvisionCandidate = {
   name: string
   /** MAC for dhcp/hotspot, PPPoE username for pppoe — radiusIdentity()'s rule. */
   identity: string
+  /**
+   * This customer's own cut-off day, which is what their expiry is derived
+   * from. Null when they have none set; the caller falls back to the company
+   * day rather than guessing one here.
+   */
+  cutOffDate: number | null
 }
 
 export type ProvisionPlan = {
@@ -138,8 +250,16 @@ export async function getProvisionPlan(companyId: number): Promise<ProvisionPlan
       pppoeUsername: customer.pppoe_username,
     })?.trim()
 
-    if (identity) withIdentity.push({ id: customer.id, name: bulkCustomerName(customer), identity })
-    else noIdentity.push({ id: customer.id, name: bulkCustomerName(customer) })
+    if (identity) {
+      withIdentity.push({
+        id: customer.id,
+        name: bulkCustomerName(customer),
+        identity,
+        cutOffDate: customer.cut_off_date,
+      })
+    } else {
+      noIdentity.push({ id: customer.id, name: bulkCustomerName(customer) })
+    }
   }
 
   const provisioned = await findProvisioned(withIdentity.map((c) => c.identity))
@@ -198,7 +318,7 @@ export async function readCustomersByIds(
   const db = tenantClient()
 
   const columns =
-    'id, first_name, last_name, mac_address' +
+    'id, first_name, last_name, mac_address, cut_off_date' +
     (caps.connectionTypes ? ', customer_type, pppoe_username' : '')
 
   const { data, error } = await db
@@ -216,5 +336,6 @@ export async function readCustomersByIds(
     mac_address: (row.mac_address as string | null) ?? null,
     customer_type: (row.customer_type as string | null) ?? null,
     pppoe_username: (row.pppoe_username as string | null) ?? null,
+    cut_off_date: (row.cut_off_date as number | null) ?? null,
   }))
 }

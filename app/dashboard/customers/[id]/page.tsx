@@ -80,7 +80,6 @@ export default async function CustomerDetailPage({
           monthly_rate: customer.monthly_rate,
           balance: customer.balance,
           cut_off_date: customer.cut_off_date,
-          bill_due_date: customer.bill_due_date,
           billingAvailable: customer.billingAvailable,
           billingType: customer.billingType,
           bill_date: customer.bill_date,

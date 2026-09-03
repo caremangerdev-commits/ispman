@@ -83,6 +83,7 @@ export function NewCustomerForm({
   defaultMonthlyRate,
   billingAvailable,
   defaultBillingType,
+  defaultBillDate,
 }: {
   servicePlans: ServicePlan[]
   additionalServices: AdditionalService[]
@@ -95,6 +96,9 @@ export function NewCustomerForm({
   billingAvailable: boolean
   /** From settings.default_billing_type. */
   defaultBillingType: BillingType
+  /** From settings.bill_date — the company's default bill day. Null when the
+   *  setting has never been saved; the field then starts on day 1. */
+  defaultBillDate: number | null
 }) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(createCustomer, null)
 
@@ -359,15 +363,15 @@ export function NewCustomerForm({
               label="Bill Date"
               htmlFor="bill_date"
               error={errors.bill_date}
-              hint="Day of month billing is generated (1-31)"
+              hint="Day of month billing is generated (1-28)"
             >
               <input
                 id="bill_date"
                 name="bill_date"
                 type="number"
                 min="1"
-                max="31"
-                defaultValue={v('bill_date') || 1}
+                max="28"
+                defaultValue={v('bill_date') || (defaultBillDate ?? 1)}
                 className={cls('bill_date')}
               />
             </Field>
@@ -375,10 +379,6 @@ export function NewCustomerForm({
 
           <Field label="Cut Off Date" htmlFor="cut_off_date" error={errors.cut_off_date} hint="Day of month (1-28)">
             <input id="cut_off_date" name="cut_off_date" type="number" min="1" max="28" defaultValue={v('cut_off_date') || 5} className={cls('cut_off_date')} />
-          </Field>
-
-          <Field label="Bill Due Date" htmlFor="bill_due_date" error={errors.bill_due_date} hint="Day of month (1-28)">
-            <input id="bill_due_date" name="bill_due_date" type="number" min="1" max="28" defaultValue={v('bill_due_date') || 1} className={cls('bill_due_date')} />
           </Field>
 
         </div>

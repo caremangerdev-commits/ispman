@@ -6,7 +6,9 @@ import { NewCustomerForm } from '@/components/customers/NewCustomerForm'
 import {
   listAdditionalServices, listMiscCategories, listServicePlans,
 } from '@/lib/data/catalog'
-import { getDefaultBillingType, getDefaultMonthlyRate } from '@/lib/data/company'
+import {
+  getDefaultBillDate, getDefaultBillingType, getDefaultMonthlyRate,
+} from '@/lib/data/company'
 import { CATALOG_HINT, getSchemaCapabilities } from '@/lib/schema'
 import { requirePermission } from '@/lib/session'
 
@@ -15,15 +17,17 @@ export const metadata: Metadata = { title: 'Add Customer · ISPMan' }
 export default async function NewCustomerPage() {
   const { company } = await requirePermission('add_customer')
 
-  const [plans, addons, miscCats, caps, defaultRate, defaultBillingType] =
-    await Promise.all([
-      listServicePlans(company.id),
-      listAdditionalServices(company.id),
-      listMiscCategories(company.id),
-      getSchemaCapabilities(),
-      getDefaultMonthlyRate(company.id),
-      getDefaultBillingType(company.id),
-    ])
+  const [
+    plans, addons, miscCats, caps, defaultRate, defaultBillingType, defaultBillDate,
+  ] = await Promise.all([
+    listServicePlans(company.id),
+    listAdditionalServices(company.id),
+    listMiscCategories(company.id),
+    getSchemaCapabilities(),
+    getDefaultMonthlyRate(company.id),
+    getDefaultBillingType(company.id),
+    getDefaultBillDate(company.id),
+  ])
 
   const pending: string[] = []
   if (!caps.catalog) pending.push(CATALOG_HINT)
@@ -58,6 +62,7 @@ export default async function NewCustomerPage() {
         defaultMonthlyRate={defaultRate}
         billingAvailable={caps.billing}
         defaultBillingType={defaultBillingType}
+        defaultBillDate={defaultBillDate}
       />
     </div>
   )

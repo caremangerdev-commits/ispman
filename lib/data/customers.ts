@@ -24,7 +24,7 @@ export const FILTERS: { key: CustomerFilter; label: string }[] = [
 ]
 
 const SELECT =
-  'id, first_name, last_name, email, phone, address, gps, mac_address, monthly_rate, balance, cut_off_date, bill_due_date, last_bill_date, date_added'
+  'id, first_name, last_name, email, phone, address, gps, mac_address, monthly_rate, balance, cut_off_date, last_bill_date, date_added'
 
 /**
  * Columns added by migration 0003.
@@ -177,7 +177,6 @@ export type CustomerDetail = CustomerWithExpiry & {
   address: string | null
   gps: string | null
   cut_off_date: number | null
-  bill_due_date: number | null
   /** Migration 0011. `billingAvailable` is false until it is applied, and the
    *  detail page hides the postpaid rows rather than showing empty ones. */
   billingAvailable: boolean
@@ -226,7 +225,6 @@ export async function getCustomer(
     address: string | null
     gps: string | null
     cut_off_date: number | null
-    bill_due_date: number | null
     customer_type?: string | null
     pppoe_username?: string | null
     access_point?: string | null
@@ -256,7 +254,6 @@ export async function getCustomer(
     address: row.address,
     gps: row.gps,
     cut_off_date: row.cut_off_date,
-    bill_due_date: row.bill_due_date,
     billingAvailable: caps.billing,
     billingType: toBillingType(caps.billing ? row.billing_type : 'prepaid'),
     customerType: caps.connectionTypes ? toCustomerType(row.customer_type) : null,

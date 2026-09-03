@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 import { ArrowLeft, Shield } from 'lucide-react'
 
 import { signOut } from '@/app/actions/auth'
+import { ActingBanner, ACTING_BANNER_OFFSET } from '@/components/platform/ActingBanner'
 import { Toast } from '@/components/ui/Toast'
 import { displayName, getSession } from '@/lib/session'
 
@@ -14,7 +15,7 @@ import { displayName, getSession } from '@/lib/session'
  * cross-company and bypasses tenant scoping.
  */
 export default async function SuperAdminLayout({ children }: { children: ReactNode }) {
-  const { profile } = await getSession()
+  const { profile, actingAs } = await getSession()
 
   // Not a permission check: this is the platform-level flag. A company_admin
   // is the top of their own tenant and still must not land here.
@@ -23,7 +24,12 @@ export default async function SuperAdminLayout({ children }: { children: ReactNo
   }
 
   return (
-    <div className="min-h-screen bg-gray-950">
+    <div className={'min-h-screen bg-gray-950 ' + (actingAs ? ACTING_BANNER_OFFSET.bannerOnly : '')}>
+      {/* Also rendered here, not just on the tenant dashboard. Navigating back
+          to the platform section does not drop the switch, so without this the
+          operator would be left in a tenant with no visible way out. */}
+      {actingAs ? <ActingBanner company={actingAs} /> : null}
+
       <header className="flex h-16 items-center gap-4 border-b border-amber-900/40 bg-gray-900 px-6">
         <span className="flex items-center gap-2">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500/20">

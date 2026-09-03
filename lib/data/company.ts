@@ -188,6 +188,24 @@ export async function getDefaultBillingType(companyId: number): Promise<BillingT
   )
 }
 
+/**
+ * The bill day to pre-fill on the Add Customer form for a postpaid customer.
+ *
+ * `settings.bill_date` predates migration 0011, so no capability gate: the
+ * column is there whether or not per-customer postpaid billing is. Null when
+ * the settings row has never been saved — the form starts on day 1 then.
+ */
+export async function getDefaultBillDate(companyId: number): Promise<number | null> {
+  const db = tenantClient()
+  const { data } = await db
+    .from('settings')
+    .select('bill_date')
+    .eq('company_id', companyId)
+    .maybeSingle()
+
+  return (data as { bill_date: number | null } | null)?.bill_date ?? null
+}
+
 /** Currency code for this company, used to label prices in settings. */
 export async function getCurrency(companyId: number): Promise<string> {
   const db = tenantClient()

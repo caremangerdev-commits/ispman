@@ -15,10 +15,25 @@ import type { Role } from '@/lib/permissions'
  * the root page (a server component that already has the session) routes them
  * here.
  */
-export function homePathFor(profile: {
-  role: Role
-  is_super_admin: boolean
-}): string {
+export function homePathFor(
+  profile: {
+    role: Role
+    is_super_admin: boolean
+  },
+  /**
+   * True while a super admin is switched into a tenant (session.actingAs).
+   *
+   * Without this, "home" for them stays /superadmin, and the sidebar logo and
+   * the root route would both throw them out of the tenant they just entered —
+   * the switch would appear to drop itself on the first click.
+   */
+  isActingInTenant = false
+): string {
+  // Home while switched is the tenant they are acting in. The switch itself is
+  // left alone: leaving the tenant is the banner's Exit button, deliberately,
+  // so it is always a decision rather than a side effect of navigation.
+  if (isActingInTenant) return '/dashboard'
+
   // Platform access is gated on the flag, not the role string — see
   // app/superadmin/layout.tsx. Keying on the role instead would bounce a
   // role:'super_admin' account with the flag off straight back out.

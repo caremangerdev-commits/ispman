@@ -7,6 +7,6 @@ import { getSession } from '@/lib/session'
 // own home. Unauthenticated visitors are bounced to /login by proxy.ts before
 // they ever reach this, and getSession() redirects there too as a backstop.
 export default async function Home() {
-  const { profile } = await getSession()
-  redirect(homePathFor(profile))
+  const { profile, actingAs } = await getSession()
+  redirect(homePathFor(profile, actingAs !== null))
 }

@@ -1,14 +1,24 @@
 'use server'
 
+import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 
+import { ACTING_COMPANY_COOKIE } from '@/lib/acting-company'
 import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase/env'
 import { createClient } from '@/lib/supabase/server'
 
 export async function signOut() {
   const supabase = await createClient()
   await supabase.auth.signOut()
+
+  // Drop any super admin company switch on the way out. Leaving it behind is
+  // not an access hole — lib/session.ts re-checks is_super_admin and the owning
+  // user id on every request, so it is already inert for whoever signs in next
+  // — but a cookie that outlives its session has no reason to exist.
+  const store = await cookies()
+  store.delete(ACTING_COMPANY_COOKIE)
+
   redirect('/login')
 }
 

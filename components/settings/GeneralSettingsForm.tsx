@@ -204,7 +204,11 @@ export function GeneralSettingsForm({
             <Field label="Default Cut Off Date" htmlFor="cut_off_date" hint="Day 1-28">
               <input id="cut_off_date" name="cut_off_date" type="number" min="1" max="28" defaultValue={settings.cutOffDate ?? 5} className={settingsInput} />
             </Field>
-            <Field label="Default Bill Due Date" htmlFor="bill_date" hint="Day 1-28">
+            {/* Writes settings.bill_date, which seeds customers.bill_date for
+                new and imported postpaid customers. It was labelled "Default
+                Bill Due Date", which read as the unrelated and unused
+                customers.bill_due_date column. */}
+            <Field label="Default Bill Date" htmlFor="bill_date" hint="Day 1-28">
               <input id="bill_date" name="bill_date" type="number" min="1" max="28" defaultValue={settings.billDate ?? 25} className={settingsInput} />
             </Field>
           </div>

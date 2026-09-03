@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 
+import { logEvent } from '@/lib/audit'
 import { can } from '@/lib/permissions'
 import { getGeneralSettings } from '@/lib/data/company'
 import { getSchemaCapabilities, type SchemaCapabilities } from '@/lib/schema'
@@ -371,7 +372,9 @@ export async function logCustomerImport(summary: {
   imported: number
   skipped: number
 }): Promise<void> {
-  const { company, profile } = await authorize()
+  // Still authorizes: logEvent resolves the tenant, but the permission check
+  // for this action belongs here.
+  const { profile } = await authorize()
 
   const details =
     'Imported ' + summary.imported +
@@ -380,19 +383,15 @@ export async function logCustomerImport(summary: {
     (summary.skipped === 1 ? ' row skipped' : ' rows skipped') +
     ', by ' + (profile.first_name ?? profile.email)
 
-  const { error } = await tenantClient().from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
-    customer_id: null,
+  // The customers are already in. logEvent reports a failed audit write to the
+  // console and returns: failing the whole import to keep the audit row tidy
+  // would take away the thing the operator actually wanted.
+  await logEvent({
+    customerId: null,
     type: 'customer_import',
     details,
+    tag: '[import]',
   })
-
-  // The customers are already in. Failing the whole import to keep the audit
-  // row tidy would take away the thing the operator actually wanted.
-  if (error) {
-    console.error('[import] could not write the customer_import log row: %s', error.message)
-  }
 
   revalidatePath('/dashboard/customers')
   revalidatePath('/dashboard')

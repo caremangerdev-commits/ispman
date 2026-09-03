@@ -2,27 +2,37 @@
 
 import { revalidatePath } from 'next/cache'
 
+import { logEvent } from '@/lib/audit'
 import { can } from '@/lib/permissions'
 import { getSession, type Session } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { getGeneralSettings } from '@/lib/data/company'
 import {
   bulkCustomerName, countAllCustomers, findProvisioned, getProvisionPlan,
-  readCustomersByIds,
+  readCustomersByIds, readPostpaidByIds, readPostpaidCustomers,
 } from '@/lib/data/bulk'
+import { getSchemaCapabilities } from '@/lib/schema'
+import { formatCurrency } from '@/lib/format'
 import { activateInRadius, radiusConfigured } from '@/lib/radius-db'
 import { formatRadiusExpiration, radiusIdentity } from '@/lib/radius/format'
 import { addMonths, nextCutOff } from '@/lib/expiry'
 
 /**
- * The two company-wide bulk actions on the customer list.
+ * The company-wide bulk actions on the customer list.
  *
- * Both are gated on `import_customers` — the same right that lets someone load
- * a spreadsheet of strangers into the database. Neither is reachable by a CSR.
+ * All of them are gated on `import_customers` — the same right that lets
+ * someone load a spreadsheet of strangers into the database. None is reachable
+ * by a CSR.
  *
  * Each run writes exactly ONE log row, at the end, from the action that
  * finishes it. Three hundred rows would bury every other event on the
  * dashboard's activity panel and tell nobody anything the summary does not.
+ *
+ * NOTHING HERE IS SCHEDULED. Every action in this file runs because a person
+ * opened a modal, read a count and typed it back. There is no cron, no Edge
+ * Function and no recurring job behind any of them, and Bill All in particular
+ * must stay that way: its period selector and its idempotency guard only make
+ * sense as things a human chooses and re-checks.
  */
 
 async function authorize(): Promise<Session> {
@@ -121,23 +131,19 @@ export async function setAllCutOffDates(input: {
 
   const updated = count ?? customerCount
 
-  const { error: logError } = await db.from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
-    customer_id: null,
+  // The column is already updated. logEvent reports a failed audit write to the
+  // console and returns: failing the whole action to keep the audit row tidy
+  // would undo nothing and help nobody.
+  await logEvent({
+    customerId: null,
     type: 'bulk_cut_off_set',
     details:
       'Cut off day set to ' + day + ' for ' + updated +
       (updated === 1 ? ' customer' : ' customers') +
       ' by ' + (profile.first_name ?? profile.email) +
       '. Expiry dates were not changed.',
+    tag: '[bulk]',
   })
-
-  // The column is already updated. Failing the whole action to keep the audit
-  // row tidy would undo nothing and help nobody.
-  if (logError) {
-    console.error('[bulk] could not write the bulk_cut_off_set log row: %s', logError.message)
-  }
 
   revalidatePath('/dashboard/customers')
   revalidatePath('/dashboard')
@@ -148,35 +154,102 @@ export async function setAllCutOffDates(input: {
 // 2. Provision all
 // ---------------------------------------------------------------------------
 
-export type ProvisionTarget = { id: number; name: string }
+export type ProvisionTarget = {
+  id: number
+  name: string
+  /** `YYYY-MM-DD`, derived from this customer's OWN cut-off day. */
+  expiry: string
+}
+
+/**
+ * What expiry a run writes.
+ *
+ * `per_cut_off` is the default and gives each customer the next occurrence of
+ * their own cut-off day. `single` is the "Use one date for everyone" escape
+ * hatch, and is exactly the behaviour this action had before.
+ */
+export type ProvisionExpiryChoice =
+  | { mode: 'per_cut_off' }
+  | { mode: 'single'; date: string }
 
 export type ProvisionPlanResult = {
   ready: ProvisionTarget[]
-  noIdentity: ProvisionTarget[]
-  alreadyProvisioned: ProvisionTarget[]
-  /** `YYYY-MM-DD`, the next cut-off day after today. */
+  noIdentity: { id: number; name: string }[]
+  alreadyProvisioned: { id: number; name: string }[]
+  /**
+   * `YYYY-MM-DD`, the next occurrence of the COMPANY cut-off day.
+   *
+   * Two jobs: it seeds the single-date field, and it is the fallback expiry for
+   * a customer who has no cut-off day of their own.
+   */
   defaultExpiry: string
+  /** The distinct dates the per-customer rule produces, and how many land on each. */
+  breakdown: { expiry: string; count: number }[]
+  /** How many of `ready` have no cut-off day and fell back to `defaultExpiry`. */
+  withoutCutOff: number
   /** False when the RADIUS env vars are absent; the action refuses to run. */
   configured: boolean
 }
 
 /**
- * What a bulk provision would do, without doing any of it.
+ * The expiry for ONE customer: the next occurrence of their own cut-off day
+ * after today.
  *
- * The suggested expiry is the plain next occurrence of the company's cut-off
- * day. THE 21-DAY RULE IS NOT APPLIED and provisionExpiry() is deliberately not
+ * THE 21-DAY RULE IS NOT APPLIED and provisionExpiry() is deliberately not
  * called: that rule exists so a new customer activating four days before their
  * cut-off does not buy a month and get a week of it. These customers already
  * have service — this is a migration into the registry, not a set of first
  * activations, and pushing them all a month and a half out would move every one
  * of them off their cut-off day.
+ *
+ * The cascade when a customer has no day of their own is the company day, then
+ * one month out. Falling back rather than skipping is deliberate: a customer
+ * with a blank cut_off_date still needs to be on the network, and the company
+ * day is the same answer this action gave everybody before.
+ *
+ * ONE function for both the preview and the write, so the dates an operator
+ * agreed to in the modal cannot drift from the dates that get written.
+ */
+function expiryForCustomer(
+  cutOffDay: number | null,
+  companyCutOffDay: number | null,
+  anchor: Date
+): Date {
+  return (
+    nextCutOff(anchor, cutOffDay) ??
+    nextCutOff(anchor, companyCutOffDay) ??
+    addMonths(anchor, 1)
+  )
+}
+
+/** Today at local midnight — the anchor every expiry in a run is measured from. */
+function todayAnchor(): Date {
+  const now = new Date()
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate())
+}
+
+/** Distinct expiry dates and how many customers land on each, earliest first. */
+function summariseDates(targets: { expiry: string }[]): { expiry: string; count: number }[] {
+  const counts = new Map<string, number>()
+  for (const t of targets) counts.set(t.expiry, (counts.get(t.expiry) ?? 0) + 1)
+  return [...counts.entries()]
+    .map(([expiry, count]) => ({ expiry, count }))
+    .sort((a, b) => a.expiry.localeCompare(b.expiry))
+}
+
+/**
+ * What a bulk provision would do, without doing any of it.
+ *
+ * Every customer gets their own expiry, derived by expiryForCustomer above, and
+ * the modal shows the resulting spread rather than one date field. The dates
+ * are recomputed on the write from the same function and the same rows, so what
+ * comes back here is a preview, not an instruction — see provisionBatch.
  */
 export async function loadProvisionPlan(): Promise<ProvisionPlanResult> {
   const { company } = await authorize()
 
   const settings = await getGeneralSettings(company.id)
-  const today = new Date()
-  const anchor = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  const anchor = todayAnchor()
   const defaultExpiry = nextCutOff(anchor, settings.cutOffDate) ?? addMonths(anchor, 1)
 
   if (!radiusConfigured()) {
@@ -185,19 +258,29 @@ export async function loadProvisionPlan(): Promise<ProvisionPlanResult> {
       noIdentity: [],
       alreadyProvisioned: [],
       defaultExpiry: ymd(defaultExpiry),
+      breakdown: [],
+      withoutCutOff: 0,
       configured: false,
     }
   }
 
   const plan = await getProvisionPlan(company.id)
 
+  // The identity stays on the server: the client posts ids, and the identity
+  // that gets written is derived from the row again in provisionBatch.
+  const ready: ProvisionTarget[] = plan.ready.map((c) => ({
+    id: c.id,
+    name: c.name,
+    expiry: ymd(expiryForCustomer(c.cutOffDate, settings.cutOffDate, anchor)),
+  }))
+
   return {
-    // The identity stays on the server: the client posts ids, and the identity
-    // that gets written is derived from the row again in provisionBatch.
-    ready: plan.ready.map((c) => ({ id: c.id, name: c.name })),
+    ready,
     noIdentity: plan.noIdentity,
     alreadyProvisioned: plan.alreadyProvisioned,
     defaultExpiry: ymd(defaultExpiry),
+    breakdown: summariseDates(ready),
+    withoutCutOff: plan.ready.filter((c) => !c.cutOffDate).length,
     configured: true,
   }
 }
@@ -206,6 +289,8 @@ export type ProvisionOutcome = {
   id: number
   name: string
   result: 'provisioned' | 'skipped_no_identity' | 'skipped_already' | 'failed'
+  /** `YYYY-MM-DD` actually written. Populated for `provisioned`. */
+  expiry?: string
   /** Populated for `failed`. */
   error?: string
 }
@@ -224,6 +309,11 @@ const MAX_BATCH = 100
  * few hundred writes drain — against a NAS that is serving live subscribers.
  * One at a time means this feature never holds more than one connection.
  *
+ * EVERY EXPIRY IS DERIVED HERE, from the customer row, exactly as the identity
+ * is. The client posts ids and which of the two rules to apply; it never posts
+ * a per-customer date, so a tampered or stale payload cannot put a date on a
+ * customer that the preview did not compute for them.
+ *
  * The existence check is ONE query for the whole batch, not one per customer,
  * and it is done here rather than reused from the preview: a set captured when
  * the modal opened is stale by the time the last batch runs, and re-running a
@@ -234,8 +324,7 @@ const MAX_BATCH = 100
  */
 export async function provisionBatch(input: {
   ids: number[]
-  /** `YYYY-MM-DD`. Applied to every customer in the batch. */
-  expiry: string
+  expiry: ProvisionExpiryChoice
 }): Promise<{ outcomes: ProvisionOutcome[] }> {
   const { company } = await authorize()
 
@@ -243,8 +332,11 @@ export async function provisionBatch(input: {
     throw new Error('Too many customers in one batch: ' + input.ids.length + ' (max ' + MAX_BATCH + ').')
   }
 
-  const expiryDate = parseDay(input.expiry)
-  if (!expiryDate) throw new Error('"' + input.expiry + '" is not a valid expiry date.')
+  const choice = input.expiry
+  const singleDate = choice.mode === 'single' ? parseDay(choice.date) : null
+  if (choice.mode === 'single' && !singleDate) {
+    throw new Error('"' + choice.date + '" is not a valid expiry date.')
+  }
 
   // Refuse rather than report every customer as "skipped": a run that wrote
   // nothing because the NAS was not configured must not read as a success.
@@ -255,14 +347,24 @@ export async function provisionBatch(input: {
     )
   }
 
-  const expiryValue = formatRadiusExpiration(expiryDate)
+  // Only read for the per-customer rule, where it is the fallback for anyone
+  // with no cut-off day of their own.
+  const companyCutOffDay =
+    choice.mode === 'per_cut_off' ? (await getGeneralSettings(company.id)).cutOffDate : null
+
+  const anchor = todayAnchor()
   const customers = await readCustomersByIds(company.id, input.ids)
   const byId = new Map(customers.map((c) => [c.id, c]))
 
-  const targets: { id: number; name: string; identity: string | null }[] = input.ids.map((id) => {
+  const targets: {
+    id: number
+    name: string
+    identity: string | null
+    expiry: Date | null
+  }[] = input.ids.map((id) => {
     const customer = byId.get(id)
     if (!customer) {
-      return { id, name: 'Customer #' + id, identity: null }
+      return { id, name: 'Customer #' + id, identity: null, expiry: null }
     }
     return {
       id,
@@ -273,6 +375,7 @@ export async function provisionBatch(input: {
           macAddress: customer.mac_address,
           pppoeUsername: customer.pppoe_username,
         })?.trim() || null,
+      expiry: singleDate ?? expiryForCustomer(customer.cut_off_date, companyCutOffDay, anchor),
     }
   })
 
@@ -306,13 +409,30 @@ export async function provisionBatch(input: {
       continue
     }
 
+    // Unreachable — a row present in byId always gets a date above — but the
+    // write must never run without one, so it fails closed rather than guessing.
+    if (!target.expiry) {
+      outcomes.push({
+        id: target.id,
+        name: target.name,
+        result: 'failed',
+        error: 'Could not work out an expiry date for this customer.',
+      })
+      continue
+    }
+
     try {
       // The existing write: both radcheck rows with op ':=', inside a
       // transaction, clearing any prior rows first. Not extendInRadius, which
       // only ever touches Expiration and would leave these customers without
       // an Auth-Type := Accept row.
-      await activateInRadius(target.identity, expiryValue)
-      outcomes.push({ id: target.id, name: target.name, result: 'provisioned' })
+      await activateInRadius(target.identity, formatRadiusExpiration(target.expiry))
+      outcomes.push({
+        id: target.id,
+        name: target.name,
+        result: 'provisioned',
+        expiry: ymd(target.expiry),
+      })
     } catch (err) {
       const e = err as { code?: string; sqlMessage?: string; message?: string }
       const message = (e.sqlMessage ?? e.message ?? 'unknown error') + (e.code ? ' (' + e.code + ')' : '')
@@ -327,36 +447,464 @@ export async function provisionBatch(input: {
   return { outcomes }
 }
 
+/**
+ * How the run's expiry dates are described in the audit row.
+ *
+ * A single date reads as it always did. Per-customer dates are named in full
+ * when there are only a few, and summarised as a range beyond that — an audit
+ * line listing forty dates tells a reader less than one saying it spanned two.
+ */
+function describeExpiry(dates: { expiry: string; count: number }[], single: string | null): string {
+  if (single) return 'to expire ' + single
+
+  if (dates.length === 0) return "to each customer's own cut off day"
+  if (dates.length === 1) return 'to expire ' + dates[0].expiry + ", each customer's own cut off day"
+
+  const listed = dates.map((d) => d.expiry + ' (' + d.count + ')').join(', ')
+  const summary =
+    dates.length <= 6
+      ? listed
+      : dates.length + ' dates from ' + dates[0].expiry + ' to ' + dates[dates.length - 1].expiry
+
+  return "to each customer's own cut off day: " + summary
+}
+
 /** ONE log row for the whole run, written once the last batch has returned. */
 export async function logBulkProvision(summary: {
   provisioned: number
   skippedNoIdentity: number
   skippedAlready: number
   failed: number
-  expiry: string
+  /** Set when "use one date for everyone" was ticked; null for per-customer. */
+  singleExpiry: string | null
+  /** The distinct dates actually written, and how many customers got each. */
+  dates: { expiry: string; count: number }[]
 }): Promise<void> {
-  const { company, profile } = await authorize()
+  // Still authorizes: logEvent resolves the tenant, but the permission check
+  // for this action belongs here.
+  const { profile } = await authorize()
 
   const details =
     'Bulk provision: ' + summary.provisioned +
     (summary.provisioned === 1 ? ' customer' : ' customers') +
-    ' provisioned to expire ' + summary.expiry +
+    ' provisioned ' + describeExpiry(summary.dates, summary.singleExpiry) +
     '. Skipped ' + summary.skippedNoIdentity + ' with no MAC address, ' +
     summary.skippedAlready + ' already provisioned. ' +
     summary.failed + ' failed. By ' + (profile.first_name ?? profile.email)
 
-  const { error } = await tenantClient().from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
-    customer_id: null,
+  await logEvent({
+    customerId: null,
     type: 'bulk_provision',
     details,
+    tag: '[bulk]',
   })
-
-  if (error) {
-    console.error('[bulk] could not write the bulk_provision log row: %s', error.message)
-  }
 
   revalidatePath('/dashboard/customers')
   revalidatePath('/dashboard')
+}
+
+// ---------------------------------------------------------------------------
+// 3. Bill all postpaid customers
+// ---------------------------------------------------------------------------
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+export type BillPeriod = {
+  /** `YYYY-MM`, as posted. */
+  key: string
+  /** First day of the month, `YYYY-MM-DD`. */
+  start: string
+  /** LAST day of the month, `YYYY-MM-DD`. This is what gets written. */
+  end: string
+  /** "August 2026". */
+  label: string
+}
+
+/**
+ * A `YYYY-MM` string as a calendar month, or null if it is not one.
+ *
+ * The end date is `new Date(y, m, 0)` — day zero of the following month, which
+ * Postgres and JavaScript agree is the last day of this one, February and leap
+ * years included.
+ */
+function resolvePeriod(key: string): BillPeriod | null {
+  if (!/^\d{4}-\d{2}$/.test(key)) return null
+  const [y, m] = key.split('-').map(Number)
+  if (!Number.isInteger(y) || y < 2000 || y > 2100) return null
+  if (!Number.isInteger(m) || m < 1 || m > 12) return null
+
+  return {
+    key,
+    start: ymd(new Date(y, m - 1, 1)),
+    end: ymd(new Date(y, m, 0)),
+    label: MONTH_NAMES[m - 1] + ' ' + y,
+  }
+}
+
+/** Was this customer already billed FOR the chosen period? */
+function billedInPeriod(lastBilledDate: string | null, period: BillPeriod): boolean {
+  return lastBilledDate !== null && lastBilledDate >= period.start && lastBilledDate <= period.end
+}
+
+export type BillTarget = {
+  id: number
+  name: string
+  /** Preview only. The write recomputes it from the row — see billBatch. */
+  amount: number
+}
+
+export type BillAllPlan = {
+  /** False until migration 0011 is applied; the modal refuses to run. */
+  available: boolean
+  period: BillPeriod
+  /** Every postpaid customer in the company. */
+  postpaidCount: number
+  /** Postpaid customers whose last_billed_date already falls in this period. */
+  alreadyBilled: number
+  /** Postpaid, unbilled, but on a monthly rate of zero. Skipped entirely. */
+  zeroRate: number
+  /** Who would actually be billed, and for how much. */
+  targets: BillTarget[]
+  /** Sum of `targets`. */
+  totalAmount: number
+}
+
+/**
+ * What a bill run would do for one period, without doing any of it.
+ *
+ * The "already billed" count is computed HERE, before the operator can confirm,
+ * because it is the only thing standing between them and silently doubling
+ * every balance in the company. A run that would bill nobody still returns a
+ * plan — the modal shows why rather than an empty error.
+ */
+export async function loadBillAllPlan(periodKey: string): Promise<BillAllPlan> {
+  const { company } = await authorize()
+
+  const period = resolvePeriod(periodKey)
+  if (!period) throw new Error('"' + periodKey + '" is not a valid billing period.')
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.billing) {
+    return {
+      available: false,
+      period,
+      postpaidCount: 0,
+      alreadyBilled: 0,
+      zeroRate: 0,
+      targets: [],
+      totalAmount: 0,
+    }
+  }
+
+  const customers = await readPostpaidCustomers(company.id)
+
+  let alreadyBilled = 0
+  let zeroRate = 0
+  const targets: BillTarget[] = []
+
+  for (const customer of customers) {
+    if (billedInPeriod(customer.lastBilledDate, period)) {
+      alreadyBilled++
+    } else if (customer.monthlyRate <= 0) {
+      zeroRate++
+    } else {
+      targets.push({ id: customer.id, name: customer.name, amount: customer.monthlyRate })
+    }
+  }
+
+  return {
+    available: true,
+    period,
+    postpaidCount: customers.length,
+    alreadyBilled,
+    zeroRate,
+    targets,
+    totalAmount: targets.reduce((sum, t) => sum + t.amount, 0),
+  }
+}
+
+export type BillOutcome = {
+  id: number
+  name: string
+  result: 'billed' | 'skipped_already' | 'skipped_zero_rate' | 'failed'
+  /** Added to carried_balance. Populated for `billed`. */
+  amount?: number
+  /** Populated for `failed`. */
+  error?: string
+}
+
+/**
+ * Bills one batch of postpaid customers for one period.
+ *
+ * WHAT IT WRITES, per customer, and nothing else:
+ *   carried_balance  += monthly_rate
+ *   last_billed_date  = the LAST DAY OF THE PERIOD BILLED
+ *
+ * It does not touch radcheck, expiry_mode, balance, cut_off_date, bill_date or
+ * billing_type, and it creates no payment rows. A customer who is online stays
+ * online with the expiry they already hold; a bill is a debt, not a
+ * disconnection.
+ *
+ * last_billed_date IS THE PERIOD, NOT THE RUN DATE. Billing August 2026 writes
+ * 2026-08-31 whether the run happens on 1 September or on 14 October. Stamping
+ * the run date instead would make the column useless as a guard: the second run
+ * would see a date outside the period and bill everyone again.
+ *
+ * THE GUARD IS IN THE WHERE CLAUSE, not only in the plan. loadBillAllPlan's
+ * count is read when the modal opens, which is minutes and possibly a second
+ * operator before this runs. Each update therefore re-asserts that the row is
+ * still unbilled for this period, and a write that matches nothing is reported
+ * as skipped rather than counted. Two people clicking Bill All at the same
+ * moment bill each customer once between them.
+ *
+ * The stamp only ever moves FORWARD. Billing an earlier period for a customer
+ * already billed for a later one adds the charge but keeps the later stamp,
+ * because lowering it would re-open a period that has already been billed.
+ *
+ * Sequential, one customer per statement. PostgREST cannot add a column to
+ * itself, so each new balance is computed here from the row it was read from —
+ * which is also what lets the guard and the arithmetic stay in agreement.
+ */
+export async function billBatch(input: {
+  period: string
+  ids: number[]
+}): Promise<{ outcomes: BillOutcome[] }> {
+  const { company } = await authorize()
+
+  const period = resolvePeriod(input.period)
+  if (!period) throw new Error('"' + input.period + '" is not a valid billing period.')
+
+  if (input.ids.length > MAX_BATCH) {
+    throw new Error('Too many customers in one batch: ' + input.ids.length + ' (max ' + MAX_BATCH + ').')
+  }
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.billing) {
+    throw new Error(
+      'Postpaid billing is not available on this database yet. Apply migration ' +
+      '0011_postpaid_billing.sql first — nothing was billed.'
+    )
+  }
+
+  const db = tenantClient()
+  const customers = await readPostpaidByIds(company.id, input.ids)
+  const byId = new Map(customers.map((c) => [c.id, c]))
+
+  // Matches a row that has NOT been billed for this period: never billed, last
+  // billed before it, or last billed after it. The three arms are what let an
+  // earlier period be billed without disturbing a later stamp.
+  const unbilled =
+    'last_billed_date.is.null,' +
+    'last_billed_date.lt.' + period.start + ',' +
+    'last_billed_date.gt.' + period.end
+
+  const outcomes: BillOutcome[] = []
+
+  for (const id of input.ids) {
+    const customer = byId.get(id)
+
+    if (!customer) {
+      outcomes.push({
+        id,
+        name: 'Customer #' + id,
+        result: 'failed',
+        error: 'This customer no longer exists, or is no longer postpaid.',
+      })
+      continue
+    }
+
+    if (billedInPeriod(customer.lastBilledDate, period)) {
+      outcomes.push({ id, name: customer.name, result: 'skipped_already' })
+      continue
+    }
+
+    // Skipped outright rather than billed for nothing: leaving last_billed_date
+    // alone means a rate corrected later can still be billed for this period.
+    if (customer.monthlyRate <= 0) {
+      outcomes.push({ id, name: customer.name, result: 'skipped_zero_rate' })
+      continue
+    }
+
+    const stamp =
+      customer.lastBilledDate && customer.lastBilledDate > period.end
+        ? customer.lastBilledDate
+        : period.end
+
+    try {
+      const { error, count } = await db
+        .from('customers')
+        .update(
+          {
+            carried_balance: customer.carriedBalance + customer.monthlyRate,
+            last_billed_date: stamp,
+          },
+          { count: 'exact' }
+        )
+        .eq('company_id', company.id)
+        .eq('id', id)
+        .or(unbilled)
+
+      if (error) throw new Error(error.message)
+
+      // Zero rows matched: something billed this customer for this period
+      // between the read above and the write. Not an error — the charge landed
+      // exactly once, which is the whole point.
+      if ((count ?? 0) === 0) {
+        outcomes.push({ id, name: customer.name, result: 'skipped_already' })
+        continue
+      }
+
+      outcomes.push({ id, name: customer.name, result: 'billed', amount: customer.monthlyRate })
+    } catch (err) {
+      const message = (err as Error).message
+      console.error('[bulk] bill failed for customer %d: %s', id, message)
+      outcomes.push({ id, name: customer.name, result: 'failed', error: message })
+    }
+  }
+
+  return { outcomes }
+}
+
+/** ONE log row for the whole run, written once the last batch has returned. */
+export async function logBulkBill(summary: {
+  /** `YYYY-MM`. */
+  period: string
+  billed: number
+  totalAmount: number
+  skippedAlready: number
+  skippedZeroRate: number
+  failed: number
+}): Promise<void> {
+  const { profile } = await authorize()
+
+  const period = resolvePeriod(summary.period)
+  const label = period ? period.label : summary.period
+  const stamp = period ? period.end : 'the end of the period'
+
+  const details =
+    'Bulk bill for ' + label + ': ' + summary.billed +
+    (summary.billed === 1 ? ' customer' : ' customers') +
+    ' billed ' + formatCurrency(summary.totalAmount) + ' in total, added to carried balance. ' +
+    'Skipped ' + summary.skippedAlready + ' already billed for this period, ' +
+    summary.skippedZeroRate + ' with no monthly rate. ' +
+    summary.failed + ' failed. Last billed date set to ' + stamp +
+    '. No expiry dates, network records or payments were changed. ' +
+    'By ' + (profile.first_name ?? profile.email)
+
+  await logEvent({
+    customerId: null,
+    type: 'bulk_bill',
+    details,
+    tag: '[bulk]',
+  })
+
+  revalidatePath('/dashboard/customers')
+  revalidatePath('/dashboard')
+}
+
+// ---------------------------------------------------------------------------
+// 4. Set all bill dates
+// ---------------------------------------------------------------------------
+
+export type BillDatePlan = {
+  /** False until migration 0011 is applied; the column does not exist yet. */
+  available: boolean
+  customerCount: number
+  /** The company's configured default bill day, to pre-fill the field. */
+  currentDay: number | null
+}
+
+export async function loadBillDatePlan(): Promise<BillDatePlan> {
+  const { company } = await authorize()
+  const [customerCount, settings, caps] = await Promise.all([
+    countAllCustomers(company.id),
+    getGeneralSettings(company.id),
+    getSchemaCapabilities(),
+  ])
+  return { available: caps.billing, customerCount, currentDay: settings.billDate }
+}
+
+export type BillDateResult =
+  | { ok: true; updated: number }
+  | { ok: false; error: string }
+
+/**
+ * Sets `customers.bill_date` for every customer in the company.
+ *
+ * THAT COLUMN AND NOTHING ELSE. The bill day is when a postpaid customer's bill
+ * is generated; it is not their expiry, which lives in radcheck, and it is not
+ * their billing type. Nobody goes online or offline because of this, and no
+ * balance moves.
+ *
+ * Applied to every customer, prepaid included, exactly as Set Cut Off Dates is.
+ * On a prepaid customer the value is inert — nothing reads bill_date unless
+ * billing_type is 'postpaid' — and it means somebody later switched to postpaid
+ * already carries the company's day rather than a blank.
+ *
+ * `confirmCount` is the number the operator was shown and typed back. If the
+ * customer count has moved since the modal opened, the run is refused rather
+ * than applied to a different set than the one they agreed to.
+ */
+export async function setAllBillDates(input: {
+  day: number
+  confirmCount: number
+}): Promise<BillDateResult> {
+  const { company, profile } = await authorize()
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.billing) {
+    return {
+      ok: false,
+      error:
+        'The bill date column does not exist on this database yet. Apply migration ' +
+        '0011_postpaid_billing.sql first.',
+    }
+  }
+
+  const day = Math.floor(input.day)
+  // The same 1-28 rule the Add Customer form applies: a bill day has to exist
+  // in every month, including February.
+  if (!Number.isFinite(day) || day < 1 || day > 28) {
+    return { ok: false, error: 'The bill day must be a day between 1 and 28.' }
+  }
+
+  const customerCount = await countAllCustomers(company.id)
+  if (customerCount !== input.confirmCount) {
+    return {
+      ok: false,
+      error:
+        'The customer count changed from ' + input.confirmCount + ' to ' + customerCount +
+        ' while this was open. Nothing was changed — reopen and confirm the new number.',
+    }
+  }
+
+  if (customerCount === 0) return { ok: false, error: 'There are no customers to update.' }
+
+  const db = tenantClient()
+  const { error, count } = await db
+    .from('customers')
+    .update({ bill_date: day }, { count: 'exact' })
+    .eq('company_id', company.id)
+
+  if (error) return { ok: false, error: 'Could not update bill dates: ' + error.message }
+
+  const updated = count ?? customerCount
+
+  await logEvent({
+    customerId: null,
+    type: 'bulk_bill_date_set',
+    details:
+      'Bill day set to ' + day + ' for ' + updated +
+      (updated === 1 ? ' customer' : ' customers') +
+      ' by ' + (profile.first_name ?? profile.email) +
+      '. No balances, expiry dates or billing types were changed.',
+    tag: '[bulk]',
+  })
+
+  revalidatePath('/dashboard/customers')
+  revalidatePath('/dashboard')
+  return { ok: true, updated }
 }

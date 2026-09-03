@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 import { ArrowLeft, Building2, DollarSign, SlidersHorizontal, Users } from 'lucide-react'
 
 import { CompanyUsers } from '@/components/platform/CompanyUsers'
+import { EnterCompanyButton } from '@/components/platform/EnterCompanyButton'
 import { getCompanyDetail } from '@/lib/data/platform'
 import { formatCurrency } from '@/lib/format'
 import { getSession } from '@/lib/session'
@@ -54,12 +55,14 @@ const dash = <span className="text-gray-600">—</span>
  * The platform operator's view of one tenant.
  *
  * Access is enforced by app/superadmin/layout.tsx, which checks is_super_admin,
- * and again by resetPasswordAsSuperAdmin — the single write this page offers.
+ * and again by every write this page offers — resetPasswordAsSuperAdmin and
+ * enterCompany both re-check the flag server side.
  *
- * READ ONLY OTHERWISE, deliberately. A super admin can see a company and
- * recover access to it; everything else is operated from inside the tenant by
- * someone who belongs to it. There is no company switcher and this page is not
- * one.
+ * "Enter company" switches the acting tenant for the session: from there the
+ * operator works inside that company with full access, under a standing banner,
+ * and every write they make lands in that company's own audit trail marked as
+ * the platform operator. See lib/session.ts for how the switch is resolved and
+ * re-verified on every request, and lib/audit.ts for the marker.
  */
 export default async function CompanyDetailPage({
   params,
@@ -102,6 +105,10 @@ export default async function CompanyDetailPage({
         >
           {company.status ?? 'unknown'}
         </span>
+
+        <div className="ml-auto">
+          <EnterCompanyButton companyId={company.id} size="md" />
+        </div>
       </div>
 
       {/* Counts */}
@@ -176,8 +183,10 @@ export default async function CompanyDetailPage({
       </section>
 
       <p className="text-xs text-gray-600">
-        Read only apart from Reset Password. Company details, settings and user accounts are
-        edited from inside the tenant by someone who belongs to it.
+        Read only apart from Reset Password. To edit company details, settings or user
+        accounts, use Enter company — you will work inside the tenant with full access, and
+        every change is recorded in that company&rsquo;s own audit log as a platform
+        operator action.
       </p>
     </div>
   )

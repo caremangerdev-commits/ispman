@@ -79,9 +79,9 @@ export async function saveCompanyProfile(
   }
 
   const cutOff = intInRange(formData, 'cut_off_date', 1, 28)
-  const billDue = intInRange(formData, 'bill_date', 1, 28)
-  if (Number.isNaN(cutOff) || Number.isNaN(billDue)) {
-    return { ok: false, error: 'Cut off and bill due dates must be a day between 1 and 28.' }
+  const billDate = intInRange(formData, 'bill_date', 1, 28)
+  if (Number.isNaN(cutOff) || Number.isNaN(billDate)) {
+    return { ok: false, error: 'Cut off and bill dates must be a day between 1 and 28.' }
   }
 
   const grace = intInRange(formData, 'grace_period_days', 0, 30)
@@ -140,7 +140,7 @@ export async function saveCompanyProfile(
     currency,
     timezone,
     cut_off_date: cutOff,
-    bill_date: billDue,
+    bill_date: billDate,
     sms_enabled: bool(formData, 'sms_enabled'),
     email_enabled: bool(formData, 'email_enabled'),
   }

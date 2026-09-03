@@ -2,6 +2,7 @@ import { cache } from 'react'
 import { redirect } from 'next/navigation'
 import type { User } from '@supabase/supabase-js'
 
+import { readActingCookie } from '@/lib/acting-company'
 import { can, toRole, type Permission, type Role } from '@/lib/permissions'
 import { createClient } from '@/lib/supabase/server'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -26,7 +27,28 @@ export type SessionCompany = {
 export type Session = {
   authUser: User
   profile: Profile
+  /**
+   * The company that scopes every query in the app.
+   *
+   * Normally this is the caller's own company. For a verified super admin who
+   * has entered a tenant it is THAT tenant — which is the whole mechanism of
+   * the company switcher: `profile.company_id` is read in exactly one place
+   * (the resolution below), and everything else in the codebase already scopes
+   * on `session.company.id`.
+   */
   company: SessionCompany
+  /**
+   * Non-null only while a verified super admin is switched into a tenant.
+   * Drives the persistent banner and the acting marker on audit rows.
+   *
+   * The switch never changes WHO the caller is: `authUser` and `profile` —
+   * including `profile.id`, `profile.role` and `profile.company_id` — are
+   * untouched, so logging still records their own user id and their
+   * permissions still come from super_admin.
+   */
+  actingAs: SessionCompany | null
+  /** The caller's own company. Equal to `company` when not switched. */
+  homeCompany: SessionCompany
 }
 
 /**
@@ -108,22 +130,71 @@ export const getSession = cache(async (): Promise<Session> => {
       : role === 'super_admin',
   }
 
+  // -------------------------------------------------------------------------
+  // Acting company (super admin "enter company" switch)
+  //
+  // THIS IS THE AUTHORIZATION BOUNDARY FOR CROSS-TENANT ACCESS, and it runs on
+  // every request rather than only when the switch is set, because every page,
+  // server action and route handler in the app resolves its company through
+  // getSession().
+  //
+  // The cookie is only ever a POINTER at a company. It is honoured when, and
+  // only when, ALL of the following hold:
+  //
+  //   1. `is_super_admin` is true on the `users` row just read above, by the
+  //      email on a token that auth.getUser() revalidated with Supabase. The
+  //      flag comes from the database on this request — never from the cookie,
+  //      never from the JWT, never from the role string.
+  //   2. The cookie names the user who set it, and that is this user. A cookie
+  //      left behind by another account is dead on arrival.
+  //   3. The company it names actually exists.
+  //
+  // Anything else falls through to the caller's own company. A non-super-admin
+  // who forges this cookie by any means simply stays in their own tenant.
+  //
+  // A stale cookie is ignored rather than deleted: a Server Component cannot
+  // write cookies. exitCompany() and signOut() clear it.
+  // -------------------------------------------------------------------------
+  const actingCookie = profile.is_super_admin ? await readActingCookie() : null
+
+  const requestedCompanyId =
+    actingCookie && actingCookie.userId === profile.id ? actingCookie.companyId : null
+
+  // Both companies in one round trip — the tenant being acted in, and the
+  // caller's own, which the banner's Exit path returns to.
+  const wantedIds =
+    requestedCompanyId === null || requestedCompanyId === profile.company_id
+      ? [profile.company_id]
+      : [profile.company_id, requestedCompanyId]
+
   const tCo = Date.now()
-  const { data: companyRow, error: companyError } = await db
+  const { data: companyRows, error: companyError } = await db
     .from('companies')
     .select('id, name, plan, status')
-    .eq('id', profile.company_id)
-    .maybeSingle()
+    .in('id', wantedIds)
   console.log('[perf]     getSession: companies select       %dms', Date.now() - tCo)
   console.log('[perf]     getSession: TOTAL                  %dms', Date.now() - tSess)
 
   if (companyError) throw new Error('Failed to load company: ' + companyError.message)
-  if (!companyRow) throw new Error('User ' + profile.id + ' references a missing company.')
+
+  const rows = (companyRows ?? []) as unknown as SessionCompany[]
+  const homeCompany = rows.find((c) => c.id === profile.company_id)
+
+  if (!homeCompany) throw new Error('User ' + profile.id + ' references a missing company.')
+
+  // Resolves to null when the switch is not set, was refused above, or names a
+  // company that has since been deleted.
+  const actingAs =
+    requestedCompanyId === null
+      ? null
+      : rows.find((c) => c.id === requestedCompanyId) ?? null
 
   return {
     authUser,
     profile,
-    company: companyRow as unknown as SessionCompany,
+    company: actingAs ?? homeCompany,
+    actingAs,
+    homeCompany,
   }
 })
 

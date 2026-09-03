@@ -42,16 +42,26 @@ export type SidebarProps = {
   roleLabel: string
   /** This role's home — not always /dashboard. See lib/home.ts. */
   homeHref: string
+  /**
+   * Pushes this fixed panel below the super admin "acting as" banner, which is
+   * itself fixed to the very top. See components/platform/ActingBanner.tsx.
+   */
+  topOffset?: boolean
 }
 
 export function Sidebar({
-  sections, companyName, userName, roleLabel, homeHref,
+  sections, companyName, userName, roleLabel, homeHref, topOffset = false,
 }: SidebarProps) {
   const pathname = usePathname()
   const [first, last] = userName.split(' ')
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-30 flex w-64 flex-col border-r border-gray-800 bg-gray-900">
+    <aside
+      className={
+        'fixed bottom-0 left-0 z-30 flex w-64 flex-col border-r border-gray-800 bg-gray-900 ' +
+        (topOffset ? 'top-11' : 'top-0')
+      }
+    >
       {/* Logo doubles as the way home for roles whose nav has no Dashboard link. */}
       <Link
         href={homeHref}

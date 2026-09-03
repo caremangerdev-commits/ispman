@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
+import { logEvent } from '@/lib/audit'
 import { can, type Permission } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import {
@@ -49,7 +50,7 @@ export type ActionResult =
 
 const KEEP_FIELDS = [
   'first_name', 'last_name', 'phone', 'email', 'address', 'gps',
-  'mac_address', 'monthly_rate', 'cut_off_date', 'bill_due_date',
+  'mac_address', 'monthly_rate', 'cut_off_date',
   'customer_type', 'pppoe_username', 'pppoe_password', 'access_point',
   'billing_type', 'bill_date',
 ]
@@ -105,7 +106,6 @@ export async function createCustomer(
   const mac_address = str(formData, 'mac_address').toUpperCase()
   const monthly_rate = numOrNull(formData, 'monthly_rate')
   const cut_off_date = numOrNull(formData, 'cut_off_date')
-  const bill_due_date = numOrNull(formData, 'bill_due_date')
   const billing_type = toBillingType(str(formData, 'billing_type'))
   const bill_date = numOrNull(formData, 'bill_date')
   const customerType = toCustomerType(str(formData, 'customer_type') || 'dhcp')
@@ -139,20 +139,20 @@ export async function createCustomer(
   if (monthly_rate === null || monthly_rate < 0) {
     fieldErrors.monthly_rate = 'Enter a monthly rate of 0 or more.'
   }
-  for (const [key, val] of [['cut_off_date', cut_off_date], ['bill_due_date', bill_due_date]] as const) {
-    if (val !== null && (val < 1 || val > 28)) {
-      fieldErrors[key] = 'Must be a day between 1 and 28.'
-    }
+  if (cut_off_date !== null && (cut_off_date < 1 || cut_off_date > 28)) {
+    fieldErrors.cut_off_date = 'Must be a day between 1 and 28.'
   }
 
-  // Wider than the 1-28 the other two allow, because a bill date is a real day
-  // of the month rather than a safe-for-every-month day. postpaidExpiry clamps
-  // 29-31 down to the length of the month it lands in.
+  // Capped at 28, like the cut-off day: days 29-31 do not occur in every month,
+  // so a bill day in that range is a billing cycle that skips February. The
+  // database CHECK from 0011 still permits 1-31 and postpaidExpiry still clamps
+  // to the length of the target month — that is what keeps rows written before
+  // this cap from rolling forward twice.
   if (caps.billing && billing_type === 'postpaid') {
     if (bill_date === null) {
       fieldErrors.bill_date = 'A postpaid customer needs a bill date.'
-    } else if (bill_date < 1 || bill_date > 31) {
-      fieldErrors.bill_date = 'Must be a day between 1 and 31.'
+    } else if (bill_date < 1 || bill_date > 28) {
+      fieldErrors.bill_date = 'Must be a day between 1 and 28.'
     }
   }
 
@@ -191,7 +191,10 @@ export async function createCustomer(
     monthly_rate,
     balance: 0,
     cut_off_date,
-    bill_due_date,
+    // bill_due_date is deliberately absent. The column still exists but nothing
+    // reads it; postpaid billing runs off bill_date. New rows take whatever
+    // default the column carries rather than a value typed by an operator who
+    // would reasonably expect it to mean something.
     last_bill_date,
     date_added: todayYmd(),
   }
@@ -247,14 +250,13 @@ export async function createCustomer(
     if (addonError) return addonError
   }
 
-  await db.from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
-    customer_id: newId,
+  await logEvent({
+    customerId: newId,
     type: 'customer_added',
     details:
       fullName + ' was added as a ' + customerType.toUpperCase() + ' customer by ' +
       (profile.first_name ?? 'an operator'),
+    tag: '[customers]',
   })
 
   // Deliberately does NOT write to RADIUS. A new customer starts pending and is
@@ -298,7 +300,21 @@ export async function updateCustomer(
     mac_address: mac_address || null,
     monthly_rate: numOrNull(formData, 'monthly_rate'),
     cut_off_date: numOrNull(formData, 'cut_off_date'),
-    bill_due_date: numOrNull(formData, 'bill_due_date'),
+    // bill_due_date is deliberately absent — see the note in createCustomer.
+    // Patching it here would also have overwritten stored values with null the
+    // moment the field stopped rendering.
+  }
+
+  // The detail page renders this control for postpaid customers only, so the
+  // key is absent for everyone else. Keyed on presence rather than value: an
+  // unconditional patch would null out a postpaid customer's bill day whenever
+  // the form that submitted never rendered the field.
+  if (caps.billing && formData.has('bill_date')) {
+    const bill_date = numOrNull(formData, 'bill_date')
+    if (bill_date === null || bill_date < 1 || bill_date > 28) {
+      return { ok: false, error: 'Bill date must be a day between 1 and 28.' }
+    }
+    patch.bill_date = bill_date
   }
 
   if (caps.connectionTypes) {
@@ -479,8 +495,11 @@ async function loadNetworkTarget(
  * would take away the thing they actually wanted. So a failure goes to the
  * console and no error reaches the operator.
  *
- * Uses the same `log` insert every other action in this file uses — there is no
- * separate events table and no migration behind any of this.
+ * Goes through lib/audit.ts#logEvent like every other log write in this app —
+ * there is no separate events table and no migration behind any of this. That
+ * helper is also what marks the row when a platform operator is switched into
+ * this tenant, which matters most here: network writes are the ones an ISP most
+ * needs attributed correctly in their own trail.
  */
 async function logNetworkEvent(opts: {
   companyId: number
@@ -489,26 +508,14 @@ async function logNetworkEvent(opts: {
   type: string
   details: string
 }) {
-  try {
-    const { error } = await tenantClient().from('log').insert({
-      company_id: opts.companyId,
-      user_id: opts.userId,
-      customer_id: opts.customerId,
-      type: opts.type,
-      details: opts.details,
-    })
-    if (error) {
-      console.error(
-        '[network] could not write a %s log row for customer %d: %s',
-        opts.type, opts.customerId, error.message
-      )
-    }
-  } catch (err) {
-    console.error(
-      '[network] could not write a %s log row for customer %d: %s',
-      opts.type, opts.customerId, (err as Error).message
-    )
-  }
+  await logEvent({
+    companyId: opts.companyId,
+    userId: opts.userId,
+    customerId: opts.customerId,
+    type: opts.type,
+    details: opts.details,
+    tag: '[network]',
+  })
 }
 
 /**

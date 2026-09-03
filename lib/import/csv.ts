@@ -112,9 +112,9 @@ const GUESSES: { target: Exclude<FieldTarget, 'ignore'>; hints: string[]; unless
   // charge. `cutoff` alone covers "CUT OFF", "CUTOFF", "CUT OFF DATE" and
   // "CUT OFF DAY" once punctuation and spaces are gone.
   //
-  // "DUE DATE" is deliberately NOT matched: in this schema that is
-  // `bill_due_date`, a different column, and guessing it as the cut-off day
-  // would be wrong more often than right. "DUE DAY" is unambiguous enough.
+  // "DUE DATE" is deliberately NOT matched: in an exported file it is as often
+  // the bill day as the cut-off day, and guessing it as the cut-off would be
+  // wrong more often than right. "DUE DAY" is unambiguous enough.
   { target: 'cut_off_day', hints: ['cutoff', 'dueday'] },
   {
     target: 'monthly_rate',

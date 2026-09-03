@@ -103,17 +103,30 @@ export function fullName(
  *
  * Anything that does not match the structured shape is passed through, since
  * most log entries are already written as plain sentences.
+ *
+ * THE PLATFORM OPERATOR MARKER is handled here for every row, structured or
+ * plain, and deliberately BEFORE the network-event rewrite below. That rewrite
+ * rebuilds its sentence from named fields and drops anything it did not
+ * capture, so a marker left in place would be written to the database and then
+ * be invisible on the tenant's own activity log — worse than not marking at
+ * all, and invisible on exactly the writes an ISP most needs the truth about.
  */
 export function humaniseLogDetail(details: string | null | undefined): string {
   if (!details) return ''
 
-  const m = /^RADIUS (\w+)(?: (FAILED))? \| identity=([^|]+?) \|/.exec(details.trim())
-  if (!m) return details
+  // See lib/audit.ts#actingMarker. Stripped from the text that gets rewritten,
+  // then re-attached to whatever that rewrite produces.
+  const marked = /\s*\|\s*via=super_admin:#\d+\s*$/.test(details)
+  const body = marked ? details.replace(/\s*\|\s*via=super_admin:#\d+\s*$/, '') : details
+  const attribute = (text: string) => (marked ? text + ' (platform operator)' : text)
+
+  const m = /^RADIUS (\w+)(?: (FAILED))? \| identity=([^|]+?) \|/.exec(body.trim())
+  if (!m) return attribute(body)
 
   const [, action, failed, identity] = m
   const field = (name: string) => {
     // The pipe must stay escaped for the regex, not read as alternation.
-    const f = new RegExp('\\| ' + name + '=([^|]+)').exec(details)
+    const f = new RegExp('\\| ' + name + '=([^|]+)').exec(body)
     return f ? f[1].trim() : null
   }
 
@@ -129,11 +142,11 @@ export function humaniseLogDetail(details: string | null | undefined): string {
       : action
 
   if (failed) {
-    return subject + ' could not be ' + verb + (who ? ' by ' + who : '')
+    return attribute(subject + ' could not be ' + verb + (who ? ' by ' + who : ''))
   }
 
   const until =
     newExpiry && action !== 'disconnect' ? ' until ' + newExpiry : ''
 
-  return subject + ' ' + verb + until + (who ? ', by ' + who : '')
+  return attribute(subject + ' ' + verb + until + (who ? ', by ' + who : ''))
 }

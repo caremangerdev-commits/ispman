@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
+import { logEvent } from '@/lib/audit'
 import { CURRENCIES, TIMEZONES } from '@/lib/data/company'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -72,8 +73,13 @@ async function findAuthUserByEmail(email: string): Promise<{ id: string } | null
  * one is gated on the platform flag alone and is reachable only from
  * /superadmin, which the layout already guards.
  *
- * It exists for one situation: a tenant whose only admin cannot sign in. With
- * no company switcher, that company is otherwise unreachable by anyone.
+ * It exists for one situation: a tenant whose only admin cannot sign in. The
+ * company switcher does not replace it — entering a tenant lets an operator
+ * work inside it, but it cannot hand the tenant's own admin their account back.
+ *
+ * Behaviour is unchanged by the switcher. Only the audit write moved to
+ * lib/audit.ts#logEvent, which files the row against the same company as
+ * before.
  *
  * The target's own company_id is read from the row and used for the audit entry,
  * so the log lands in the tenant the change actually affected rather than in the
@@ -129,25 +135,22 @@ export async function resetPasswordAsSuperAdmin(
 
   // Same shape as the tenant-scoped user_password_reset entry, filed against the
   // target's company so it shows in that tenant's own audit trail.
-  try {
-    const { error: logError } = await db.from('log').insert({
-      company_id: target.company_id,
-      user_id: profile.id,
-      customer_id: null,
-      type: 'user_password_reset',
-      details:
-        'Password for ' + target.email + ' (user #' + target.id + ', role ' +
-        (target.role ?? 'unknown') + ') was reset by super admin ' +
-        (profile.first_name ?? 'operator'),
-    })
-    if (logError) {
-      console.error('[platform] could not write password reset log row: %s', logError.message)
-    }
-  } catch (err) {
-    console.error(
-      '[platform] could not write password reset log row: %s', (err as Error).message
-    )
-  }
+  //
+  // companyId is passed explicitly because this reaches into a tenant from the
+  // platform section WITHOUT entering it, so the acting company is not that
+  // tenant. logEvent still marks the row as a platform operator action — it
+  // marks any write a super admin makes outside their own company, switched or
+  // not.
+  await logEvent({
+    companyId: target.company_id,
+    customerId: null,
+    type: 'user_password_reset',
+    details:
+      'Password for ' + target.email + ' (user #' + target.id + ', role ' +
+      (target.role ?? 'unknown') + ') was reset by super admin ' +
+      (profile.first_name ?? 'operator'),
+    tag: '[platform]',
+  })
 
   revalidatePath('/superadmin/companies/' + target.company_id)
   return { ok: true }

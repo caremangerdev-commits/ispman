@@ -45,7 +45,6 @@ export type DetailCustomer = {
   monthly_rate: number | string | null
   balance: number | string | null
   cut_off_date: number | null
-  bill_due_date: number | null
   last_bill_date: string | null
   /** migration 0011 */
   billingAvailable: boolean
@@ -609,9 +608,16 @@ export function CustomerDetail({
 
           {c.billingAvailable && c.billingType === 'postpaid' ? (
             <>
+              {/* Editable, capped 1-28 like the cut-off day. This is the field
+                  postpaidExpiry runs on, so it is the one an operator needs to
+                  be able to correct. */}
               <Row
                 label="Bill Date"
                 value={c.bill_date ? 'Day ' + c.bill_date + ' of each month' : '—'}
+                editing={editing}
+                name="bill_date"
+                type="number"
+                defaultValue={c.bill_date ?? ''}
               />
               <Row
                 label="Carried Balance"
@@ -626,7 +632,6 @@ export function CustomerDetail({
           ) : null}
 
           <Row label="Cut Off Date" value={c.cut_off_date ? 'Day ' + c.cut_off_date : '—'} editing={editing} name="cut_off_date" type="number" defaultValue={c.cut_off_date ?? ''} />
-          <Row label="Bill Due Date" value={c.bill_due_date ? 'Day ' + c.bill_due_date : '—'} editing={editing} name="bill_due_date" type="number" defaultValue={c.bill_due_date ?? ''} />
           {/* From the registry, not last_bill_date. The billing date is kept
               in Postgres for record keeping but never drives a displayed or
               calculated expiry. */}

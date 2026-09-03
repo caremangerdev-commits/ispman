@@ -18,6 +18,7 @@ import {
   applyRadiusWrite, paymentExpiry, radiusLogDetails,
 } from '@/lib/radius/operations'
 import { getSchemaCapabilities, type SchemaCapabilities } from '@/lib/schema'
+import { logEvent } from '@/lib/audit'
 import { displayName, getSession, type Session } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { toExpiryMode } from '@/lib/types'
@@ -218,11 +219,10 @@ async function recordOtherPayment(
 
   if (insertError) return { ok: false, error: 'Could not record payment: ' + insertError.message }
 
-  await db.from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
-    customer_id: customer.id,
+  await logEvent({
+    customerId: customer.id,
     type: 'payment_recorded',
+    tag: '[payments]',
     details:
       money(paidAmount) + ' other payment collected by ' + agent +
       ' | purpose_id=' + categoryId + ' | no service extension',
@@ -589,11 +589,10 @@ export async function recordPayment(
             .eq('id', paymentId)
         }
 
-        await db.from('log').insert({
-          company_id: company.id,
-          user_id: profile.id,
-          customer_id: customer.id,
+        await logEvent({
+          customerId: customer.id,
           type: 'radius_extend',
+          tag: '[payments]',
           details: radiusLogDetails({
             action: 'extend',
             identity,
@@ -611,11 +610,10 @@ export async function recordPayment(
       } else {
         warning =
           'Payment recorded, but access could not be extended: ' + result.error
-        await db.from('log').insert({
-          company_id: company.id,
-          user_id: profile.id,
-          customer_id: customer.id,
+        await logEvent({
+          customerId: customer.id,
           type: 'radius_extend_failed',
+          tag: '[payments]',
           details:
             'RADIUS extend FAILED | identity=' + identity +
             ' | old_expiry=' + (result.oldExpiry ?? 'none') +
@@ -666,11 +664,10 @@ export async function recordPayment(
     }
   }
 
-  await db.from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
-    customer_id: customer.id,
+  await logEvent({
+    customerId: customer.id,
     type: 'payment_recorded',
+    tag: '[payments]',
     details: paymentLogDetails({
       amount: paidAmount,
       agent,
@@ -921,11 +918,10 @@ export async function updatePayment(
   // A larger payment leaves less owing, so the delta is old minus new.
   await adjustBalance(db, company.id, payment.customer_id, previousAmount - (amount as number))
 
-  await db.from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
-    customer_id: payment.customer_id,
+  await logEvent({
+    customerId: payment.customer_id,
     type: 'payment_updated',
+    tag: '[payments]',
     details:
       'Payment #' + payment.id + ' corrected from ' + money(previousAmount) +
       ' to ' + money(amount as number) + ' by ' + profile.email,
@@ -971,11 +967,10 @@ export async function deletePayment(formData: FormData): Promise<void> {
   // The money is no longer recorded as received, so it is owed again.
   await adjustBalance(db, company.id, payment.customer_id, amount)
 
-  await db.from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
-    customer_id: payment.customer_id,
+  await logEvent({
+    customerId: payment.customer_id,
     type: 'payment_deleted',
+    tag: '[payments]',
     details: 'Payment #' + payment.id + ' of ' + money(amount) + ' deleted by ' + profile.email,
   })
 

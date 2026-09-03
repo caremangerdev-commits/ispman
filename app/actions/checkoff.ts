@@ -9,6 +9,7 @@ import {
 import { getGeneralSettings } from '@/lib/data/company'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
+import { logEvent } from '@/lib/audit'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -117,10 +118,9 @@ export async function confirmCheckoff(formData: FormData) {
     )
   }
 
-  await db.from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
+  await logEvent({
     type: 'checkoff',
+    tag: '[checkoff]',
     details:
       'Checkoff | agent=' + agent.name +
       ' | system_total=' + money(systemTotal) +
@@ -234,10 +234,9 @@ export async function confirmCheckoffAll(formData: FormData) {
     notes: notes || null,
   })
 
-  await db.from('log').insert({
-    company_id: company.id,
-    user_id: profile.id,
+  await logEvent({
     type: 'checkoff',
+    tag: '[checkoff]',
     details:
       'Checkoff ALL | agents=' + cleared +
       ' | system_total=' + money(all.total) +

@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { Building2, DollarSign, Plus, Users } from 'lucide-react'
 
 import { activateCompany, suspendCompany } from '@/app/actions/platform'
+import { EnterCompanyButton } from '@/components/platform/EnterCompanyButton'
 import { getPlatformStats } from '@/lib/data/platform'
 import { formatCurrency } from '@/lib/format'
 
@@ -122,6 +123,8 @@ export default async function SuperAdminPage() {
                         >
                           View
                         </Link>
+
+                        <EnterCompanyButton companyId={c.id} />
 
                         {suspended ? (
                           <form action={activateCompany}>

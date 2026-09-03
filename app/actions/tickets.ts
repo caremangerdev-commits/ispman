@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
+import { logEvent } from '@/lib/audit'
 import { can, type Permission } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -66,11 +67,11 @@ function toast(path: string, message: string, kind?: 'error'): never {
 /**
  * Writes one audit row for a ticket change.
  *
- * Uses the same plain `log` insert every other action in this app uses — there
- * is no shared helper to reach for and this does not introduce one. A failure
- * is reported to the console and swallowed: the ticket change already landed,
- * and undoing it to keep the log tidy would take away the thing the operator
- * actually asked for.
+ * Goes through lib/audit.ts#logEvent, the single writer for the `log` table,
+ * which owns the tenant id, the actor and the platform-operator marker. A
+ * failure is reported to the console and swallowed there: the ticket change
+ * already landed, and undoing it to keep the log tidy would take away the thing
+ * the operator actually asked for.
  *
  * The type strings follow the app's own convention (`payment_recorded`,
  * `network_provision`), not the shorter values left behind by the seed.
@@ -82,22 +83,14 @@ async function logTicketEvent(opts: {
   type: 'ticket_created' | 'ticket_assigned' | 'ticket_resolved'
   details: string
 }) {
-  try {
-    const { error } = await tenantClient().from('log').insert({
-      company_id: opts.companyId,
-      user_id: opts.userId,
-      customer_id: opts.customerId,
-      type: opts.type,
-      details: opts.details,
-    })
-    if (error) {
-      console.error('[tickets] could not write a %s log row: %s', opts.type, error.message)
-    }
-  } catch (err) {
-    console.error(
-      '[tickets] could not write a %s log row: %s', opts.type, (err as Error).message
-    )
-  }
+  await logEvent({
+    companyId: opts.companyId,
+    userId: opts.userId,
+    customerId: opts.customerId,
+    type: opts.type,
+    details: opts.details,
+    tag: '[tickets]',
+  })
 }
 
 /** Operator name for the audit line. */
