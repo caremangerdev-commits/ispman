@@ -12,6 +12,8 @@
  * run it to draw the modal and the PDF without a round trip.
  */
 
+import { dateOnlyParts } from '@/lib/format'
+
 /**
  * Characters per line at 80mm.
  *
@@ -198,20 +200,25 @@ const MONTHS = [
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ]
 
-/** `16 Sep 2026` */
-export function receiptDate(value: Date, timeZone: string): string {
-  // en-CA gives YYYY-MM-DD parts, so the numbers come back in a fixed order
-  // and already converted into the company timezone.
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(value)
-
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
-
-  return get('day') + ' ' + MONTHS[Number(get('month')) - 1] + ' ' + get('year')
+/**
+ * `16 Sep 2026` from a DATE column.
+ *
+ * TAKES THE STRING, NOT A DATE. This used to take a Date and re-render it in
+ * the company timezone, which is what printed every expiry a day early: a DATE
+ * column has no time and no zone, so `new Date(value + 'T00:00:00')` invented
+ * midnight in the SERVER's zone and the company-timezone format then moved it
+ * back across the date boundary. On a UTC server billing a UTC-5 company that
+ * is -5h from midnight — the previous day, every time.
+ *
+ * The digits are now read straight out of the string by
+ * lib/format.ts#dateOnlyParts, the same reading the customer detail page and
+ * the payment preview use, so nothing can shift it. The day keeps its leading
+ * zero because the receipt is a fixed 32-column grid.
+ */
+export function receiptDate(value: string | null | undefined): string {
+  const p = dateOnlyParts(value)
+  if (!p) return ''
+  return String(p.day).padStart(2, '0') + ' ' + MONTHS[p.month - 1] + ' ' + p.year
 }
 
 /**
@@ -224,11 +231,13 @@ export function receiptDate(value: Date, timeZone: string): string {
  * time that never happened.
  */
 export function receiptDateTime(
-  paidOn: Date,
+  paidOn: string | null | undefined,
   recordedAt: Date | null,
   timeZone: string
 ): string {
-  const date = receiptDate(paidOn, timeZone)
+  // The date half is a calendar date and gets no timezone. The time half is a
+  // real instant and needs one — that asymmetry is the whole point.
+  const date = receiptDate(paidOn)
   if (!recordedAt) return date
 
   const time = new Intl.DateTimeFormat('en-US', {

@@ -3,6 +3,7 @@ import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { lastNetworkEvents } from '@/lib/data/network-events'
+import { localDateOnly } from '@/lib/format'
 import {
   CUSTOMER_STATUSES, resolveStatus, STATUS_LABELS, type CustomerStatus,
 } from '@/lib/status'
@@ -170,6 +171,7 @@ export async function listCustomers(opts: {
     const base = hit ? hit.status : reachable ? 'unprovisioned' : 'unknown'
     c.radiusStatus = resolveStatus(base, events.get(c.id))
     c.radiusExpiry = hit?.expiry ?? null
+    c.radiusExpiryDate = hit?.expiry ? localDateOnly(hit.expiry) : null
   }
 
   const counts: Record<CustomerFilter, number> = {

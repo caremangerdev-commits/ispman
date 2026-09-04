@@ -1,4 +1,5 @@
 import { PAYMENT_METHOD_LABELS, toPaymentMethod } from '@/lib/data/checkoff'
+import { instantToDateOnly } from '@/lib/format'
 import {
   receiptDate, receiptDateTime, receiptNumber, type Receipt,
 } from '@/lib/receipt'
@@ -88,9 +89,15 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
   const kind = r.payment_kind === 'other' ? 'other' : 'service'
   const paid = Number(r.amount ?? 0)
 
-  // paid_on is the business date. A pre-0013 row has no paid_on, so
-  // payment_date's date half serves instead.
-  const paidOn = r.paid_on ? new Date(r.paid_on + 'T00:00:00') : new Date(r.payment_date)
+  // paid_on is the business date, and it is a DATE column — a calendar date,
+  // carried as the string it is stored as. It is NOT turned into a Date: doing
+  // that invented a midnight in the server's zone which the receipt formatter
+  // then re-projected into the company's, printing the day before.
+  //
+  // A pre-0013 row has no paid_on, so payment_date stands in. That one IS a
+  // real instant (TIMESTAMPTZ), so reducing it to a date genuinely does need
+  // the company timezone — the one conversion in this file that is correct.
+  const paidOn = r.paid_on ?? instantToDateOnly(new Date(r.payment_date), timeZone)
   // The time of day comes from created_at, NOT from payment_date. The service
   // flow builds payment_date as the stated date at 12:00 local
   // (app/actions/payments.ts, `paymentDateRaw + 'T12:00:00'`), so its time half
@@ -131,9 +138,8 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
 
     balance = Number(r.carried_balance_after ?? 0)
 
-    if (r.service_active_until) {
-      activeUntil = receiptDate(new Date(r.service_active_until + 'T00:00:00'), timeZone)
-    }
+    // Also a DATE column, and the one the off-by-one was reported against.
+    if (r.service_active_until) activeUntil = receiptDate(r.service_active_until)
   }
 
   return {

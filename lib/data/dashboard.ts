@@ -1,5 +1,6 @@
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { lastNetworkEvents } from '@/lib/data/network-events'
+import { dateOnlyToLocalDate, localDateOnly } from '@/lib/format'
 import { withBillingDefaults } from '@/lib/data/customers'
 import {
   CUSTOMER_STATUSES, resolveStatus, STATUS_LABELS, type CustomerStatus,
@@ -210,6 +211,7 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
     const base = hit ? hit.status : radiusKnown ? 'unprovisioned' : 'unknown'
     c.radiusStatus = resolveStatus(base, events.get(c.id))
     c.radiusExpiry = hit?.expiry ?? null
+    c.radiusExpiryDate = hit?.expiry ? localDateOnly(hit.expiry) : null
   }
 
   const countOf = (s: CustomerStatus) =>
@@ -239,8 +241,16 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
 
     // The recurring book of business, not billing. See RevenuePoint.recurring
     // for why this is not, and cannot yet be, "what was billed this month".
+    //
+    // date_added is a DATE column and `end` is a locally-built month boundary.
+    // Reading the column with `new Date(...)` made it UTC midnight and compared
+    // it against local midnight, so west of UTC a customer added on the 1st fell
+    // on the wrong side of the boundary and was counted a month early.
     const recurring = customers
-      .filter((c) => c.date_added && new Date(c.date_added).getTime() < end.getTime())
+      .filter((c) => {
+        const added = dateOnlyToLocalDate(c.date_added)
+        return added !== null && added.getTime() < end.getTime()
+      })
       .reduce((sum, c) => sum + num(c.monthly_rate), 0)
 
     months.push({
@@ -255,9 +265,11 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
   const lastMonth = months[months.length - 2]?.collected ?? 0
 
   const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate()).getTime()
-  const existedLastMonth = customers.filter(
-    (c) => c.date_added && new Date(c.date_added).getTime() <= oneMonthAgo
-  )
+  // Local midnight on both sides — same reason as the recurring filter above.
+  const existedLastMonth = customers.filter((c) => {
+    const added = dateOnlyToLocalDate(c.date_added)
+    return added !== null && added.getTime() <= oneMonthAgo
+  })
   // Active means exactly one thing now: the registry says this customer can
   // get online. Compared against the same basis a month back — the registry
   // keeps no history, so today's state stands in for last month's, which is

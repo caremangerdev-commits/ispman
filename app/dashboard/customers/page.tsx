@@ -9,7 +9,7 @@ import { ExpiryHint, StatusBadge } from '@/components/customers/StatusBadge'
 import { disconnectCustomer, reconnectCustomer } from '@/app/actions/customers'
 import { requirePermission } from '@/lib/session'
 import { FILTERS, listCustomers, type CustomerFilter } from '@/lib/data/customers'
-import { formatCurrency, fullName } from '@/lib/format'
+import { daysUntilDateOnly, formatCurrency, formatDateOnly, fullName } from '@/lib/format'
 import { can } from '@/lib/permissions'
 import { canDisconnect, canReconnect } from '@/lib/status'
 
@@ -187,27 +187,12 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
                   <td className="px-4 py-2.5">
                     {/* Network expiry, not the billing date: it is what the
                         status beside it is derived from. */}
-                    <div className="text-gray-300">
-                      {c.radiusExpiry
-                        ? c.radiusExpiry.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
-                        : '—'}
-                    </div>
+                    {/* radiusExpiryDate, not radiusExpiry: the calendar date
+                        radcheck holds, formatted by the same helper the detail
+                        page uses so the two pages cannot disagree. */}
+                    <div className="text-gray-300">{formatDateOnly(c.radiusExpiryDate)}</div>
                     <div className="text-[11px]">
-                      <ExpiryHint
-                        days={
-                          c.radiusExpiry
-                            ? Math.round(
-                                (new Date(
-                                  c.radiusExpiry.getFullYear(),
-                                  c.radiusExpiry.getMonth(),
-                                  c.radiusExpiry.getDate()
-                                ).getTime() -
-                                  new Date(new Date().toDateString()).getTime()) /
-                                  86_400_000
-                              )
-                            : null
-                        }
-                      />
+                      <ExpiryHint days={daysUntilDateOnly(c.radiusExpiryDate)} />
                     </div>
                   </td>
                   <td className="px-4 py-2.5">

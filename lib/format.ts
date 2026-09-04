@@ -74,6 +74,114 @@ export function formatRelativeDate(input: string | Date | null | undefined): str
   return d.toLocaleDateString(LOCALE, { day: 'numeric', month: 'short' })
 }
 
+/**
+ * The calendar date inside a date-only value, as plain numbers.
+ *
+ * A DATE column ("2026-09-15") is a CALENDAR DATE, not an instant. It has no
+ * time and no timezone, and the two obvious ways of reading it both move it:
+ *
+ *   new Date('2026-09-15')            parsed as UTC midnight by spec, so every
+ *                                     viewer west of UTC renders 14 Sep.
+ *   new Date('2026-09-15T00:00:00')   parsed as midnight in the PROCESS zone,
+ *                                     which then shifts if it is re-rendered
+ *                                     in any other zone — a UTC server writing
+ *                                     for a UTC-5 company lands on 14 Sep.
+ *
+ * So the string is never turned into an instant at all. The digits are read
+ * straight out of it and the caller formats those.
+ *
+ * Accepts a bare "YYYY-MM-DD" or anything beginning with one, which covers a
+ * DATE column and a timestamp that has already been reduced to a date.
+ */
+export function dateOnlyParts(
+  value: string | null | undefined
+): { year: number; month: number; day: number } | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec((value ?? '').trim())
+  if (!m) return null
+
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null
+
+  return { year, month, day }
+}
+
+/**
+ * "15 Sep 2026" — the app's standard date, for a DATE column.
+ *
+ * THE ONLY WAY A DATE-ONLY VALUE SHOULD BE RENDERED. The Date it builds is
+ * local midnight from local parts and is formatted in that same local zone, so
+ * there is no conversion anywhere in the path and no way for it to slip a day.
+ */
+export function formatDateOnly(value: string | null | undefined): string {
+  const p = dateOnlyParts(value)
+  if (!p) return '—'
+  return new Date(p.year, p.month - 1, p.day).toLocaleDateString(LOCALE, {
+    day: 'numeric', month: 'short', year: 'numeric',
+  })
+}
+
+/**
+ * A date-only value as a Date at LOCAL midnight, for comparing against other
+ * local dates. Null when there is no usable date.
+ *
+ * The only safe way to get a Date out of a DATE column. Comparing
+ * `new Date('2026-09-01')` — UTC midnight — against a locally-built month
+ * boundary is out by the whole UTC offset, which is enough to drop a customer
+ * added on the 1st into the previous month.
+ */
+export function dateOnlyToLocalDate(value: string | null | undefined): Date | null {
+  const p = dateOnlyParts(value)
+  return p ? new Date(p.year, p.month - 1, p.day) : null
+}
+
+/**
+ * Whole days from today to a date-only value. Negative once it has passed.
+ *
+ * Both sides are local midnight, so the answer is a count of calendar days and
+ * never a fraction rounded across a timezone offset.
+ */
+export function daysUntilDateOnly(value: string | null | undefined): number | null {
+  const target = dateOnlyToLocalDate(value)
+  if (!target) return null
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return Math.round((target.getTime() - today.getTime()) / DAY)
+}
+
+/**
+ * The calendar date a WALL-CLOCK Date spells out, as "YYYY-MM-DD".
+ *
+ * For a Date that was built from wall-clock parts and never meant an instant —
+ * radcheck's `Expiration` ("15 Sep 2026 00:00") is parsed into one of these.
+ * Sending such a Date to a browser as an instant and re-reading its parts there
+ * shifts it by the difference between the two zones; taking the date here, in
+ * the process that parsed it, is what keeps it the date FreeRADIUS was given.
+ *
+ * NOT for a genuine timestamp — use instantToDateOnly, which names its zone.
+ */
+export function localDateOnly(value: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return value.getFullYear() + '-' + pad(value.getMonth() + 1) + '-' + pad(value.getDate())
+}
+
+/**
+ * The calendar date an INSTANT falls on, in a named zone, as "YYYY-MM-DD".
+ *
+ * The opposite direction to the above and the only conversion that is ever
+ * correct: a real timestamp genuinely does fall on different dates in different
+ * places, so the zone has to be named. en-CA is asked for because it returns
+ * the parts already in YYYY-MM-DD order.
+ */
+export function instantToDateOnly(value: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(value)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
+  return get('year') + '-' + get('month') + '-' + get('day')
+}
+
 /** MAC addresses are too wide for narrow panels — show the tail only. */
 export function truncateMac(mac: string | null | undefined): string {
   if (!mac) return '—'

@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { createPortal, useFormStatus } from 'react-dom'
 
 import { extendCustomer } from '@/app/actions/customers'
+import { dateOnlyToLocalDate } from '@/lib/format'
 import { Modal } from '@/components/settings/Modal'
 
 /** Local YYYY-MM-DD — toISOString would shift the day in western timezones. */
@@ -38,14 +39,16 @@ export function ExtendAccessModal({
   customerId,
   customerName,
   radiusExpiry,
-  radiusExpiryIso,
+  radiusExpiryDate,
 }: {
   customerId: number
   customerName: string
   /** Raw registry Expiration value, for display. */
   radiusExpiry: string | null
-  /** The same date as an ISO string, for arithmetic. */
-  radiusExpiryIso: string | null
+  /** The same expiry as the calendar date it names, "YYYY-MM-DD". NOT an ISO
+   *  instant: this runs in the browser, and re-reading a server-built instant's
+   *  parts here moves the date by the gap between the two zones. */
+  radiusExpiryDate: string | null
 }) {
   const [open, setOpen] = useState(false)
 
@@ -59,7 +62,7 @@ export function ExtendAccessModal({
 
   // Default to one month past the REGISTRY expiry, or a month from today.
   // currentExpiry (billing) is deliberately not used for this.
-  const base = radiusExpiryIso ? new Date(radiusExpiryIso) : new Date()
+  const base = dateOnlyToLocalDate(radiusExpiryDate) ?? new Date()
   const suggested = new Date(base.getTime() < today.getTime() ? today : base)
   suggested.setMonth(suggested.getMonth() + 1)
 

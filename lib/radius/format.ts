@@ -32,7 +32,15 @@ export type RadiusStatus = {
   status: CustomerStatus
   /** Raw expiry value as stored, e.g. "05 Sep 2026 23:06". */
   expiry: string | null
+  /**
+   * The instant `expiry` parses to IN THE SERVER'S ZONE. Fine for arithmetic
+   * inside one process; do NOT send it to a browser and re-read its parts —
+   * radcheck stores wall-clock text with no zone, so the parts move. Anything
+   * that displays the expiry uses `expiryDate` instead.
+   */
   expiresAt: Date | null
+  /** `expiry` as the calendar date it names, "YYYY-MM-DD". Display path. */
+  expiryDate: string | null
   lastSeen: Date | null
   online: boolean
   bytesThisMonth: number | null
@@ -46,6 +54,7 @@ export const RADIUS_UNAVAILABLE: RadiusStatus = {
   status: 'unknown',
   expiry: null,
   expiresAt: null,
+  expiryDate: null,
   lastSeen: null,
   online: false,
   bytesThisMonth: null,

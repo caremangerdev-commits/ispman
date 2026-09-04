@@ -235,6 +235,9 @@ export type CustomerWithExpiry = Customer & {
   radiusStatus?: CustomerStatus
   /** Network expiry, as stored. */
   radiusExpiry?: Date | null
+  /** The same expiry as the calendar date it names. The DISPLAY path — see
+   *  lib/format.ts#localDateOnly for why the Date above must not be used. */
+  radiusExpiryDate?: string | null
 }
 
 /**

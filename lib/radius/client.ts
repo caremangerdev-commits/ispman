@@ -9,6 +9,7 @@ import {
   RADIUS_UNAVAILABLE, formatRadiusExpiration, type RadiusStatus,
 } from '@/lib/radius/format'
 import { lastNetworkEvent } from '@/lib/data/network-events'
+import { localDateOnly } from '@/lib/format'
 import { resolveStatus } from '@/lib/status'
 
 // Re-exported so existing server-side imports keep working; client components
@@ -67,6 +68,9 @@ export async function getRadiusStatus(
       status: resolveStatus(record.status, lastEvent),
       expiry: record.rawExpiry,
       expiresAt: record.expiry,
+      // Taken HERE, in the process that parsed the wall-clock string, so the
+      // date the browser shows is the date radcheck holds — see localDateOnly.
+      expiryDate: record.expiry ? localDateOnly(record.expiry) : null,
       lastSeen: usage.lastSeen,
       online: usage.online,
       bytesThisMonth: usage.bytesThisMonth,

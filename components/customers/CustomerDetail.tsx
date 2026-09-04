@@ -18,7 +18,7 @@ import { StatusBadge } from '@/components/customers/StatusBadge'
 import { GpsField } from '@/components/ui/GpsField'
 import { GpsLink } from '@/components/ui/GpsLink'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
-import { formatCurrency } from '@/lib/format'
+import { daysUntilDateOnly, formatCurrency, formatDateOnly } from '@/lib/format'
 import { can, type Role } from '@/lib/permissions'
 // From format.ts, not client.ts: this is a client component and client.ts
 // pulls in mysql2.
@@ -84,10 +84,11 @@ export type DetailCustomer = {
 const inputCls =
   'w-full rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-sm text-white outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500/40'
 
-const dateFmt = (iso: string | null) =>
-  iso
-    ? new Date(iso).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
-    : '—'
+// Every date on this card is a calendar date — a DATE column, or the expiry
+// radcheck holds — so they all go through lib/format.ts#formatDateOnly. There
+// is deliberately no local instant formatter left here to reach for: the one
+// that was here rendered a bare YYYY-MM-DD as UTC midnight and printed the day
+// before for every viewer west of UTC.
 
 const TYPE_STYLES: Record<CustomerType, string> = {
   dhcp: 'bg-blue-500/15 text-blue-400',
@@ -218,16 +219,13 @@ export function CustomerDetail({
 
   // Days remaining against the REGISTRY expiry. c.daysUntilExpiry is derived
   // from last_bill_date and is no longer shown anywhere.
-  const networkDaysLeft = radius.expiresAt
-    ? Math.round(
-        (new Date(
-          radius.expiresAt.getFullYear(),
-          radius.expiresAt.getMonth(),
-          radius.expiresAt.getDate()
-        ).getTime() -
-          new Date(new Date().toDateString()).getTime()) / 86_400_000
-      )
-    : null
+  //
+  // Counted from the calendar date, NOT from radius.expiresAt. That Date is an
+  // instant built in the SERVER's zone out of radcheck's wall-clock text, so
+  // reading its parts here — in the browser — shifted it by the gap between the
+  // two zones. A UTC server and a Jamaica browser is exactly that gap, which is
+  // why this and the list disagreed on every midnight expiry.
+  const networkDaysLeft = daysUntilDateOnly(radius.expiryDate)
 
   // The four network actions. Each is CSR-or-above and applies to a distinct
   // set of statuses, so at most two are ever offered at once. The server action
@@ -362,7 +360,7 @@ export function CustomerDetail({
                   customerId={c.id}
                   customerName={name}
                   radiusExpiry={radius.expiry}
-                  radiusExpiryIso={radius.expiresAt ? radius.expiresAt.toISOString() : null}
+                  radiusExpiryDate={radius.expiryDate}
                 />
               ) : null}
 
@@ -461,7 +459,9 @@ export function CustomerDetail({
             value={<GpsLink value={c.gps} />}
             control={<GpsField id="customer-gps" name="gps" existing={c.gps} />}
           />
-          <Row label="Date Added" value={dateFmt(c.date_added)} />
+          {/* date_added is a DATE column, so it is a calendar date. It was
+              going through dateFmt and rendering a day early west of UTC. */}
+          <Row label="Date Added" value={formatDateOnly(c.date_added)} />
 
           {c.catalogAvailable ? (
             <>
@@ -636,7 +636,8 @@ export function CustomerDetail({
                   </span>
                 }
               />
-              <Row label="Last Billed" value={dateFmt(c.last_billed_date)} />
+              {/* DATE column — same reason as Date Added. */}
+              <Row label="Last Billed" value={formatDateOnly(c.last_billed_date)} />
             </>
           ) : null}
 
@@ -647,9 +648,9 @@ export function CustomerDetail({
           <Row
             label="Expiry Date"
             value={
-              radius.expiresAt ? (
+              radius.expiryDate ? (
                 <span className="flex items-center justify-end gap-1.5">
-                  {dateFmt(radius.expiresAt.toISOString())}
+                  {formatDateOnly(radius.expiryDate)}
                   <span className={networkDaysLeft !== null && networkDaysLeft < 0 ? 'text-red-400' : 'text-gray-500'}>
                     ({networkDaysLeft !== null && networkDaysLeft < 0
                       ? Math.abs(networkDaysLeft) + 'd overdue'
