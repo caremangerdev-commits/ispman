@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
+import { hasGps, parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -80,7 +81,7 @@ async function logTicketEvent(opts: {
   companyId: number
   userId: number
   customerId: number | null
-  type: 'ticket_created' | 'ticket_assigned' | 'ticket_resolved'
+  type: 'ticket_created' | 'ticket_assigned' | 'ticket_resolved' | 'customer_gps_captured'
   details: string
 }) {
   await logEvent({
@@ -393,10 +394,87 @@ export async function resolveTicket(
       ' | ' + notes,
   })
 
+  // The ticket is already resolved by this point, deliberately. Everything
+  // below is the optional location capture, and NONE of it can undo that: a
+  // technician who mistypes a coordinate, or whose customer was given one by
+  // somebody else while they were typing, still gets their ticket closed. The
+  // outcome is reported in the toast instead of thrown as an error.
+  const note = await captureLocation(company.id, profile, existing, formData)
+
   revalidateTicket(id)
   if (existing.customer_id) revalidatePath('/dashboard/customers/' + existing.customer_id)
 
-  toast('/dashboard/tickets/' + id, 'Ticket resolved.')
+  toast('/dashboard/tickets/' + id, 'Ticket resolved.' + note)
+}
+
+/**
+ * Writes the coordinates a technician captured while resolving, if any.
+ *
+ * OPTIONAL AT EVERY STEP. No value posted is the normal case and says nothing;
+ * a bad value is reported but not enforced; a customer who gained coordinates
+ * since the form rendered keeps the ones they have. Returns the sentence to
+ * append to the toast, empty when there is nothing to say.
+ *
+ * Never throws. The caller has already resolved the ticket.
+ */
+async function captureLocation(
+  companyId: number,
+  profile: { id: number; first_name: string | null; email: string },
+  ticket: { id: number; title: string; customer_id: number | null },
+  formData: FormData
+): Promise<string> {
+  const raw = str(formData, 'gps')
+  if (!raw) return ''
+  if (ticket.customer_id === null) return ''
+
+  const gps = parseGps(raw)
+  if (!gps.ok) return ' The location was not saved — ' + lowerFirst(gps.error)
+
+  try {
+    const db = tenantClient()
+
+    // Re-checked against the database, not trusted from the form. The prompt
+    // only renders for a customer with no coordinates, but that was true when
+    // the page was rendered, which may have been a while ago.
+    const { data: customer } = await db
+      .from('customers')
+      .select('gps')
+      .eq('company_id', companyId)
+      .eq('id', ticket.customer_id)
+      .maybeSingle()
+
+    if (!customer) return ''
+    if (hasGps((customer as { gps: string | null }).gps)) {
+      return ' The location was not saved — this customer already has coordinates.'
+    }
+
+    const { error } = await db
+      .from('customers')
+      .update({ gps: gps.value })
+      .eq('company_id', companyId)
+      .eq('id', ticket.customer_id)
+
+    if (error) return ' The location could not be saved: ' + error.message
+
+    await logTicketEvent({
+      companyId,
+      userId: profile.id,
+      customerId: ticket.customer_id,
+      type: 'customer_gps_captured',
+      details:
+        'GPS ' + gps.value + ' captured by ' + actor(profile) +
+        ' while resolving ticket ' + JSON.stringify(ticket.title),
+    })
+
+    return ' Location saved.'
+  } catch (err) {
+    return ' The location could not be saved: ' + (err as Error).message
+  }
+}
+
+/** "Latitude must be…" reads wrong mid-sentence; "latitude must be…" does not. */
+function lowerFirst(text: string): string {
+  return text.charAt(0).toLowerCase() + text.slice(1)
 }
 
 /**

@@ -14,11 +14,21 @@ export type TicketListRow = {
   assignee: { first_name: string | null; last_name: string | null; email: string } | null
 }
 
-/** Everything on one ticket, including the three columns nothing used to read. */
-export type TicketDetail = TicketListRow & {
+/**
+ * Everything on one ticket, including the three columns nothing used to read.
+ *
+ * The customer join is WIDER here than on the list: the detail page links the
+ * customer's coordinates onto a map, and offers to capture them when a ticket
+ * is resolved for a customer who has none. The list has no use for either, so
+ * it does not pay for the column.
+ */
+export type TicketDetail = Omit<TicketListRow, 'customers'> & {
   description: string | null
   resolution_notes: string | null
   resolved_at: string | null
+  customers:
+    | { first_name: string | null; last_name: string | null; gps: string | null }
+    | null
 }
 
 /**
@@ -28,11 +38,14 @@ export type TicketDetail = TicketListRow & {
  * assignee cannot be joined through PostgREST's relationship syntax the way
  * `customers` can. It is resolved in a second pass instead — see attachAssignees.
  */
-const LIST_COLUMNS =
-  'id, title, status, priority, created_at, customer_id, assigned_to, ' +
-  'customers(first_name, last_name)'
+const BASE_COLUMNS =
+  'id, title, status, priority, created_at, customer_id, assigned_to'
 
-const DETAIL_COLUMNS = LIST_COLUMNS + ', description, resolution_notes, resolved_at'
+const LIST_COLUMNS = BASE_COLUMNS + ', customers(first_name, last_name)'
+
+const DETAIL_COLUMNS =
+  BASE_COLUMNS + ', description, resolution_notes, resolved_at, ' +
+  'customers(first_name, last_name, gps)'
 
 type RawTicket = Omit<TicketListRow, 'assignee'>
 
@@ -105,12 +118,10 @@ export async function getTicket(companyId: number, id: number): Promise<TicketDe
   if (error) throw new Error('Failed to load ticket: ' + error.message)
   if (!data) return null
 
+  // Cast through the detail shape rather than RawTicket: this select asks for
+  // the wider customer join, so the row genuinely carries gps.
   const [withAssignee] = await attachAssignees(companyId, [
-    data as unknown as RawTicket & {
-      description: string | null
-      resolution_notes: string | null
-      resolved_at: string | null
-    },
+    data as unknown as Omit<TicketDetail, 'assignee'>,
   ])
   return withAssignee
 }

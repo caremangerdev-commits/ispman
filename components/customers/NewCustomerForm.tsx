@@ -167,7 +167,7 @@ export function NewCustomerForm({
           <Field label="Address" htmlFor="address" error={errors.address} className="sm:col-span-2" required>
             <input id="address" name="address" defaultValue={v('address')} className={cls('address')} />
           </Field>
-          <Field label="GPS Coordinates" htmlFor="gps">
+          <Field label="GPS Coordinates" htmlFor="gps" error={errors.gps}>
             <input id="gps" name="gps" defaultValue={v('gps')} placeholder="lat,lng e.g. 18.0179,-76.8099" className={cls('gps')} />
           </Field>
 

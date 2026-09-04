@@ -9,9 +9,12 @@ import {
   assignTicket, reopenTicket, resolveTicket, updateTicket, type ActionResult,
 } from '@/app/actions/tickets'
 import { TicketPriorityBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges'
+import { GpsField } from '@/components/ui/GpsField'
+import { GpsLink } from '@/components/ui/GpsLink'
 import type { AgentOption } from '@/lib/data/checkoff'
 import type { TicketDetail as TicketDetailRow } from '@/lib/data/tickets'
 import { fullName } from '@/lib/format'
+import { hasGps } from '@/lib/gps'
 import { can, type Role } from '@/lib/permissions'
 import {
   TICKET_PRIORITIES, TICKET_PRIORITY_LABELS, toTicketStatus,
@@ -92,6 +95,12 @@ export function TicketDetail({
 
   const status = toTicketStatus(ticket.status)
   const isResolved = status === 'resolved'
+
+  // The prompt appears only where it can do any good: a ticket attached to a
+  // customer who has no coordinates on file. This is how coordinates actually
+  // get collected — a technician already standing at the house taps a button.
+  const customerGps = ticket.customers ? ticket.customers.gps : null
+  const offerLocation = ticket.customer_id !== null && !hasGps(customerGps)
 
   const mayEdit = can(role, 'edit_ticket')
   const mayAssign = can(role, 'assign_ticket')
@@ -175,6 +184,23 @@ export function TicketDetail({
             <p role="alert" className="mt-1 text-xs text-red-400">
               {resolveErrors.resolution_notes}
             </p>
+          ) : null}
+
+          {/* Optional, and it says so. Leaving it blank resolves the ticket
+              exactly as it did before this step existed — the server treats an
+              empty value as "nothing to record", never as a missing field. */}
+          {offerLocation ? (
+            <div className="mt-4 rounded-lg border border-gray-800 bg-gray-900/60 p-3">
+              <label htmlFor="ticket-gps" className="block text-xs font-medium text-gray-300">
+                Capture location
+                <span className="ml-1.5 font-normal text-gray-500">Optional</span>
+              </label>
+              <p className="mb-2 mt-0.5 text-[11px] leading-snug text-gray-500">
+                This customer has no coordinates on file. If you are at the property,
+                capture them now. Skip it and the ticket resolves as normal.
+              </p>
+              <GpsField id="ticket-gps" name="gps" existing={null} />
+            </div>
           ) : null}
 
           <div className="mt-3 flex items-center gap-2">
@@ -274,6 +300,11 @@ export function TicketDetail({
                     )
                   }
                 />
+                {/* Only where there is something to open. A customer with no
+                    coordinates gets no row rather than an empty one. */}
+                {hasGps(customerGps) ? (
+                  <Row label="Location" value={<GpsLink value={customerGps} />} />
+                ) : null}
                 <Row label="Created" value={dateTimeFmt(ticket.created_at)} />
                 <Row
                   label="Resolved"

@@ -15,6 +15,8 @@ import Link from 'next/link'
 
 import { ExtendAccessModal } from '@/components/customers/ExtendAccessModal'
 import { StatusBadge } from '@/components/customers/StatusBadge'
+import { GpsField } from '@/components/ui/GpsField'
+import { GpsLink } from '@/components/ui/GpsLink'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
 import { formatCurrency } from '@/lib/format'
 import { can, type Role } from '@/lib/permissions'
@@ -451,7 +453,14 @@ export function CustomerDetail({
           <Row label="Phone" value={c.phone ?? '—'} editing={editing} name="phone" defaultValue={c.phone ?? ''} />
           <Row label="Email" value={c.email ?? '—'} editing={editing} name="email" type="email" defaultValue={c.email ?? ''} />
           <Row label="Address" value={c.address ?? '—'} editing={editing} name="address" defaultValue={c.address ?? ''} />
-          <Row label="GPS" value={c.gps ?? '—'} editing={editing} name="gps" defaultValue={c.gps ?? ''} mono />
+          {/* Not a plain Row: the edit control carries the capture button, and
+              the read-only value is a link onto a map rather than bare text. */}
+          <ControlRow
+            label="GPS"
+            editing={editing}
+            value={<GpsLink value={c.gps} />}
+            control={<GpsField id="customer-gps" name="gps" existing={c.gps} />}
+          />
           <Row label="Date Added" value={dateFmt(c.date_added)} />
 
           {c.catalogAvailable ? (

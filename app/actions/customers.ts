@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
+import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import {
@@ -139,6 +140,12 @@ export async function createCustomer(
   if (monthly_rate === null || monthly_rate < 0) {
     fieldErrors.monthly_rate = 'Enter a monthly rate of 0 or more.'
   }
+
+  // Optional everywhere. Only a value that was actually typed is checked —
+  // blank means "no location recorded", which most customers legitimately are.
+  const gpsRaw = str(formData, 'gps')
+  const gps = gpsRaw ? parseGps(gpsRaw) : null
+  if (gps && !gps.ok) fieldErrors.gps = gps.error
   if (cut_off_date !== null && (cut_off_date < 1 || cut_off_date > 28)) {
     fieldErrors.cut_off_date = 'Must be a day between 1 and 28.'
   }
@@ -186,7 +193,7 @@ export async function createCustomer(
     email: email || null,
     phone,
     address: str(formData, 'address') || null,
-    gps: str(formData, 'gps') || null,
+    gps: gps && gps.ok ? gps.value : null,
     mac_address: mac_address || null,
     monthly_rate,
     balance: 0,
@@ -290,13 +297,22 @@ export async function updateCustomer(
     return { ok: false, error: 'MAC address must look like AA:BB:CC:DD:EE:FF.' }
   }
 
+  // Re-validated here and not only in the capture control: a server action is a
+  // public POST endpoint, and the same field also accepts coordinates pasted by
+  // hand out of Google Maps. Blank clears the location, which is allowed.
+  const gpsRaw = str(formData, 'gps')
+  const gps = gpsRaw ? parseGps(gpsRaw) : null
+  if (gps && !gps.ok) {
+    return { ok: false, error: gps.error, fieldErrors: { gps: gps.error } }
+  }
+
   const patch: Record<string, unknown> = {
     first_name: str(formData, 'first_name'),
     last_name: str(formData, 'last_name'),
     email: str(formData, 'email') || null,
     phone: str(formData, 'phone'),
     address: str(formData, 'address') || null,
-    gps: str(formData, 'gps') || null,
+    gps: gps && gps.ok ? gps.value : null,
     mac_address: mac_address || null,
     monthly_rate: numOrNull(formData, 'monthly_rate'),
     cut_off_date: numOrNull(formData, 'cut_off_date'),

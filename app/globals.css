@@ -26,38 +26,62 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
-   Thermal receipt printing (80mm)
+   Thermal receipt printing — 80mm roll, 72.1mm printable, 203 dpi
 
    The receipt is printed straight from the page it is displayed on rather than
    from a popup or an iframe: the modal is already showing the exact lines that
    should print, so the stylesheet's only job is to remove everything else.
 
-   `visibility` rather than `display` does the hiding. Collapsing the app with
-   `display: none` would take the receipt down with it — it lives inside the
-   modal, which lives inside the app — whereas visibility is inherited and can
-   be turned back on for one subtree. The receipt is then lifted out of the
-   modal's scroll box and positioned at the top-left of the sheet.
+   THE PAGE HAS AN EXPLICIT HEIGHT. `size: 80mm auto` let the browser take its
+   height from the driver, and the driver reports a roll as its whole length —
+   "Printer2 80(72.1) x 3276". Both browsers then laid the document out on a
+   3276mm page: Firefox shrank the receipt to fit and printed it postage-stamp
+   sized in the corner, and Chrome gave up with "Print preview failed". A fixed
+   200mm page ends that. A receipt longer than 200mm simply flows onto a second
+   page, which on a continuous roll is just more paper.
+
+   NOTHING OUTSIDE THE RECEIPT IS LAID OUT AT ALL. This used to hide the app
+   with `visibility: hidden`, which stops it painting but NOT from taking up
+   space — so the entire dashboard, sidebar and tables were still being reflowed
+   into an 80mm column behind the receipt, metres of invisible layout that the
+   browser still had to paginate. That is the second half of why Chrome failed.
+   `:has()` lets the receipt's own ancestors be kept and everything else be
+   removed outright, which is what the `visibility` trick was working around.
+
+   EVERYTHING IS SOLID BLACK ON WHITE. A thermal head is one colour at one
+   intensity: it has no way to render grey, a hairline border or a background
+   fill except as noise or as nothing at all. Colour, borders, shadows and
+   backgrounds are therefore stripped from the receipt subtree rather than
+   trusted to be absent.
    --------------------------------------------------------------------------- */
 @media print {
   @page {
-    size: 80mm auto;
+    /* Explicit height. Never `auto` — see above. */
+    size: 80mm 200mm;
     margin: 0;
   }
 
   html,
   body {
     width: 80mm;
+    height: auto;
     margin: 0;
     padding: 0;
     background: #fff;
-    /* Chrome and Safari otherwise drop backgrounds and lighten text when
-       printing, which on a thermal printer reads as a faint receipt. */
+    color: #000;
+    /* Absolute, so the receipt cannot be scaled by a root font size or by a
+       browser's "shrink to fit". */
+    font-size: 10pt;
+    /* Chrome and Safari otherwise lighten text when printing, which on a
+       thermal printer reads as a faint receipt. */
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
 
-  /* Every element is hidden, including nav, sidebar, buttons and the modal
-     frame; only the receipt subtree is turned back on. */
+  /* --- What gets printed -------------------------------------------------
+     Fallback first: on a browser without `:has()` the two rules below are
+     dropped as invalid and this leaves the receipt as the only visible thing,
+     which is how this worked before. */
   body * {
     visibility: hidden;
   }
@@ -67,30 +91,78 @@ body {
     visibility: visible;
   }
 
-  /* Out of the dialog's scroll container and onto the paper. */
-  .receipt-print {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 80mm;
-    box-sizing: border-box;
-    padding: 4mm 3mm;
-    margin: 0;
-    background: #fff;
-    color: #000;
-    font-family: ui-monospace, "Courier New", Courier, monospace;
-    /* 12 CPI: 32 columns across 80mm, matching lib/receipt.ts#RECEIPT_WIDTH
-       and the PDF written by lib/receipt-pdf.ts. */
-    font-size: 10pt;
-    line-height: 1.35;
-    white-space: pre;
+  /* Everything that is neither the receipt nor an ancestor of it stops
+     existing — no paint, and no layout either. */
+  body *:not(:has(.receipt-print)):not(.receipt-print):not(.receipt-print *) {
+    display: none !important;
   }
 
-  /* The backdrop would otherwise paint a full sheet of grey behind the
-     receipt on printers that honour backgrounds. */
-  .receipt-overlay {
-    position: static;
-    background: none;
-    padding: 0;
+  /* The ancestors that survive are stripped back to plain blocks so the
+     dialog's centring, scroll box, padding and rounded frame cannot displace
+     the receipt or add a page. */
+  body :has(.receipt-print) {
+    display: block !important;
+    position: static !important;
+    overflow: visible !important;
+    width: auto !important;
+    height: auto !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: none !important;
+    box-shadow: none !important;
+  }
+
+  /* --- The receipt itself ------------------------------------------------
+     72mm, not 80mm: the head can only reach 72.1mm of the 80mm roll. `margin:
+     0 auto` splits the remaining 8mm evenly, which puts the block inside the
+     printable window on a printer that centres it.
+
+     NOT absolutely positioned. An absolutely positioned box does not paginate
+     — a long receipt would be clipped at the page edge rather than continuing
+     onto the next one, which is exactly what the fixed page height needs it to
+     do. */
+  .receipt-print {
+    display: block !important;
+    position: static !important;
+    width: 72mm;
+    box-sizing: border-box;
+    margin: 2mm auto 0 !important;
+    padding: 0 !important;
+    /* No background of its own — the rule at the end of this block clears every
+       fill in the subtree, and the sheet is already white. A fill would only
+       give the thermal head something pointless to burn. */
+
+    /* Courier New first, and only then the generic fallbacks. Its advance
+       width is exactly 0.6em, so 32 columns at 10pt is 192pt = 67.7mm and is
+       known to fit inside 72mm. `ui-monospace` resolves to a different face
+       per platform (Consolas at 0.55em on Windows, SF Mono on macOS) and the
+       width could not be reasoned about. */
+    font-family: "Courier New", Courier, monospace !important;
+    /* 10pt at 203 dpi is ~28 dots tall — enough for the head to render a clean
+       glyph. Smaller than 9pt degrades into noise. Fixed in pt, never rem or
+       em, so nothing upstream can scale it. */
+    font-size: 10pt !important;
+    font-weight: normal;
+    line-height: 1.3;
+    letter-spacing: 0;
+    white-space: pre;
+    text-align: left;
+  }
+
+  /* Solid black, no exceptions. Greys, hairlines, fills and shadows all print
+     as noise or as nothing on a single-intensity thermal head. */
+  .receipt-print,
+  .receipt-print * {
+    color: #000 !important;
+    background: transparent !important;
+    border-color: #000 !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+    opacity: 1 !important;
+    filter: none !important;
   }
 }
