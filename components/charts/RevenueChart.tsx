@@ -7,7 +7,7 @@ import {
 import { formatCompactCurrency, formatCurrency } from '@/lib/format'
 import type { RevenuePoint } from '@/lib/data/dashboard'
 
-const BILLED = '#3b82f6'
+const RECURRING = '#3b82f6'
 const COLLECTED = '#22c55e'
 
 export function RevenueChart({ data }: { data: RevenuePoint[] }) {
@@ -41,13 +41,17 @@ export function RevenueChart({ data }: { data: RevenuePoint[] }) {
             labelStyle={{ color: '#f9fafb', fontWeight: 600, marginBottom: 4 }}
             formatter={(value, name) => [formatCurrency(Number(value)), String(name)]}
           />
+          {/* "Total Billed" until it was found to be nothing of the kind: it is
+              the recurring value of the customer book, and no bill run feeds
+              it. Renamed rather than repaired, because attributing real bills
+              to their periods needs history the schema does not keep yet. */}
           <Line
             type="monotone"
-            dataKey="billed"
-            name="Total Billed"
-            stroke={BILLED}
+            dataKey="recurring"
+            name="Recurring Monthly Value"
+            stroke={RECURRING}
             strokeWidth={2}
-            dot={{ r: 3, fill: BILLED, strokeWidth: 0 }}
+            dot={{ r: 3, fill: RECURRING, strokeWidth: 0 }}
             activeDot={{ r: 5 }}
           />
           <Line

@@ -1,5 +1,6 @@
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { lastNetworkEvents } from '@/lib/data/network-events'
+import { withBillingDefaults } from '@/lib/data/customers'
 import {
   CUSTOMER_STATUSES, resolveStatus, STATUS_LABELS, type CustomerStatus,
 } from '@/lib/status'
@@ -35,7 +36,24 @@ export type Stats = {
   accountsInArrears: number
 }
 
-export type RevenuePoint = { month: string; billed: number; collected: number }
+export type RevenuePoint = {
+  month: string
+  /**
+   * The recurring monthly value of the book of business at the end of this
+   * month — NOT what was billed.
+   *
+   * Named `recurring` rather than `billed` on purpose. It is the sum of every
+   * onboarded customer's CURRENT monthly_rate, so it is cumulative, monotonic,
+   * and retroactively restated whenever a rate changes. Nothing about an actual
+   * bill run reaches it: Bill All writes carried_balance and last_billed_date,
+   * and neither is read here.
+   *
+   * Attributing real bills to the periods they cover needs per-bill history,
+   * which the schema does not have yet — see supabase/migrations/0014_bills.sql.
+   */
+  recurring: number
+  collected: number
+}
 export type StatusSlice = { bucket: CustomerStatus; label: string; count: number }
 
 export type DashboardData = {
@@ -58,6 +76,24 @@ const monthStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), 1)
 const num = (v: unknown) => {
   const n = Number(v ?? 0)
   return Number.isFinite(n) ? n : 0
+}
+
+/**
+ * What one customer owes, from whichever column is authoritative for them.
+ *
+ * Postpaid debt lives in `carried_balance`: the bill run adds the monthly rate
+ * there and never touches `balance`. Prepaid debt lives in `balance`, which is
+ * also the only column adjustBalance() moves when a payment is corrected.
+ *
+ * NOT the sum of the two. A prepaid payment writes the same shortfall to BOTH
+ * columns (app/actions/payments.ts, the else branch of the settle step), so
+ * adding them reports every prepaid arrear twice.
+ *
+ * Before migration 0011 every row reads as prepaid — withBillingDefaults makes
+ * sure of that — so this is exactly the old `balance` behaviour until it lands.
+ */
+function amountOwed(c: Customer): number {
+  return c.billing_type === 'postpaid' ? num(c.carried_balance) : num(c.balance)
 }
 
 export async function getDashboardData(companyId: number): Promise<DashboardData> {
@@ -84,7 +120,11 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
       supabase
         .from('customers')
         .select(
-          'id, first_name, last_name, email, phone, mac_address, monthly_rate, balance, last_bill_date, date_added'
+          'id, first_name, last_name, email, phone, mac_address, monthly_rate, balance, last_bill_date, date_added' +
+          // Only once 0011 exists: PostgREST rejects the whole query for one
+          // unknown column. Without them every row reads as prepaid below,
+          // which is how the app treated everybody before that migration.
+          (caps.billing ? ', billing_type, carried_balance, account_credit, bill_date, last_billed_date' : '')
         )
         .eq('company_id', companyId),
 
@@ -129,7 +169,13 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
     if (res.error) throw new Error('Failed to load ' + name + ': ' + res.error.message)
   }
 
-  const customers = ((customersRes.data ?? []) as Customer[]).map(withExpiry)
+  // Through withBillingDefaults rather than a bare cast: `Customer` declares
+  // the 0011 columns as always present, and before that migration the select
+  // above does not fetch them at all. The cast used to assert five fields onto
+  // rows that did not carry them.
+  const customers = ((customersRes.data ?? []) as unknown as Record<string, unknown>[])
+    .map((row) => withBillingDefaults(row) as unknown as Customer)
+    .map(withExpiry)
   const payments = (paymentsRes.data ?? []) as unknown as {
     amount: number | string
     payment_date: string
@@ -191,15 +237,15 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
       })
       .reduce((sum, p) => sum + num(p.amount), 0)
 
-    // No invoices table exists, so "billed" is the recurring book of business:
-    // the monthly rate of every customer already onboarded by that month.
-    const billed = customers
+    // The recurring book of business, not billing. See RevenuePoint.recurring
+    // for why this is not, and cannot yet be, "what was billed this month".
+    const recurring = customers
       .filter((c) => c.date_added && new Date(c.date_added).getTime() < end.getTime())
       .reduce((sum, c) => sum + num(c.monthly_rate), 0)
 
     months.push({
       month: start.toLocaleDateString('en-US', { month: 'short' }),
-      billed,
+      recurring,
       collected,
     })
   }
@@ -231,8 +277,10 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
     radiusKnown,
     revenueThisMonth: thisMonth,
     revenueTrend: toTrend(percentChange(thisMonth, lastMonth)),
-    outstandingBalance: customers.reduce((s, c) => s + num(c.balance), 0),
-    accountsInArrears: customers.filter((c) => num(c.balance) > 0).length,
+    // One rule for both, or the money and the head count describe different
+    // sets of people.
+    outstandingBalance: customers.reduce((s, c) => s + amountOwed(c), 0),
+    accountsInArrears: customers.filter((c) => amountOwed(c) > 0).length,
   }
 
   // --- needs attention: whatever the registry says is not currently on ------

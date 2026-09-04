@@ -128,7 +128,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
               <div className="flex items-center gap-3 text-[11px] text-gray-500">
                 <span className="flex items-center gap-1.5">
                   <span className="h-2 w-2 rounded-full bg-blue-500" aria-hidden />
-                  Total Billed
+                  Recurring Monthly Value
                 </span>
                 <span className="flex items-center gap-1.5">
                   <span className="h-2 w-2 rounded-full bg-green-500" aria-hidden />

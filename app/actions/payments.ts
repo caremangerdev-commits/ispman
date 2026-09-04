@@ -401,9 +401,9 @@ export async function recordPayment(
 
   const monthlyCharge = Number(customer.monthly_rate ?? 0) + addonTotal
   const carriedBefore = caps.billing ? Number(customer.carried_balance ?? 0) : 0
-  const partial = isPartialPayment(monthlyCharge, carriedBefore, paidAmount)
-  const carriedAfter = carriedBalanceAfter(monthlyCharge, carriedBefore, paidAmount)
-  const outstanding = outstandingBalance(monthlyCharge, paidAmount)
+  const partial = isPartialPayment(billingType, monthlyCharge, carriedBefore, paidAmount)
+  const carriedAfter = carriedBalanceAfter(billingType, monthlyCharge, carriedBefore, paidAmount)
+  const outstanding = outstandingBalance(billingType, monthlyCharge, carriedBefore, paidAmount)
 
   // A decision only means something for a payment that is actually short. One
   // sent for a payment that covers the bill is dropped rather than stored.
@@ -453,7 +453,16 @@ export async function recordPayment(
   // plus the grace period. This is also the "Full Period" branch of a short
   // payment, which is the whole point of offering it.
   const fullPeriodExpiry = postpaid
-    ? postpaidExpiry(customer.bill_date ?? null, gracePeriodDays, paymentDate)
+    ? postpaidExpiry({
+        // cut_off_date, not bill_date: the bill day says when the charge is
+        // raised, the cut-off day says when access ends. Anchored on the
+        // registry expiry so settling the bill rolls the customer PAST the
+        // cut-off that bill was due at rather than up to it.
+        cutOffDay: customer.cut_off_date ?? null,
+        gracePeriodDays,
+        currentExpiry: registryExpiry,
+        from: paymentDate,
+      })
     : paymentExpiry(mode, registryExpiry, monthsPaid, paymentDate, customer.cut_off_date ?? null)
 
   const newExpiry =
@@ -514,7 +523,7 @@ export async function recordPayment(
     // Only postpaid bills for a period already used, so only postpaid stamps
     // one. A prepaid payment buys months forward and has no such period.
     if (postpaid) {
-      const period = billingPeriod(paymentDate)
+      const period = billingPeriod(paymentDate, customer.bill_date ?? null)
       insertRow.billing_period_start = period.start
       insertRow.billing_period_end = period.end
     }
@@ -636,11 +645,21 @@ export async function recordPayment(
   const patch: Record<string, unknown> = {}
 
   if (postpaid) {
-    // Postpaid deliberately writes nothing else. last_bill_date in particular
-    // is left alone: it drives the prepaid renewal cycle, and a postpaid
-    // customer's cycle is described by last_billed_date and bill_date instead.
+    // A postpaid payment writes carried_balance AND NOTHING ELSE.
+    //
+    // last_bill_date is left alone because it drives the prepaid renewal cycle.
+    //
+    // last_billed_date is left alone because IT IS THE BILL RUN'S COLUMN AND
+    // MEANS THE END OF THE PERIOD BILLED, not the date money changed hands.
+    // This used to stamp the payment date over it, and app/actions/bulk.ts
+    // #billedInPeriod reads that as "already billed for the month the payment
+    // fell in": every customer who paid during September was then skipped by
+    // the 1 October run and got a month of service with no bill raised.
+    //
+    // A payment SETTLES a bill; it does not raise one. Only billBatch writes
+    // this column. When a customer last paid is already recorded — payments
+    // .paid_on, stamped on the row inserted above — so nothing is lost here.
     patch.carried_balance = carriedAfter
-    patch.last_billed_date = ymd(paymentDate)
   } else {
     // Prepaid keeps exactly the behaviour it had before postpaid existed: the
     // payment clears what it covers and the bill cycle advances.

@@ -65,8 +65,11 @@ async function selectWithExtras(join = false) {
  * `Customer` declares them as always present, so every read has to land on a
  * concrete value. Before 0011 that value is "prepaid, carrying nothing", which
  * is exactly how the app treated every customer beforehand.
+ *
+ * Exported because the dashboard reads customers too, and a second copy of
+ * these defaults is a second place for them to drift.
  */
-function withBillingDefaults<T extends Record<string, unknown>>(row: T) {
+export function withBillingDefaults<T extends Record<string, unknown>>(row: T) {
   return {
     ...row,
     billing_type: toBillingType(row.billing_type as string | null | undefined),

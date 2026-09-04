@@ -15,7 +15,7 @@ import { StatusBadge } from '@/components/customers/StatusBadge'
 import {
   amountDue as computeAmountDue, billingPeriodLabel, isPartialPayment,
   outstandingBalance, parseYmd, postpaidExpiry, proportionalDate, ymd,
-  type AccessDecision,
+  type AccessDecision, type BillingType,
 } from '@/lib/billing'
 import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type PaymentMethod,
@@ -89,13 +89,15 @@ function previewExpiry(hit: SearchHit, months: number, paymentDate: Date): Date 
 /**
  * What the Amount field should start at.
  *
- * Postpaid bills for a period already used, so there is one figure to collect
- * and it is pre-filled. Prepaid buys months forward, so it stays driven by the
- * months dropdown exactly as before.
+ * Postpaid bills for a period already used, so there is one figure to collect —
+ * the carried balance the bill run wrote — and it is pre-filled. Prepaid buys
+ * months forward, so it stays driven by the months dropdown exactly as before.
  */
 function seedAmount(hit: SearchHit | null, postpaid: boolean, months: number): string {
   if (!hit) return ''
-  if (postpaid) return String(computeAmountDue(hit.total_monthly, hit.carried_balance))
+  if (postpaid) {
+    return String(computeAmountDue('postpaid', hit.total_monthly, hit.carried_balance))
+  }
   return String(hit.total_monthly * months)
 }
 
@@ -399,13 +401,18 @@ export function RecordPaymentForm({
   // Billing the bare monthly_rate would drop add-ons from the amount due.
   const monthlyCharge = selected ? selected.total_monthly : 0
   const carried = selected ? selected.carried_balance : 0
-  const due = computeAmountDue(monthlyCharge, carried)
+  const billingType: BillingType = postpaid ? 'postpaid' : 'prepaid'
+
+  // Postpaid resolves to the carried balance alone. The bill run has already
+  // added this month's charge to it, so adding one here would bill the same
+  // month twice — see lib/billing.ts#amountDue.
+  const due = computeAmountDue(billingType, monthlyCharge, carried)
 
   const paid = Number(debouncedAmount)
   const partial =
     selected !== null &&
     Number.isFinite(paid) &&
-    isPartialPayment(monthlyCharge, carried, paid)
+    isPartialPayment(billingType, monthlyCharge, carried, paid)
 
   const currentExpiry = selected?.network_expiry ? new Date(selected.network_expiry) : null
 
@@ -413,7 +420,15 @@ export function RecordPaymentForm({
   // same date — the period the customer would have got had they paid in full.
   const fullPeriodExpiry = selected
     ? postpaid
-      ? postpaidExpiry(selected.bill_date, gracePeriodDays, today)
+      ? postpaidExpiry({
+          // cut_off_date, not bill_date — the bill day raises the charge, the
+          // cut-off day ends access. Anchored on the registry expiry so paying
+          // rolls the customer past the cut-off the bill was due at.
+          cutOffDay: selected.cut_off_date,
+          gracePeriodDays,
+          currentExpiry,
+          from: today,
+        })
       : previewExpiry(selected, months, today)
     : null
 
@@ -430,9 +445,11 @@ export function RecordPaymentForm({
   const proportionalYmd = proportional ? ymd(proportional) : ''
   const accessDate = dateTouched && pickedDate ? pickedDate : proportionalYmd
 
-  // Always the month's charge less what was handed over, whatever date the
-  // cashier picks. The date decides access; it never changes what is owed.
-  const outstanding = selected ? outstandingBalance(monthlyCharge, paid) : 0
+  // Always what is owed less what was handed over, whatever date the cashier
+  // picks. The date decides access; it never changes what is owed.
+  const outstanding = selected
+    ? outstandingBalance(billingType, monthlyCharge, carried, paid)
+    : 0
 
   const dateChosen = partial && accessChoice === 'date_selected'
   // ISO dates compare correctly as strings, so no parsing is needed here.
@@ -628,7 +645,9 @@ export function RecordPaymentForm({
                       where the difference came from. */}
                   {carried > 0 ? (
                     <p className="text-right text-xs text-gray-500">
-                      {money(monthlyCharge)} monthly + {money(carried)} balance
+                      {postpaid
+                        ? 'Billed ' + billingPeriodLabel(today, selected.bill_date)
+                        : money(monthlyCharge) + ' monthly + ' + money(carried) + ' balance'}
                     </p>
                   ) : null}
                   <Line
@@ -1076,7 +1095,7 @@ export function RecordPaymentForm({
                 </p>
               ) : postpaid ? (
                 <p className="mt-0.5 text-xs text-gray-400">
-                  Bill period: {billingPeriodLabel(today)}
+                  Bill period: {billingPeriodLabel(today, selected.bill_date)}
                 </p>
               ) : (
                 <p className="mt-0.5 text-xs text-gray-400">
