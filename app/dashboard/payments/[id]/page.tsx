@@ -5,7 +5,8 @@ import { ArrowLeft, ArrowRight, Mail, MapPin, Phone } from 'lucide-react'
 
 import { PaymentActions } from '@/components/payments/PaymentActions'
 import { ReceiptButton } from '@/components/payments/ReceiptModal'
-import { getPayment } from '@/lib/data/payments'
+import { getPayment, getReversalSubject } from '@/lib/data/payments'
+import { getRadiusStatus } from '@/lib/radius/client'
 import { formatCurrency, fullName, timeAgo } from '@/lib/format'
 import { can } from '@/lib/permissions'
 import { requirePermission } from '@/lib/session'
@@ -44,6 +45,22 @@ export default async function PaymentDetailPage({
 
   const customer = payment.customer
   const customerName = customer ? fullName(customer) : 'Unknown customer'
+
+  // Read only for whoever may actually delete, since it costs a radcheck round
+  // trip. The delete dialog names it: reversing money leaves radcheck untouched,
+  // so the person deleting has to see what access is being left behind.
+  const canDelete = can(profile.role, 'delete_payment')
+  const subject = canDelete && customer
+    ? await getReversalSubject(company.id, customer.id)
+    : null
+  const serviceExpiry = subject?.identity
+    ? (
+        await getRadiusStatus(subject.identity, {
+          companyId: company.id,
+          customerId: subject.id,
+        })
+      ).expiry
+    : null
   const months = payment.months_paid ?? 1
   const perMonth = months > 0 ? payment.amount / months : payment.amount
 
@@ -90,9 +107,10 @@ export default async function PaymentDetailPage({
             agent: payment.agent,
             notes: payment.notes,
             customerName,
+            serviceExpiry,
           }}
             canEdit={can(profile.role, 'edit_payment')}
-            canDelete={can(profile.role, 'delete_payment')}
+            canDelete={canDelete}
           />
         </div>
       </div>

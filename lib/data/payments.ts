@@ -1,6 +1,7 @@
 import {
   PAYMENT_METHODS, toPaymentMethod, type PaymentMethod,
 } from '@/lib/data/checkoff'
+import { radiusIdentity } from '@/lib/radius/format'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -185,6 +186,70 @@ export type PaymentDetail = {
     monthly_rate: number
     balance: number
   } | null
+}
+
+export type ReversalSubject = {
+  id: number
+  /** For the log line, which has to stay readable once the customer is gone. */
+  name: string
+  /** radcheck identity, or null when the customer was never provisioned. */
+  identity: string | null
+}
+
+/**
+ * The customer a payment reversal concerns: who they are, and how to find them
+ * in radcheck.
+ *
+ * ONE FUNCTION FOR BOTH CALLERS. The delete dialog needs the identity so it can
+ * name the expiry it is about to leave standing; the reversal log line needs
+ * the identity for the same reading plus the name, because the payment row is
+ * gone afterwards and "customer #41" is not something anyone can act on. Those
+ * were two selects with the same capability gate on them, which is two places
+ * to get 0003 wrong.
+ *
+ * Not folded into getPayment's join: `customer_type` and `pppoe_username` only
+ * exist once migration 0003 is applied, and getPayment is not capability-aware,
+ * so widening its select would break the payment page on the older schema.
+ */
+export async function getReversalSubject(
+  companyId: number,
+  customerId: number
+): Promise<ReversalSubject | null> {
+  const caps = await getSchemaCapabilities()
+  const db = tenantClient()
+
+  const { data } = await db
+    .from('customers')
+    .select(
+      'id, first_name, last_name, mac_address' +
+      (caps.connectionTypes ? ', customer_type, pppoe_username' : '')
+    )
+    .eq('company_id', companyId)
+    .eq('id', customerId)
+    .maybeSingle()
+
+  const row = data as unknown as {
+    id: number
+    first_name: string | null
+    last_name: string | null
+    mac_address: string | null
+    customer_type?: string | null
+    pppoe_username?: string | null
+  } | null
+
+  if (!row) return null
+
+  return {
+    id: row.id,
+    // Not lib/format.ts#fullName: its fallback is "Unknown", and a log row that
+    // has the id in hand should say "Customer #41" rather than throw it away.
+    name: [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Customer #' + row.id,
+    identity: radiusIdentity({
+      customerType: row.customer_type ?? null,
+      macAddress: row.mac_address,
+      pppoeUsername: row.pppoe_username ?? null,
+    }),
+  }
 }
 
 /**

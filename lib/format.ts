@@ -228,15 +228,51 @@ export function humaniseLogDetail(details: string | null | undefined): string {
   const body = marked ? details.replace(/\s*\|\s*via=super_admin:#\d+\s*$/, '') : details
   const attribute = (text: string) => (marked ? text + ' (platform operator)' : text)
 
-  const m = /^RADIUS (\w+)(?: (FAILED))? \| identity=([^|]+?) \|/.exec(body.trim())
-  if (!m) return attribute(body)
-
-  const [, action, failed, identity] = m
   const field = (name: string) => {
     // The pipe must stay escaped for the regex, not read as alternation.
     const f = new RegExp('\\| ' + name + '=([^|]+)').exec(body)
     return f ? f[1].trim() : null
   }
+
+  // A payment reversal carries every field a later report needs, which makes it
+  // far too long to read in the activity panel. Summarised down to the two
+  // things that matter at a glance — how much left the books, and whether the
+  // customer kept their service — with the rest still in the stored row.
+  const reversal = /^Payment #(\d+) (edited|deleted)\b/.exec(body.trim())
+  if (reversal) {
+    const [, id, action] = reversal
+    const removed = field('amount_removed')
+    const who = field('customer')
+    const expiry = field('service_expiry_at_change')
+
+    const amount = removed ? Number(removed) : null
+    const money =
+      amount === null || !Number.isFinite(amount)
+        ? null
+        : formatCurrency(Math.abs(amount)) + (amount < 0 ? ' added to' : ' removed from')
+
+    // Only when a real date was captured. standingExpiry also writes "none (…)"
+    // and "unknown (…)" markers, and neither is something service can be said
+    // to run to.
+    const runsTo = expiry && !/^(none|unknown)\b/.test(expiry) ? expiry : null
+    const by = field('by')
+
+    // Each clause carries its own punctuation, so a field that is missing takes
+    // its separator with it rather than leaving a dangling dash behind.
+    const subject = [money, who].filter(Boolean).join(' ')
+
+    return attribute(
+      'Payment #' + id + ' ' + action +
+      (subject ? ' — ' + subject : '') +
+      (runsTo ? '; service still runs to ' + runsTo : '') +
+      (by ? ', by ' + by : '')
+    )
+  }
+
+  const m = /^RADIUS (\w+)(?: (FAILED))? \| identity=([^|]+?) \|/.exec(body.trim())
+  if (!m) return attribute(body)
+
+  const [, action, failed, identity] = m
 
   const who = field('by')
   const newExpiry = field('new_expiry')

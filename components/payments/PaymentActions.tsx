@@ -25,6 +25,12 @@ export type EditablePayment = {
   agent: string | null
   notes: string | null
   customerName: string
+  /**
+   * The customer's standing radcheck expiry, raw as stored. Null when they are
+   * unprovisioned or the network could not be read. Named in the delete dialog
+   * because reversing money leaves it untouched — see ConfirmDelete.
+   */
+  serviceExpiry?: string | null
 }
 
 /**
@@ -301,10 +307,31 @@ function ConfirmDelete({
             <span className="font-semibold">{payment.customerName}</span>. It cannot be undone.
           </p>
           <p className="text-xs text-red-300/80">
-            {formatCurrency(payment.amount)} will be added back to their balance. Their expiry
-            date will not be rewound.
+            {formatCurrency(payment.amount)} will be added back to their balance.
           </p>
         </div>
+      </div>
+
+      {/* THE PAIRING, STATED RATHER THAN REMEMBERED. Reversing money does not
+          touch radcheck — the backwards-write guard forbids it — so without
+          this the customer keeps service they have not paid for and never
+          complains. Naming the standing expiry here means the person deleting
+          sees exactly what is being left behind, at the moment they decide. */}
+      <div className="space-y-1.5 rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-3 text-sm">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-xs text-amber-300/70">Standing service expiry</span>
+          <span className="font-mono text-amber-200">
+            {payment.serviceExpiry ?? 'Not provisioned'}
+          </span>
+        </div>
+        <p className="text-xs text-amber-300/80">
+          {payment.serviceExpiry
+            ? 'This does not change. ' + payment.customerName +
+              ' keeps access until then unless you also correct it — that is a ' +
+              'separate action on their customer record (Correct Expiry), and it ' +
+              'is not part of this deletion.'
+            : 'There is no expiry on record for this customer, so nothing is left standing.'}
+        </p>
       </div>
 
       <div className="flex justify-end gap-2">

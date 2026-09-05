@@ -1,5 +1,6 @@
 import 'server-only'
 
+import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -68,6 +69,44 @@ export type LogEventInput = {
   userId?: number
   /** Console prefix for a failed write, e.g. '[tickets]'. */
   tag?: string
+
+  // --- Migration 0016 metadata ---------------------------------------------
+  //
+  // COLUMNS, NOT MORE `details` TEXT. Everything below could be written into
+  // the details string — reversalDetails already writes an amount there — but
+  // a field inside prose can only be read back by the parser that wrote it.
+  // "What did we reverse last quarter" should be a SUM over a numeric column,
+  // not a regex over a sentence that a later edit is free to reword. The
+  // details string stays the human account; these are the machine's copy.
+  //
+  // All three are optional and dropped when 0016 has not been applied, so a
+  // caller can start passing them before the SQL is run.
+
+  /**
+   * The money this row is about, signed the same way the details field is:
+   * positive took money out of the books, negative put it back. Null for rows
+   * that are not about an amount at all, which is most of them.
+   */
+  amount?: number | null
+
+  /**
+   * Ties rows written by one operator action together.
+   *
+   * A correction is usually more than one row — money reversed here, the
+   * expiry corrected separately afterwards — and nothing in the log currently
+   * says the two belong to each other. Sharing an id makes the pairing a join
+   * instead of a guess about timestamps.
+   */
+  correlationId?: string | null
+
+  /**
+   * The OTHER customer in an action involving two of them.
+   *
+   * `customer_id` says whose record the row is filed against; a payment moved
+   * off the wrong customer and onto the right one is one action touching two
+   * accounts, and without this the second one is only named in prose.
+   */
+  relatedCustomerId?: number | null
 }
 
 export type LogEventResult = { ok: true } | { ok: false; error: string }
@@ -93,13 +132,38 @@ export async function logEvent(input: LogEventInput): Promise<LogEventResult> {
     const clean = stripMarkers(input.details)
     const details = crossTenant ? clean + actingMarker(profile.id) : clean
 
-    const { error } = await tenantClient().from('log').insert({
+    const row: Record<string, unknown> = {
       company_id: companyId,
       user_id: userId,
       customer_id: input.customerId ?? null,
       type: input.type,
       details,
-    })
+    }
+
+    // Probed only when a caller actually passes metadata, so the ordinary write
+    // costs nothing extra. When 0016 is not applied the fields are DROPPED and
+    // the row still goes in: the change being logged has already happened, and
+    // losing the whole audit row to preserve its metadata is the worse trade.
+    // Said on the console so a silent downgrade is not silent.
+    const wantsMetadata =
+      input.amount !== undefined ||
+      input.correlationId !== undefined ||
+      input.relatedCustomerId !== undefined
+
+    if (wantsMetadata) {
+      if ((await getSchemaCapabilities()).logMetadata) {
+        row.amount = input.amount ?? null
+        row.correlation_id = input.correlationId ?? null
+        row.related_customer_id = input.relatedCustomerId ?? null
+      } else {
+        console.warn(
+          '%s wrote a %s row without its metadata: migration 0016 is not applied.',
+          tag, input.type
+        )
+      }
+    }
+
+    const { error } = await tenantClient().from('log').insert(row)
 
     if (error) {
       console.error('%s could not write a %s log row: %s', tag, input.type, error.message)

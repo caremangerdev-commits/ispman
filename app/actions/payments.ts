@@ -10,6 +10,7 @@ import {
 } from '@/lib/billing'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
+import { getReversalSubject } from '@/lib/data/payments'
 import { can } from '@/lib/permissions'
 import { canExtend } from '@/lib/status'
 import { getRadiusStatus as readNetworkRecord, radiusConfigured } from '@/lib/radius-db'
@@ -84,10 +85,12 @@ const NEW_CATEGORY = '__new__'
  * flow for exactly that reason: there is no path from here into the billing
  * code, so no later edit here can reach it by accident.
  *
- * A 'payment_recorded' activity-log row IS written. That is the audit trail for
- * money received, not a network event — the Network History card reads only the
- * four network_* types (lib/status.ts#NETWORK_EVENT_TYPES), none of which is
- * written here.
+ * NO activity-log row is written either. The payments row IS the record of
+ * money received — amount, purpose, agent, method, date, all of it — so a
+ * 'payment_recorded' line beside it only restated what the payment already
+ * said, and buried the rows that carry facts nothing else holds. What stays in
+ * the log is the network half (radius_extend, radius_extend_failed) and the
+ * reversals, neither of which can be read back off a row that is gone.
  */
 async function recordOtherPayment(
   formData: FormData,
@@ -219,15 +222,6 @@ async function recordOtherPayment(
     .single()
 
   if (insertError) return { ok: false, error: 'Could not record payment: ' + insertError.message }
-
-  await logEvent({
-    customerId: customer.id,
-    type: 'payment_recorded',
-    tag: '[payments]',
-    details:
-      money(paidAmount) + ' other payment collected by ' + agent +
-      ' | purpose_id=' + categoryId + ' | no service extension',
-  })
 
   revalidatePath('/dashboard/customers/' + customer.id)
   revalidatePath('/dashboard/payments')
@@ -409,7 +403,6 @@ export async function recordPayment(
   const carriedBefore = caps.billing ? Number(customer.carried_balance ?? 0) : 0
   const partial = isPartialPayment(carriedBefore, paidAmount)
   const carriedAfter = carriedBalanceAfter(carriedBefore, paidAmount)
-  const outstanding = outstandingBalance(carriedBefore, paidAmount)
 
   // --- Prepayment ----------------------------------------------------------
   //
@@ -632,7 +625,11 @@ export async function recordPayment(
             skipped: result.skipped,
             note:
               'bill period' +
-              (decision ? ', partial=' + decision : ''),
+              (decision ? ', partial=' + decision : '') +
+              // Kept when payment_recorded went: a manager granting a date
+              // beyond what the money bought is a decision, and this is now
+              // the only row that says it happened.
+              (beyondProportional ? ', beyond_proportional' : ''),
           }),
         })
       } else {
@@ -703,22 +700,6 @@ export async function recordPayment(
     }
   }
 
-  await logEvent({
-    customerId: customer.id,
-    type: 'payment_recorded',
-    tag: '[payments]',
-    details: paymentLogDetails({
-      amount: paidAmount,
-      agent,
-      networkExtended,
-      newExpiry,
-      decision,
-      outstanding,
-      proportional,
-      beyondProportional,
-    }),
-  })
-
   revalidatePath('/dashboard/customers/' + customer.id)
   revalidatePath('/dashboard/customers')
   revalidatePath('/dashboard/payments')
@@ -742,68 +723,6 @@ export async function recordPayment(
     paymentId,
   }
 }
-
-/**
- * The activity-log sentence for a recorded payment.
- *
- * Four shapes, because the four outcomes are genuinely different facts and this
- * log is what an owner reads back months later to work out what was agreed at
- * the counter. A date beyond the proportional one names the proportional date
- * too, so the decision can be judged without recomputing it.
- *
- * The access clause is only claimed when access actually moved. A payment that
- * saved but never reached the network says so, rather than reporting an
- * extension that did not happen.
- */
-function paymentLogDetails(opts: {
-  amount: number
-  agent: string
-  networkExtended: boolean
-  newExpiry: Date
-  decision: AccessDecision | null
-  outstanding: number
-  proportional: Date | null
-  beyondProportional: boolean
-}): string {
-  const {
-    amount, agent, networkExtended, newExpiry, decision, outstanding,
-    proportional, beyondProportional,
-  } = opts
-
-  const when = logDate(newExpiry)
-  const opening = 'Payment of ' + money(amount) + ' recorded by ' + agent + '.'
-
-  if (!networkExtended) {
-    const tail = decision ? ' Outstanding balance: ' + money(outstanding) + '.' : ''
-    return opening + ' Access was not extended.' + tail
-  }
-
-  if (decision === null) {
-    return opening + ' Access extended to ' + when + '.'
-  }
-
-  if (decision === 'full_period') {
-    return (
-      opening + ' Full period granted to ' + when + '. Outstanding balance: ' +
-      money(outstanding) + ' carried to next bill.'
-    )
-  }
-
-  if (beyondProportional && proportional) {
-    return (
-      opening + ' Access granted to ' + when + ' — beyond proportional date of ' +
-      logDate(proportional) + '. Outstanding balance: ' + money(outstanding) + '.'
-    )
-  }
-
-  return (
-    opening + ' Access granted to ' + when + '. Outstanding balance: ' +
-    money(outstanding) + '.'
-  )
-}
-
-const logDate = (d: Date) =>
-  d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
 
 /**
  * Loads a payment for mutation and confirms the caller may act on it.
@@ -833,6 +752,7 @@ async function loadForMutation(
   // restateBalances.
   const cols =
     'id, amount, customer_id, months_paid, payment_type, payment_date, agent, notes' +
+    (caps.checkoff ? ', payment_method' : '') +
     (caps.billing ? ', carried_balance_before, carried_balance_after' : '') +
     (caps.creditReversal ? ', credit_applied' : '')
 
@@ -854,6 +774,7 @@ async function loadForMutation(
     payment_date: string
     agent: string | null
     notes: string | null
+    payment_method?: string | null
     carried_balance_before?: number | string | null
     carried_balance_after?: number | string | null
     credit_applied?: number | string | null
@@ -861,7 +782,38 @@ async function loadForMutation(
 
   if (!payment) return { ok: false as const, error: 'That payment no longer exists.' }
 
-  return { ok: true as const, company, profile, db, payment }
+  // Who the payment belongs to, and how to find them in radcheck. Both are
+  // needed for the reversal log line — the name so the row is readable once the
+  // customer row is gone, the identity so the standing expiry can be read.
+  const customer = payment.customer_id
+    ? await getReversalSubject(company.id, payment.customer_id)
+    : null
+
+  return { ok: true as const, company, profile, db, payment, customer }
+}
+
+/**
+ * The customer's standing radcheck expiry, for a reversal log line.
+ *
+ * READ AT THE MOMENT OF THE CHANGE and stamped on the row, because it is the
+ * whole point of the entry: reversing money does not touch radcheck (the
+ * backwards-write guard in lib/radius-db.ts#extendInRadius forbids it), so a
+ * reversal leaves the customer holding access the payment had bought. Recording
+ * what that access was is what makes "money taken back, service left running"
+ * visible afterwards rather than something to be inferred.
+ *
+ * Never throws and never blocks the reversal: an unreachable NAS returns a
+ * marker, so the log says the expiry was unknown rather than silently omitting
+ * the field and reading like there was none.
+ */
+async function standingExpiry(identity: string | null): Promise<string> {
+  if (!identity) return 'none (not provisioned)'
+  if (!radiusConfigured()) return 'unknown (network not configured)'
+
+  const record = await readNetworkRecord(identity).catch(() => null)
+  if (!record) return 'unknown (network unreachable)'
+
+  return record.rawExpiry ?? 'none (no expiry on record)'
 }
 
 /**
@@ -1020,25 +972,79 @@ async function restateBalances(opts: {
 }
 
 /**
- * The `details` fragment describing what a correction did to the credit.
+ * The `details` line for a payment edit or deletion — the two events that take
+ * money back out of the system.
  *
- * Says explicitly when the reversal was SKIPPED because the payment predates
- * migration 0015 — the one case where the credit is knowingly left standing,
- * and the operator has to fix it by hand. Silence there would read exactly like
- * a payment that never made credit at all.
+ * WRITTEN TO BE RECONSTRUCTED FROM, NOT JUST READ. "Payment deleted" tells you
+ * nothing a month later: not who it belonged to, not how much left the books,
+ * not whether the customer kept the service it had bought. Every field needed
+ * to answer those is stamped here, at the moment of the change, because most of
+ * them are gone afterwards — the payment row is deleted, and the customer's
+ * radcheck expiry moves on.
+ *
+ * `amount_removed` IS A DELTA AND IS SIGNED, so a period's entries sum to the
+ * money taken back out. Positive means money left the books (a deletion, or an
+ * edit revising an amount down); negative means an edit revised one up. Old and
+ * new are kept alongside it for reading, but the delta is the summable field.
+ *
+ * Every field follows the `| name=value` convention lib/format.ts
+ * #humaniseLogDetail already extracts, so a later report can pull them out
+ * without a new parser. Values are stripped of `|` so one cannot fake a field.
  */
-function creditNote(effect: PaymentEffect, result: { shortfall: number } | null): string {
-  if (effect.creditApplied === null) {
-    return ' | credit=NOT REVERSED (payment predates the credit record; check account_credit by hand)'
-  }
-  if (effect.creditApplied === 0) return ''
+function reversalDetails(opts: {
+  action: 'edited' | 'deleted'
+  paymentId: number
+  customer: { id: number; name: string } | null
+  oldAmount: number
+  newAmount: number
+  method: string | null
+  paymentDate: string
+  effect: PaymentEffect
+  restated: { shortfall: number } | null
+  expiry: string
+  actor: string
+}): string {
+  const {
+    action, paymentId, customer, oldAmount, newAmount, method, paymentDate,
+    effect, restated, expiry, actor,
+  } = opts
 
-  const base = ' | credit_reversed=' + money(effect.creditApplied)
-  if (!result || result.shortfall <= 0) return base
+  // A pipe inside a value would split into a field that was never written.
+  const clean = (v: string) => v.replace(/\|/g, '/').trim()
+  const field = (name: string, value: string | number) =>
+    ' | ' + name + '=' + clean(String(value))
+
+  const parts =
+    'Payment #' + paymentId + ' ' + action +
+    field('customer', customer ? customer.name + ' #' + customer.id : 'none (not a customer payment)') +
+    field('amount_removed', (oldAmount - newAmount).toFixed(2)) +
+    field('amount_old', oldAmount.toFixed(2)) +
+    field('amount_new', newAmount.toFixed(2)) +
+    field('method', method || 'unknown') +
+    field('payment_date', paymentDate.slice(0, 10)) +
+    // THE FIELD THIS ENTRY EXISTS FOR. See standingExpiry.
+    field('service_expiry_at_change', expiry)
+
+  // Credit: reversed, partly reversed, or knowingly not reversed at all. The
+  // last case must be stated — silence there reads exactly like a payment that
+  // never created credit, and the two need different follow-up.
+  const credit =
+    effect.creditApplied === null
+      ? field('credit_reversed', 'NOT REVERSED (payment predates the credit record; check account_credit by hand)')
+      : effect.creditApplied === 0
+        ? ''
+        : field('credit_reversed', effect.creditApplied.toFixed(2)) +
+          (restated && restated.shortfall > 0
+            ? field('credit_shortfall_to_balance', restated.shortfall.toFixed(2))
+            : '')
 
   return (
-    base + ' | ' + money(result.shortfall) +
-    ' of it was already spent by a bill run and returned to the carried balance'
+    parts + credit +
+    // Stated on every row rather than left to be inferred from the absence of a
+    // network_expiry_corrected entry, so the pairing is legible in the log
+    // itself: money moved here, access did not.
+    field('expiry_action', 'none (correct_expiry is a separate action)') +
+    field('by', actor)
   )
 }
 
@@ -1071,7 +1077,7 @@ export async function updatePayment(
   const loaded = await loadForMutation(paymentId, 'edit_payment')
   if (!loaded.ok) return { ok: false, error: loaded.error }
 
-  const { company, profile, db, payment } = loaded
+  const { company, profile, db, payment, customer } = loaded
 
   const fieldErrors: Record<string, string> = {}
 
@@ -1171,10 +1177,19 @@ export async function updatePayment(
     customerId: payment.customer_id,
     type: 'payment_updated',
     tag: '[payments]',
-    details:
-      'Payment #' + payment.id + ' corrected from ' + money(previousAmount) +
-      ' to ' + money(amount as number) + ' by ' + profile.email +
-      creditNote(effect, restated),
+    details: reversalDetails({
+      action: 'edited',
+      paymentId: payment.id,
+      customer,
+      oldAmount: previousAmount,
+      newAmount: amount as number,
+      method: payment.payment_method ?? payment.payment_type ?? null,
+      paymentDate: payment.payment_date,
+      effect,
+      restated,
+      expiry: await standingExpiry(customer?.identity ?? null),
+      actor: profile.email,
+    }),
   })
 
   revalidatePath('/dashboard/payments')
@@ -1198,12 +1213,17 @@ export async function deletePayment(formData: FormData): Promise<void> {
     redirect('/dashboard/payments?toastKind=error&toast=' + encodeURIComponent(loaded.error))
   }
 
-  const { company, profile, db, payment } = loaded
+  const { company, profile, db, payment, customer } = loaded
   const amount = Number(payment.amount ?? 0)
 
   // Read before the row goes, or there is nothing left to reverse from.
   const effect = paymentEffect(payment)
   const caps = await getSchemaCapabilities()
+
+  // Read BEFORE the delete so the log records the access the customer held at
+  // the moment the money was taken back — the pairing this entry exists to make
+  // visible. radcheck is untouched by any of this; that is the point.
+  const expiryAtChange = await standingExpiry(customer?.identity ?? null)
 
   const { error: deleteError } = await db
     .from('payments')
@@ -1241,9 +1261,20 @@ export async function deletePayment(formData: FormData): Promise<void> {
     customerId: payment.customer_id,
     type: 'payment_deleted',
     tag: '[payments]',
-    details:
-      'Payment #' + payment.id + ' of ' + money(amount) + ' deleted by ' + profile.email +
-      creditNote(effect, restated),
+    details: reversalDetails({
+      action: 'deleted',
+      paymentId: payment.id,
+      customer,
+      oldAmount: amount,
+      // A deletion removes the whole amount, so the delta is the amount itself.
+      newAmount: 0,
+      method: payment.payment_method ?? payment.payment_type ?? null,
+      paymentDate: payment.payment_date,
+      effect,
+      restated,
+      expiry: expiryAtChange,
+      actor: profile.email,
+    }),
   })
 
   revalidatePath('/dashboard/payments')

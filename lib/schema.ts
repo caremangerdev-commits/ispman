@@ -40,6 +40,16 @@ export type SchemaCapabilities = {
    * log that the credit was left standing.
    */
   creditReversal: boolean
+  /**
+   * `log.amount` / `correlation_id` / `related_customer_id` (0016). Lets a
+   * log row carry the numbers a report needs in columns instead of buried in
+   * `details` prose. All three land in one ALTER, so one probe decides them.
+   *
+   * Until it is present logEvent drops those fields rather than failing the
+   * insert — the change being logged has already happened, and losing the whole
+   * row to keep the metadata would be the worse trade.
+   */
+  logMetadata: boolean
 }
 
 /**
@@ -63,7 +73,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   const [
     typeRes, expiryRes, catalogRes, generalRes, rateRes, checkoffRes, recordsRes,
     billingCustomerRes, billingPaymentRes, billingSettingRes, thresholdRes,
-    otherPaymentRes, paymentCategoryRes, creditReversalRes,
+    otherPaymentRes, paymentCategoryRes, creditReversalRes, logMetadataRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -94,8 +104,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
       .limit(1),
     db.from('payment_categories').select('id').limit(1),
     db.from('payments').select('credit_applied').limit(1),
+    db.from('log').select('amount, correlation_id, related_customer_id').limit(1),
   ])
-  console.log('[perf]     schema probe: 14 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 15 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -118,6 +129,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   const missingOtherPaymentCols = otherPaymentRes.error?.code === '42703'
   // 0015 is a single ALTER, so the one column decides it.
   const missingCreditReversal = creditReversalRes.error?.code === '42703'
+  // 0016 likewise: one ALTER adding all three columns to log.
+  const missingLogMetadata = logMetadataRes.error?.code === '42703'
   const missingPaymentCategories =
     paymentCategoryRes.error?.code === 'PGRST205' || paymentCategoryRes.error?.code === '42P01'
 
@@ -180,6 +193,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     )
   }
 
+  if (logMetadataRes.error && !missingLogMetadata) {
+    throw new Error(
+      'Schema probe failed for log metadata columns: ' + logMetadataRes.error.message
+    )
+  }
+
   return {
     connectionTypes: !missingType,
     expiryMode: !missingExpiry,
@@ -191,6 +210,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     billingThresholds: !missingThresholds,
     otherPayments: !missingOtherPaymentCols && !missingPaymentCategories,
     creditReversal: !missingCreditReversal,
+    logMetadata: !missingLogMetadata,
   }
 })
 

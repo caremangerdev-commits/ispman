@@ -74,8 +74,8 @@ function toast(path: string, message: string, kind?: 'error'): never {
  * already landed, and undoing it to keep the log tidy would take away the thing
  * the operator actually asked for.
  *
- * The type strings follow the app's own convention (`payment_recorded`,
- * `network_provision`), not the shorter values left behind by the seed.
+ * The type strings follow the app's own convention (`network_provision`,
+ * `radius_extend`), not the shorter values left behind by the seed.
  */
 async function logTicketEvent(opts: {
   companyId: number
