@@ -6,6 +6,7 @@ import { ArrowLeft, Plus } from 'lucide-react'
 import { CustomerDetail } from '@/components/customers/CustomerDetail'
 import { NetworkHistory } from '@/components/customers/NetworkHistory'
 import { TicketPriorityBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges'
+import { lastBalanceAdjustment } from '@/lib/data/balance-adjustments'
 import { listNetworkHistory } from '@/lib/data/network-events'
 import {
   getCustomerAddonIds, listAdditionalServices, listMiscCategories, listServicePlans,
@@ -34,6 +35,7 @@ export default async function CustomerDetailPage({
 
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
+    balanceAdjustment,
   ] = await Promise.all([
       getCustomerPayments(company.id, customerId),
       getCustomerTickets(company.id, customerId),
@@ -53,6 +55,9 @@ export default async function CustomerDetailPage({
       listAdditionalServices(company.id),
       listMiscCategories(company.id),
       getCustomerAddonIds(company.id, customerId),
+      // Marks a carried balance that was set by hand rather than by the bill
+      // run. Log-derived, so there is no column and no migration behind it.
+      lastBalanceAdjustment(company.id, customerId),
     ])
 
   const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
@@ -105,6 +110,7 @@ export default async function CustomerDetailPage({
         }}
         radius={radius}
         role={profile.role}
+        balanceAdjustment={balanceAdjustment}
         servicePlans={plans}
         additionalServices={addons}
         miscCategories={miscCats}

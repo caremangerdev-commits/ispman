@@ -33,6 +33,13 @@ export type SchemaCapabilities = {
    * so the form stays on the Service flow it had before.
    */
   otherPayments: boolean
+  /**
+   * `payments.credit_applied` (migration 0015). What makes a prepayment's
+   * credit reversible when the payment is corrected or deleted. Until it is
+   * present the correction paths move the carried balance only, and say in the
+   * log that the credit was left standing.
+   */
+  creditReversal: boolean
 }
 
 /**
@@ -56,7 +63,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   const [
     typeRes, expiryRes, catalogRes, generalRes, rateRes, checkoffRes, recordsRes,
     billingCustomerRes, billingPaymentRes, billingSettingRes, thresholdRes,
-    otherPaymentRes, paymentCategoryRes,
+    otherPaymentRes, paymentCategoryRes, creditReversalRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -86,8 +93,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
       .select('payment_kind, payment_category_id, paid_on, service_charge, service_active_until')
       .limit(1),
     db.from('payment_categories').select('id').limit(1),
+    db.from('payments').select('credit_applied').limit(1),
   ])
-  console.log('[perf]     schema probe: 13 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 14 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -108,6 +116,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   const missingThresholds = thresholdRes.error?.code === '42703'
   // 0013 lands as one ALTER plus one CREATE TABLE, so either missing disables it.
   const missingOtherPaymentCols = otherPaymentRes.error?.code === '42703'
+  // 0015 is a single ALTER, so the one column decides it.
+  const missingCreditReversal = creditReversalRes.error?.code === '42703'
   const missingPaymentCategories =
     paymentCategoryRes.error?.code === 'PGRST205' || paymentCategoryRes.error?.code === '42P01'
 
@@ -164,6 +174,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     )
   }
 
+  if (creditReversalRes.error && !missingCreditReversal) {
+    throw new Error(
+      'Schema probe failed for credit_applied: ' + creditReversalRes.error.message
+    )
+  }
+
   return {
     connectionTypes: !missingType,
     expiryMode: !missingExpiry,
@@ -174,6 +190,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     billing: !missingBillingCustomer && !missingBillingPayment && !missingBillingSetting,
     billingThresholds: !missingThresholds,
     otherPayments: !missingOtherPaymentCols && !missingPaymentCategories,
+    creditReversal: !missingCreditReversal,
   }
 })
 

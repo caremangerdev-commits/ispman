@@ -1,4 +1,4 @@
-import { Radio, Wifi, WifiOff, type LucideIcon } from 'lucide-react'
+import { Radio, Undo2, Wifi, WifiOff, type LucideIcon } from 'lucide-react'
 
 import { timeAgo } from '@/lib/format'
 import { NETWORK_EVENT_LABELS, type NetworkEventType } from '@/lib/status'
@@ -22,6 +22,9 @@ const EVENTS: Record<NetworkEventType, { icon: LucideIcon; cls: string }> = {
   network_reconnect: { icon: Wifi, cls: 'bg-green-500/10 text-green-400' },
   network_extend: { icon: Radio, cls: 'bg-blue-500/10 text-blue-400' },
   network_disconnect: { icon: WifiOff, cls: 'bg-red-500/10 text-red-400' },
+  // Amber, not red: a correction pulls access back but is not a disconnection,
+  // and the card should not read as though the customer was cut off.
+  network_expiry_corrected: { icon: Undo2, cls: 'bg-amber-500/10 text-amber-400' },
 }
 
 export function NetworkHistory({ entries }: { entries: LogRow[] }) {

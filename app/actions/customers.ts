@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
+import { BALANCE_ADJUSTED } from '@/lib/data/balance-adjustments'
+import { formatCurrency } from '@/lib/format'
 import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -589,10 +591,14 @@ async function runNetworkAction(opts: {
   formData: FormData
   expiryFor: (target: NetworkTarget) => Date | string | null
   success: (target: NetworkTarget, newExpiry: string) => string
+  /** Recorded on the log row. Only correct_expiry supplies one. */
+  reason?: string
 }) {
   const { action, formData } = opts
   const { company, profile } = await authorize(
-    action === 'provision' ? 'provision_customer' : 'extend_disconnect_customer'
+    action === 'provision' ? 'provision_customer'
+      : action === 'correct_expiry' ? 'correct_expiry'
+        : 'extend_disconnect_customer'
   )
 
   const id = numOrNull(formData, 'id')
@@ -647,6 +653,7 @@ async function runNetworkAction(opts: {
       newExpiry: result.newExpiry,
       actor: profile.email,
       skipped: result.skipped,
+      reason: opts.reason,
     }),
   })
 
@@ -731,6 +738,54 @@ export async function extendCustomer(formData: FormData) {
 }
 
 /**
+ * Corrects a mistaken extension by moving an expiry to an EARLIER date.
+ *
+ * The undo for Extend Access. An extension writes an absolute date, so picking
+ * the wrong one — a year out instead of a month — grants access nobody paid
+ * for, and until now there was no way back: extendInRadius rejects a backwards
+ * write, which is exactly what it is there for.
+ *
+ * This does not touch that guard. It routes to correctExpiryInRadius, a
+ * separate function whose whole job is the one write extendInRadius refuses,
+ * following the precedent disconnectInRadius set. Every renewal path still runs
+ * through a guard that cannot be bypassed.
+ *
+ * MANAGER AND ABOVE, unlike Extend itself, which a CSR may use. Taking access
+ * away from a customer who has already been told they have it is a different
+ * kind of decision from granting it. A reason is required and is written to the
+ * log with the operator, the time, and both dates.
+ *
+ * Deliberately allows a date in the past: an extension that should never have
+ * been granted may need the customer put back to an expiry that has already
+ * passed, which is a correction and not a disconnection. It is refused only
+ * when it would not actually change anything.
+ */
+export async function correctExpiry(formData: FormData) {
+  const reason = str(formData, 'reason').trim()
+
+  return runNetworkAction({
+    action: 'correct_expiry',
+    formData,
+    reason,
+    expiryFor: () => {
+      if (!reason) return 'A reason is required to correct an expiry date.'
+      if (reason.length > 500) return 'Keep the reason under 500 characters.'
+
+      const chosen = str(formData, 'new_expiry')
+      if (!chosen) return 'No date was chosen, so nothing was corrected.'
+
+      const picked = new Date(chosen + 'T00:00:00')
+      if (!Number.isFinite(picked.getTime())) return 'That is not a valid date.'
+
+      // That the date is actually EARLIER than the one on record is checked in
+      // lib/radius/operations.ts, where radcheck has already been read.
+      return picked
+    },
+    success: (t, expiry) => t.fullName + ': expiry corrected to ' + expiry,
+  })
+}
+
+/**
  * Takes a customer off the network by setting their Expiration to now.
  *
  * Goes through disconnectInRadius, NOT extendInRadius — this is the one
@@ -747,6 +802,114 @@ export async function disconnectCustomer(formData: FormData) {
     expiryFor: () => null,
     success: (t) => t.fullName + ' disconnected from the network.',
   })
+}
+
+/**
+ * Sets a customer's carried balance by hand, with a reason.
+ *
+ * WHY THIS EXISTS. A customer who changes plan after being billed keeps the old
+ * rate's charge on their balance: the bill run added it for a period that was
+ * correct at the time, nothing recalculates a period already billed, and a
+ * payment only subtracts. Before this there was no way to correct the number
+ * short of editing the row in the SQL editor, which leaves no trace at all.
+ *
+ * MANAGER AND ABOVE. This writes what a customer owes without any money
+ * changing hands and without a bill run — the same authority as restating a
+ * payment, and pointedly not the cashier's, who may take money but may not
+ * decide what is owed.
+ *
+ * NEVER SILENT. Two things make that true. The reason is required, and the log
+ * row records the old value, the new value, who and why. And the adjustment
+ * stays visible on the customer record afterwards
+ * (lib/data/balance-adjustments.ts), so a balance that was typed by a person is
+ * distinguishable from one the bill run produced for as long as it matters —
+ * which is permanently, because every later charge and payment is applied on
+ * top of the adjusted figure rather than replacing it.
+ *
+ * Refuses a negative balance, matching customers_carried_balance_check from
+ * migration 0011, and refuses a no-op so the log does not fill with rows that
+ * changed nothing.
+ */
+export async function adjustCarriedBalance(formData: FormData) {
+  const { company, profile } = await authorize('adjust_carried_balance')
+
+  const id = numOrNull(formData, 'id')
+  if (id === null) return
+
+  const back = returnTo(formData, id)
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.billing) {
+    toast(back, 'Billing is not set up on this system yet.', 'error')
+  }
+
+  const reason = str(formData, 'reason')
+  if (!reason) toast(back, 'A reason is required to adjust a carried balance.', 'error')
+  if (reason.length > 500) toast(back, 'Keep the reason under 500 characters.', 'error')
+
+  const next = numOrNull(formData, 'carried_balance')
+  if (next === null) toast(back, 'Enter the corrected balance.', 'error')
+  if (next < 0) toast(back, 'A carried balance cannot be negative.', 'error')
+
+  const db = tenantClient()
+  const { data } = await db
+    .from('customers')
+    .select('first_name, last_name, carried_balance')
+    .eq('company_id', company.id)
+    .eq('id', id)
+    .maybeSingle()
+
+  const row = data as unknown as {
+    first_name: string | null
+    last_name: string | null
+    carried_balance: number | string | null
+  } | null
+
+  if (!row) toast(back, 'That customer could not be found.', 'error')
+
+  const fullName =
+    [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Customer #' + id
+  const before = Number(row.carried_balance ?? 0)
+  const after = Math.round(next * 100) / 100
+
+  if (before === after) {
+    toast(back, fullName + ': the balance is already ' + formatCurrency(after) + '.', 'error')
+  }
+
+  const { error: updateError } = await db
+    .from('customers')
+    .update({ carried_balance: after })
+    .eq('company_id', company.id)
+    .eq('id', id)
+
+  if (updateError) {
+    toast(back, 'Could not adjust the balance: ' + updateError.message, 'error')
+  }
+
+  // Written AFTER the update, like every other audit row in this app: the
+  // change is what the operator asked for, and a failed log write must not undo
+  // it. logEvent never throws (lib/audit.ts).
+  await logEvent({
+    customerId: id,
+    type: BALANCE_ADJUSTED,
+    tag: '[billing]',
+    details:
+      'Carried balance adjusted for ' + fullName +
+      ' | old=' + formatCurrency(before) +
+      ' | new=' + formatCurrency(after) +
+      ' | by=' + profile.email +
+      ' | reason=' + reason,
+  })
+
+  revalidatePath('/dashboard/customers')
+  revalidatePath('/dashboard/customers/' + id)
+  revalidatePath('/dashboard')
+
+  toast(
+    back,
+    fullName + ': balance adjusted from ' + formatCurrency(before) +
+    ' to ' + formatCurrency(after) + '.'
+  )
 }
 
 export async function deleteCustomer(formData: FormData) {

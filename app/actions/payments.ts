@@ -5,8 +5,8 @@ import { redirect } from 'next/navigation'
 
 import {
   billingPeriod, carriedBalanceAfter, isPartialPayment, monthsCovered,
-  outstandingBalance, parseYmd, prepaymentCredit, proportionalDate, serviceExpiry,
-  ymd, type AccessDecision,
+  outstandingBalance, parseYmd, prepaymentCredit, proportionalDate, reverseCredit,
+  serviceExpiry, ymd, type AccessDecision,
 } from '@/lib/billing'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
@@ -546,6 +546,15 @@ export async function recordPayment(
     insertRow.access_decision = decision
   }
 
+  if (caps.creditReversal) {
+    // THE REVERSAL RECORD (migration 0015). Written for EVERY payment, zero
+    // included, not just the ones that created credit: a correction has to be
+    // able to tell "this payment made no credit" from "nobody recorded what it
+    // made", and only a stamped 0 says the first. Rows predating 0015 are NULL
+    // and their corrections skip the reversal rather than guess.
+    insertRow.credit_applied = creditAdded
+  }
+
   const { data: inserted, error: insertError } = await db
     .from('payments')
     .insert(insertRow)
@@ -816,10 +825,20 @@ async function loadForMutation(
   }
   if (paymentId === null) return { ok: false as const, error: 'Missing payment reference.' }
 
+  const caps = await getSchemaCapabilities()
   const db = tenantClient()
+
+  // What the payment did to the customer's balance, so a correction can restate
+  // it exactly rather than inferring the effect from the amount alone. See
+  // restateBalances.
+  const cols =
+    'id, amount, customer_id, months_paid, payment_type, payment_date, agent, notes' +
+    (caps.billing ? ', carried_balance_before, carried_balance_after' : '') +
+    (caps.creditReversal ? ', credit_applied' : '')
+
   const { data, error } = await db
     .from('payments')
-    .select('id, amount, customer_id, months_paid, payment_type, payment_date, agent, notes')
+    .select(cols)
     .eq('company_id', company.id)
     .eq('id', paymentId)
     .maybeSingle()
@@ -835,6 +854,9 @@ async function loadForMutation(
     payment_date: string
     agent: string | null
     notes: string | null
+    carried_balance_before?: number | string | null
+    carried_balance_after?: number | string | null
+    credit_applied?: number | string | null
   } | null
 
   if (!payment) return { ok: false as const, error: 'That payment no longer exists.' }
@@ -887,6 +909,140 @@ async function adjustCarriedBalance(
 }
 
 /**
+ * What a payment did to a customer's two billing columns, read off its own row.
+ *
+ * All three are null for rows written before the migration that added them —
+ * 0011 for the balance pair, 0015 for the credit — and null is NOT zero. A
+ * correction that cannot see what the payment did must fall back to the amount
+ * delta and say so, rather than assume it did nothing.
+ */
+type PaymentEffect = {
+  carriedBefore: number | null
+  carriedAfter: number | null
+  creditApplied: number | null
+}
+
+function paymentEffect(payment: {
+  carried_balance_before?: number | string | null
+  carried_balance_after?: number | string | null
+  credit_applied?: number | string | null
+}): PaymentEffect {
+  const n = (v: number | string | null | undefined) =>
+    v === null || v === undefined ? null : Number(v)
+
+  return {
+    carriedBefore: n(payment.carried_balance_before),
+    carriedAfter: n(payment.carried_balance_after),
+    creditApplied: n(payment.credit_applied),
+  }
+}
+
+/**
+ * Applies a correction to BOTH billing columns in one read-modify-write.
+ *
+ * WHY THE AMOUNT DELTA WAS NOT ENOUGH. adjustCarriedBalance moves the balance by
+ * the difference in amount, which is right only when the whole payment went
+ * against the balance. A prepayment does not: part of it settled the bill and
+ * the rest became credit. Correcting 10,500 down to 3,500 through the amount
+ * delta put 7,000 back on a balance that had never carried it, AND left the
+ * 7,000 of credit standing — wrong twice, in opposite directions.
+ *
+ * So a correction restates what the payment actually did. `carriedDelta` is the
+ * change to what the payment left owing, `creditDelta` the change to the credit
+ * it created; both are computed by the caller from the payment's own stamped
+ * columns, so neither is inferred.
+ *
+ * ORDER MATTERS. The credit reversal runs against the balance the carried delta
+ * has already produced, because credit the bill run has spent comes back as a
+ * charge on that same balance (lib/billing.ts#reverseCredit). Doing it the
+ * other way round would drop the shortfall.
+ *
+ * Re-reads the customer rather than trusting the page, so a payment or a bill
+ * run landing between page load and save is not silently overwritten.
+ */
+async function restateBalances(opts: {
+  db: ReturnType<typeof tenantClient>
+  companyId: number
+  customerId: number | null
+  carriedDelta: number
+  creditDelta: number
+  /** False when 0011 is absent, in which case account_credit does not exist. */
+  billing: boolean
+}): Promise<{ carried: number; credit: number; shortfall: number } | null> {
+  const { db, companyId, customerId, carriedDelta, creditDelta, billing } = opts
+  if (!customerId) return null
+  if (carriedDelta === 0 && creditDelta === 0) return null
+
+  const { data } = await db
+    .from('customers')
+    .select(billing ? 'carried_balance, account_credit' : 'carried_balance')
+    .eq('company_id', companyId)
+    .eq('id', customerId)
+    .maybeSingle()
+
+  if (!data) return null
+
+  const row = data as unknown as {
+    carried_balance: number | string | null
+    account_credit?: number | string | null
+  }
+
+  const currentCarried = Number(row.carried_balance ?? 0)
+  const currentCredit = billing ? Number(row.account_credit ?? 0) : 0
+
+  // Clamped at zero to match customers_carried_balance_check (migration 0011).
+  const carriedBase = Math.max(0, round2(currentCarried + carriedDelta))
+
+  const settled =
+    creditDelta < 0
+      ? reverseCredit(currentCredit, carriedBase, -creditDelta)
+      : {
+        credit: round2(currentCredit + creditDelta),
+        carriedBalance: carriedBase,
+        reversed: 0,
+        shortfall: 0,
+      }
+
+  const patch: Record<string, unknown> = { carried_balance: settled.carriedBalance }
+  if (billing) patch.account_credit = settled.credit
+
+  await db
+    .from('customers')
+    .update(patch)
+    .eq('company_id', companyId)
+    .eq('id', customerId)
+
+  return {
+    carried: settled.carriedBalance,
+    credit: settled.credit,
+    shortfall: settled.shortfall,
+  }
+}
+
+/**
+ * The `details` fragment describing what a correction did to the credit.
+ *
+ * Says explicitly when the reversal was SKIPPED because the payment predates
+ * migration 0015 — the one case where the credit is knowingly left standing,
+ * and the operator has to fix it by hand. Silence there would read exactly like
+ * a payment that never made credit at all.
+ */
+function creditNote(effect: PaymentEffect, result: { shortfall: number } | null): string {
+  if (effect.creditApplied === null) {
+    return ' | credit=NOT REVERSED (payment predates the credit record; check account_credit by hand)'
+  }
+  if (effect.creditApplied === 0) return ''
+
+  const base = ' | credit_reversed=' + money(effect.creditApplied)
+  if (!result || result.shortfall <= 0) return base
+
+  return (
+    base + ' | ' + money(result.shortfall) +
+    ' of it was already spent by a bill run and returned to the carried balance'
+  )
+}
+
+/**
  * Corrects a recorded payment.
  *
  * A correction to the amount is pushed back through the customer's carried
@@ -895,12 +1051,17 @@ async function adjustCarriedBalance(
  * here would corrupt the cycle rather than repair it. Adjust the customer's dates
  * directly if a months-paid correction has to change their expiry.
  *
- * KNOWN GAP — account_credit IS NOT REVERSED. A payment that created credit
- * (lib/billing.ts#prepaymentCredit) records no trace of how much on the payment
- * row, so correcting or deleting it moves the carried balance back but leaves
- * the credit standing. Correct the credit by hand until a `credit_applied`
- * column exists on `payments` to reverse it from. Editing months_paid alone is
- * unaffected: it changes no money and no credit.
+ * CREDIT IS REVERSED, from the `credit_applied` column migration 0015 stamps on
+ * every payment. The correction recomputes what the new amount would have
+ * created against the balance the payment itself recorded, and applies the
+ * difference — including the case where a bill run has already spent the credit,
+ * which comes back as a charge on the carried balance
+ * (lib/billing.ts#reverseCredit).
+ *
+ * Payments written before 0015 carry no credit record. Their corrections move
+ * the balance only, and say so in the log rather than assuming no credit
+ * existed. Editing months_paid alone is unaffected: it changes no money and no
+ * credit.
  */
 export async function updatePayment(
   _prev: PaymentResult | null,
@@ -966,8 +1127,45 @@ export async function updatePayment(
 
   if (updateError) return { ok: false, error: 'Could not update payment: ' + updateError.message }
 
-  // A larger payment leaves less owing, so the delta is old minus new.
-  await adjustCarriedBalance(db, company.id, payment.customer_id, previousAmount - (amount as number))
+  // --- Restate what the payment did ----------------------------------------
+  //
+  // Recomputed against `carried_balance_before` — what the customer owed at the
+  // moment the payment was taken — so the corrected amount is split between
+  // balance and credit exactly as it would have been at the till. Falls back to
+  // the amount delta when that column is absent (pre-0011 rows), which is the
+  // behaviour this had before credit existed.
+  const effect = paymentEffect(payment)
+  let restated: { shortfall: number } | null = null
+
+  if (effect.carriedBefore !== null && effect.carriedAfter !== null) {
+    const newCarriedAfter = outstandingBalance(effect.carriedBefore, amount as number)
+    const newCredit = prepaymentCredit(effect.carriedBefore, amount as number)
+
+    restated = await restateBalances({
+      db,
+      companyId: company.id,
+      customerId: payment.customer_id,
+      carriedDelta: round2(newCarriedAfter - effect.carriedAfter),
+      // Null credit_applied means the payment predates 0015 and there is no
+      // record to reverse from. Left alone deliberately, and reported below.
+      creditDelta:
+        effect.creditApplied === null ? 0 : round2(newCredit - effect.creditApplied),
+      billing: caps.billing,
+    })
+
+    if (caps.creditReversal) {
+      await db
+        .from('payments')
+        .update({ credit_applied: newCredit })
+        .eq('company_id', company.id)
+        .eq('id', payment.id)
+    }
+  } else {
+    // A larger payment leaves less owing, so the delta is old minus new.
+    await adjustCarriedBalance(
+      db, company.id, payment.customer_id, previousAmount - (amount as number)
+    )
+  }
 
   await logEvent({
     customerId: payment.customer_id,
@@ -975,7 +1173,8 @@ export async function updatePayment(
     tag: '[payments]',
     details:
       'Payment #' + payment.id + ' corrected from ' + money(previousAmount) +
-      ' to ' + money(amount as number) + ' by ' + profile.email,
+      ' to ' + money(amount as number) + ' by ' + profile.email +
+      creditNote(effect, restated),
   })
 
   revalidatePath('/dashboard/payments')
@@ -1002,6 +1201,10 @@ export async function deletePayment(formData: FormData): Promise<void> {
   const { company, profile, db, payment } = loaded
   const amount = Number(payment.amount ?? 0)
 
+  // Read before the row goes, or there is nothing left to reverse from.
+  const effect = paymentEffect(payment)
+  const caps = await getSchemaCapabilities()
+
   const { error: deleteError } = await db
     .from('payments')
     .delete()
@@ -1015,14 +1218,32 @@ export async function deletePayment(formData: FormData): Promise<void> {
     )
   }
 
-  // The money is no longer recorded as received, so it is owed again.
-  await adjustCarriedBalance(db, company.id, payment.customer_id, amount)
+  // The money is no longer recorded as received, so everything the payment did
+  // is undone: what it settled goes back on the balance, and the credit it
+  // created is taken back. A deletion reverses the WHOLE effect, which is what
+  // separates it from a correction — there is no new amount to restate against.
+  let restated: { shortfall: number } | null = null
+
+  if (effect.carriedBefore !== null && effect.carriedAfter !== null) {
+    restated = await restateBalances({
+      db,
+      companyId: company.id,
+      customerId: payment.customer_id,
+      carriedDelta: round2(effect.carriedBefore - effect.carriedAfter),
+      creditDelta: effect.creditApplied === null ? 0 : -effect.creditApplied,
+      billing: caps.billing,
+    })
+  } else {
+    await adjustCarriedBalance(db, company.id, payment.customer_id, amount)
+  }
 
   await logEvent({
     customerId: payment.customer_id,
     type: 'payment_deleted',
     tag: '[payments]',
-    details: 'Payment #' + payment.id + ' of ' + money(amount) + ' deleted by ' + profile.email,
+    details:
+      'Payment #' + payment.id + ' of ' + money(amount) + ' deleted by ' + profile.email +
+      creditNote(effect, restated),
   })
 
   revalidatePath('/dashboard/payments')

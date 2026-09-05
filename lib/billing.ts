@@ -298,6 +298,48 @@ export function applyCredit(
   }
 }
 
+/**
+ * Takes back credit a payment created, when that payment is corrected or
+ * deleted. The inverse of prepaymentCredit, settled against what is left.
+ *
+ * THE CREDIT MAY ALREADY BE SPENT. A bill run draws prepayment down a month at
+ * a time (applyCredit), so by the time anyone corrects the payment there may be
+ * less credit standing than the payment created — or none. The difference
+ * cannot come out of `account_credit`, which carries a `>= 0` CHECK (migration
+ * 0011), so IT GOES ON THE CARRIED BALANCE.
+ *
+ * That is not a fudge to satisfy the constraint, it is the correct entry. Credit
+ * that a bill run consumed was consumed against a real charge. If the payment
+ * that created it turns out not to have happened, that charge was never actually
+ * settled, and an unsettled charge is exactly what a carried balance is:
+ *
+ *   paid 10,500 on 3,500 owed -> credit 7,000, month 1 settled
+ *   one bill run             -> credit 3,500, month 2 paid from credit
+ *   corrected down to 3,500  -> reverse 7,000, but only 3,500 is left
+ *                            -> credit 0, and month 2's 3,500 returns to the
+ *                               balance, which is the truth: it was never paid
+ *
+ * Callers must apply BOTH returned columns. Writing `credit` without
+ * `carriedBalance` silently forgives whatever the bill run had already spent.
+ */
+export function reverseCredit(
+  accountCredit: number,
+  carriedBalance: number,
+  creditToReverse: number
+): { credit: number; carriedBalance: number; reversed: number; shortfall: number } {
+  const held = Math.max(0, safe(accountCredit))
+  const wanted = Math.max(0, safe(creditToReverse))
+  const reversed = Math.min(held, wanted)
+  const shortfall = wanted - reversed
+
+  return {
+    credit: round2(held - reversed),
+    carriedBalance: round2(safe(carriedBalance) + shortfall),
+    reversed: round2(reversed),
+    shortfall: round2(shortfall),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Access
 // ---------------------------------------------------------------------------

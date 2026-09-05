@@ -3,7 +3,7 @@
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 import {
-  Activity, Cable, Eye, EyeOff, MapPin, Package, Pencil, Radio, Trash2,
+  Activity, Cable, Eye, EyeOff, MapPin, Package, Pencil, Radio, Scale, Trash2,
   Wallet, Wifi, X,
 } from 'lucide-react'
 
@@ -13,12 +13,14 @@ import {
 } from '@/app/actions/customers'
 import Link from 'next/link'
 
+import { AdjustBalanceModal } from '@/components/customers/AdjustBalanceModal'
+import { CorrectExpiryModal } from '@/components/customers/CorrectExpiryModal'
 import { ExtendAccessModal } from '@/components/customers/ExtendAccessModal'
 import { StatusBadge } from '@/components/customers/StatusBadge'
 import { GpsField } from '@/components/ui/GpsField'
 import { GpsLink } from '@/components/ui/GpsLink'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
-import { daysUntilDateOnly, formatCurrency, formatDateOnly } from '@/lib/format'
+import { daysUntilDateOnly, formatCurrency, formatDateOnly, timeAgo } from '@/lib/format'
 import { can, type Role } from '@/lib/permissions'
 // From format.ts, not client.ts: this is a client component and client.ts
 // pulls in mysql2.
@@ -189,6 +191,15 @@ function SaveButton() {
   )
 }
 
+/**
+ * The last hand-adjustment of the carried balance.
+ *
+ * Declared here rather than imported from lib/data/balance-adjustments.ts,
+ * which is `server-only` — a type-only import would be erased, but keeping the
+ * boundary visible is cheaper than relying on that.
+ */
+type BalanceAdjustment = { at: string; details: string }
+
 export function CustomerDetail({
   customer,
   radius,
@@ -197,6 +208,7 @@ export function CustomerDetail({
   additionalServices,
   miscCategories,
   selectedAddonIds,
+  balanceAdjustment,
 }: {
   customer: DetailCustomer
   radius: RadiusStatus
@@ -205,6 +217,8 @@ export function CustomerDetail({
   additionalServices: AdditionalService[]
   miscCategories: MiscCategory[]
   selectedAddonIds: number[]
+  /** The last hand-adjustment of the carried balance, or null if never. */
+  balanceAdjustment?: BalanceAdjustment | null
 }) {
   const c = customer
 
@@ -252,6 +266,16 @@ export function CustomerDetail({
 
   const mayDelete = can(role, 'manage_company_settings')
   const maySeeTech = can(role, 'view_customer_tech_info')
+
+  // The two manager corrections. Both are narrower than the actions they undo:
+  // a CSR may extend access and take a payment, but only a manager may pull an
+  // expiry back or restate what is owed. Server-side checks in
+  // app/actions/customers.ts are what actually enforce this.
+  // Needs an expiry actually on record: correctExpiryInRadius refuses to create
+  // a missing row, so offering this without one only produces an error.
+  const showCorrectExpiry =
+    can(role, 'correct_expiry') && radius.available && radius.expiry !== null
+  const showAdjustBalance = can(role, 'adjust_carried_balance') && c.billingAvailable
 
   const [editing, setEditing] = useState(false)
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
@@ -371,6 +395,18 @@ export function CustomerDetail({
                   than submitting straight away. */}
               {showExtend ? (
                 <ExtendAccessModal
+                  customerId={c.id}
+                  customerName={name}
+                  radiusExpiry={radius.expiry}
+                  radiusExpiryDate={radius.expiryDate}
+                />
+              ) : null}
+
+              {/* The undo for Extend, and a separate button on purpose: it is
+                  manager-only, needs a reason, and writes through a different
+                  RADIUS path that is allowed to move an expiry back. */}
+              {showCorrectExpiry ? (
+                <CorrectExpiryModal
                   customerId={c.id}
                   customerName={name}
                   radiusExpiry={radius.expiry}
@@ -617,8 +653,34 @@ export function CustomerDetail({
           <Row
             label="Balance"
             value={
-              <span className={owed > 0 ? 'text-orange-400' : 'text-gray-200'}>
-                {formatCurrency(owed)}
+              <span className="inline-flex items-center gap-2">
+                <span className={owed > 0 ? 'text-orange-400' : 'text-gray-200'}>
+                  {formatCurrency(owed)}
+                </span>
+
+                {/* NEVER SILENT. A balance someone typed must not look like one
+                    the bill run produced. The mark is permanent by design: a
+                    later charge or payment is applied ON TOP of the adjusted
+                    figure rather than replacing it, so there is no point at
+                    which the adjustment stops being part of this number.
+                    See lib/data/balance-adjustments.ts. */}
+                {balanceAdjustment ? (
+                  <span
+                    title={balanceAdjustment.details}
+                    className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-400"
+                  >
+                    <Scale className="h-3 w-3" aria-hidden />
+                    Adjusted {timeAgo(balanceAdjustment.at)}
+                  </span>
+                ) : null}
+
+                {showAdjustBalance && !editing ? (
+                  <AdjustBalanceModal
+                    customerId={c.id}
+                    customerName={name}
+                    currentBalance={owed}
+                  />
+                ) : null}
               </span>
             }
           />

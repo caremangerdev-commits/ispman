@@ -89,6 +89,7 @@ export const NETWORK_EVENT_TYPES = [
   'network_reconnect',
   'network_extend',
   'network_disconnect',
+  'network_expiry_corrected',
 ] as const
 
 export type NetworkEventType = (typeof NETWORK_EVENT_TYPES)[number]
@@ -98,6 +99,7 @@ export const NETWORK_EVENT_LABELS: Record<NetworkEventType, string> = {
   network_reconnect: 'Reconnected',
   network_extend: 'Extended',
   network_disconnect: 'Disconnected',
+  network_expiry_corrected: 'Expiry corrected',
 }
 
 /**

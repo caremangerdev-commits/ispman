@@ -187,6 +187,48 @@ export async function disconnectInRadius(mac: string): Promise<void> {
 }
 
 /**
+ * Sets a customer's expiry to an EARLIER date, to correct a mistaken extension.
+ *
+ * THE SECOND DELIBERATE BACKWARDS WRITE, and it follows the precedent
+ * disconnectInRadius set rather than reopening the argument: the guard in
+ * extendInRadius is not weakened, given a bypass flag, or made conditional. An
+ * operation that legitimately moves an expiry backwards gets its own function,
+ * so every renewal path keeps a guard that cannot be talked out of rejecting a
+ * miscalculated date.
+ *
+ * WHY THIS IS SAFE WHERE A FLAG WOULD NOT BE. The guard exists to catch a date
+ * a CALCULATION produced — a renewal that silently shortens paid-for access.
+ * Nothing here is calculated: `expiry` is a date a manager typed, having been
+ * shown the current one, with a reason recorded against their name. The check
+ * being skipped is a check for an error class that cannot occur on this path.
+ *
+ * Deliberately does NOT create the row when none exists. extendInRadius inserts
+ * on a miss because an extension for an unprovisioned customer is still a grant
+ * of access; correcting an expiry that is not there is nonsense, and silently
+ * provisioning someone in the middle of an undo would be the opposite of what
+ * the manager asked for. Callers get `false` and must report it.
+ *
+ * Returns true when a row was updated, false when the identity had no
+ * Expiration row to correct.
+ */
+export async function correctExpiryInRadius(
+  mac: string,
+  newExpiry: string
+): Promise<boolean> {
+  const username = normaliseUsername(mac)
+
+  return withRetry(async () => {
+    const pool = radiusPool()
+    const [result] = await pool.execute(
+      'UPDATE radcheck SET value = ? WHERE username = ? AND attribute = ?',
+      [newExpiry, username, EXPIRATION]
+    )
+
+    return ((result as mysql.ResultSetHeader).affectedRows ?? 0) > 0
+  })
+}
+
+/**
  * A customer's live state, derived entirely from radcheck.
  *
  * `expiry` is a Date rather than the raw string so callers never re-parse the

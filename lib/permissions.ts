@@ -17,6 +17,8 @@ export type Permission =
   | 'activate_customer'
   | 'provision_customer'
   | 'extend_disconnect_customer'
+  | 'correct_expiry'
+  | 'adjust_carried_balance'
   | 'record_payment'
   | 'view_all_payments'
   | 'edit_payment'
@@ -55,6 +57,20 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // technician (no authority to put an account on the network).
   provision_customer: ['super_admin', 'company_admin', 'manager', 'csr'],
   extend_disconnect_customer: ['super_admin', 'company_admin', 'manager', 'csr'],
+  // UNDOING an extension is narrower than making one. Extending is routine
+  // counter work and a CSR does it all day; pulling an expiry BACK takes access
+  // away from a customer who can see they were given it, so it stops at
+  // manager — the same line edit_payment draws for restating money.
+  //
+  // The consequence is deliberate: a CSR who extends too far cannot correct it
+  // themselves and must escalate. That is the point. The alternative is letting
+  // the role that makes the mistake quietly erase it.
+  correct_expiry: ['super_admin', 'company_admin', 'manager'],
+  // Writing a customer's carried balance by hand bypasses the bill run and
+  // every payment. It is the same authority as restating a payment, so it sits
+  // on the same line — and pointedly excludes cashier, who may take money but
+  // may not decide what is owed.
+  adjust_carried_balance: ['super_admin', 'company_admin', 'manager'],
   record_payment: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
   view_all_payments: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
   // Correcting a recorded payment is a management action: a cashier may take a

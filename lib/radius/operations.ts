@@ -2,6 +2,7 @@ import 'server-only'
 
 import {
   activateInRadius,
+  correctExpiryInRadius,
   disconnectInRadius,
   extendInRadius,
   getRadiusStatus as readRadcheck,
@@ -29,15 +30,21 @@ import type { NetworkEventType } from '@/lib/status'
  */
 
 /**
- * The four network actions, matching the buttons on the customer record.
+ * The five network actions, matching the buttons on the customer record.
  *
- * They map onto three radcheck writes: provision creates both rows from
- * scratch, reconnect and extend move the Expiration forward through the
- * backwards-write guard, and disconnect is the one operation that deliberately
- * moves it back — which is why it has its own function rather than a flag on
- * extendInRadius. See lib/radius-db.ts#disconnectInRadius.
+ * They map onto four radcheck writes: provision creates both rows from scratch,
+ * reconnect and extend move the Expiration forward through the backwards-write
+ * guard, and disconnect and correct_expiry are the two operations that
+ * deliberately move it back — which is why each has its own function rather
+ * than a flag on extendInRadius. See lib/radius-db.ts#disconnectInRadius and
+ * #correctExpiryInRadius.
  */
-export type RadiusAction = 'provision' | 'reconnect' | 'extend' | 'disconnect'
+export type RadiusAction =
+  | 'provision'
+  | 'reconnect'
+  | 'extend'
+  | 'disconnect'
+  | 'correct_expiry'
 
 /** The `log` row type each action writes once the radcheck write has landed. */
 export const ACTION_EVENT_TYPE: Record<RadiusAction, NetworkEventType> = {
@@ -45,6 +52,7 @@ export const ACTION_EVENT_TYPE: Record<RadiusAction, NetworkEventType> = {
   reconnect: 'network_reconnect',
   extend: 'network_extend',
   disconnect: 'network_disconnect',
+  correct_expiry: 'network_expiry_corrected',
 }
 
 export type RadiusWriteResult =
@@ -120,6 +128,40 @@ export async function applyRadiusWrite(
   try {
     if (action === 'provision') await activateInRadius(identity, newExpiry)
     else if (action === 'disconnect') await disconnectInRadius(identity)
+    else if (action === 'correct_expiry') {
+      // Checked HERE rather than in the action, because this is where the
+      // registry's own value has already been read — the caller would need a
+      // second radcheck round trip to know it.
+      //
+      // A correction exists to move an expiry BACK. One that does not is the
+      // operator reaching for the wrong tool, and is refused so they go to
+      // Extend, which has the backwards-write guard behind it.
+      const current = parseRadiusExpiration(oldExpiry)
+      if (current && target.getTime() >= current.getTime()) {
+        return {
+          ok: false,
+          code: null,
+          error:
+            'That date is not earlier than the current expiry (' + oldExpiry +
+            '). Use Extend Access to move an expiry forward.',
+          oldExpiry,
+        }
+      }
+
+      // Refuses to create a missing row, so a false result is a real failure
+      // and must not be reported as success.
+      const corrected = await correctExpiryInRadius(identity, newExpiry)
+      if (!corrected) {
+        return {
+          ok: false,
+          code: null,
+          error:
+            'No RADIUS expiry on record for ' + identity +
+            ', so there is nothing to correct.',
+          oldExpiry,
+        }
+      }
+    }
     // reconnect and extend are the same write — an absolute Expiration moved
     // forward — and both go through the backwards-write guard.
     else await extendInRadius(identity, newExpiry)
@@ -172,14 +214,21 @@ export function networkEventDetails(opts: {
   newExpiry: string
   actor: string
   skipped: boolean
+  /**
+   * Why the operator did it. Required by correct_expiry and absent everywhere
+   * else — the four routine actions are self-explaining, whereas pulling an
+   * expiry back is not, and the log row is the only place that answer survives.
+   */
+  reason?: string
 }): string {
-  const { action, identity, oldExpiry, newExpiry, actor, skipped } = opts
+  const { action, identity, oldExpiry, newExpiry, actor, skipped, reason } = opts
 
   const verb =
     action === 'provision' ? 'Provisioned'
       : action === 'reconnect' ? 'Reconnected'
         : action === 'extend' ? 'Extended'
-          : 'Disconnected'
+          : action === 'correct_expiry' ? 'Expiry corrected for'
+            : 'Disconnected'
 
   const change =
     action === 'provision'
@@ -189,6 +238,10 @@ export function networkEventDetails(opts: {
   return (
     verb + ' ' + identity + change +
     '. By ' + actor +
+    // Follows the `| name=value` convention lib/format.ts#humaniseLogDetail
+    // already extracts, so the reason renders as its own field rather than
+    // running into the sentence above it.
+    (reason ? ' | reason=' + reason : '') +
     (skipped ? ' (network not configured — nothing was written)' : '')
   )
 }
