@@ -57,6 +57,7 @@ export default async function GeneralSettingsPage() {
         generalAvailable={caps.generalSettings}
         defaultRateAvailable={caps.defaultMonthlyRate}
         thresholdsAvailable={caps.billingThresholds}
+        firstPeriodAvailable={caps.firstPeriod}
         currencySymbol={currencySymbol(settings.currency)}
       />
     </div>

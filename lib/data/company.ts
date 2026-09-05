@@ -43,6 +43,9 @@ export type GeneralSettings = {
   defaultMonthlyRate: number
   /** migration 0011 */
   defaultBillingType: BillingType
+  /** migration 0017 — the two first-period switches. See getFirstPeriodRules. */
+  firstExpiryRuleEnabled: boolean
+  prorataFirstPaymentEnabled: boolean
   /** migration 0012 — policy only; nothing in the payment flow reads these. */
   lateCreditThreshold: number
   minPaymentThreshold: number
@@ -75,6 +78,9 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
   if (caps.billing) cols += ', default_billing_type'
   if (caps.billingThresholds) {
     cols += ', late_credit_threshold, min_payment_threshold, max_carried_balance'
+  }
+  if (caps.firstPeriod) {
+    cols += ', first_expiry_rule_enabled, prorata_first_payment_enabled'
   }
 
   const [companyRes, settingsRes] = await Promise.all([
@@ -116,6 +122,8 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
     late_credit_threshold?: number | null
     min_payment_threshold?: number | string | null
     max_carried_balance?: number | null
+    first_expiry_rule_enabled?: boolean | null
+    prorata_first_payment_enabled?: boolean | null
   } | null
 
   return {
@@ -138,6 +146,9 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
     lateCreditThreshold: Number(s?.late_credit_threshold ?? 7),
     minPaymentThreshold: Number(s?.min_payment_threshold ?? 50),
     maxCarriedBalance: Number(s?.max_carried_balance ?? 2),
+    // Read through the same helper the payment and provisioning paths use, so
+    // the toggles on this form cannot disagree with what the till applies.
+    ...firstPeriodRules(caps.firstPeriod, s),
     smsEnabled: Boolean(s?.sms_enabled),
     emailEnabled: Boolean(s?.email_enabled),
     expiryWarningDays: Number(s?.expiry_warning_days ?? 3),
@@ -216,4 +227,75 @@ export async function getCurrency(companyId: number): Promise<string> {
     .maybeSingle()
 
   return (data as { currency: string | null } | null)?.currency ?? 'JMD'
+}
+
+// ---------------------------------------------------------------------------
+// First-period rules (migration 0017)
+// ---------------------------------------------------------------------------
+
+export type FirstPeriodRules = {
+  /** CHANGE A: the 21-day rule at provisioning (lib/expiry.ts#firstExpiry). */
+  firstExpiryRuleEnabled: boolean
+  /** CHANGE B: pro-rata the first payment (lib/billing.ts#firstPeriodCharge). */
+  prorataFirstPaymentEnabled: boolean
+}
+
+/**
+ * THE ONE PLACE THE PRE-0017 FALLBACK IS DECIDED, and it is ASYMMETRIC.
+ *
+ * "Migration not applied" does not mean "both rules off". It means "behave
+ * exactly as the app did before 0017 existed", and those are different:
+ *
+ *   - the 21-day rule is ALREADY UNCONDITIONAL in the shipped code, reached
+ *     through provisionCustomer -> provisionExpiry. Defaulting it off would
+ *     silently change how every new customer's first expiry is calculated on
+ *     schemas that have not run the migration yet.
+ *   - pro-rata DID NOT EXIST. Defaulting it on would start charging customers
+ *     differently on exactly those same schemas.
+ *
+ * So: A on, B off. Both are then whatever the company says once 0017 lands.
+ */
+function firstPeriodRules(
+  applied: boolean,
+  row: { first_expiry_rule_enabled?: boolean | null; prorata_first_payment_enabled?: boolean | null } | null | undefined
+): FirstPeriodRules {
+  if (!applied) return { firstExpiryRuleEnabled: true, prorataFirstPaymentEnabled: false }
+
+  // NOT NULL DEFAULT TRUE in 0017, so a null here means no settings row at all
+  // rather than an unset column. A company with no settings row gets the same
+  // answer as one that has never touched the toggles.
+  return {
+    firstExpiryRuleEnabled: row?.first_expiry_rule_enabled ?? true,
+    prorataFirstPaymentEnabled: row?.prorata_first_payment_enabled ?? true,
+  }
+}
+
+/**
+ * The two switches, for the paths that need them without the whole settings
+ * form: provisioning (app/actions/customers.ts) and the till
+ * (app/actions/payments.ts).
+ *
+ * Deliberately its own small query rather than getGeneralSettings, which also
+ * reads `companies` and every 0007/0011/0012 column — none of which either
+ * caller wants on a payment.
+ */
+export async function getFirstPeriodRules(companyId: number): Promise<FirstPeriodRules> {
+  const caps = await getSchemaCapabilities()
+  if (!caps.firstPeriod) return firstPeriodRules(false, null)
+
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('settings')
+    .select('first_expiry_rule_enabled, prorata_first_payment_enabled')
+    .eq('company_id', companyId)
+    .maybeSingle()
+
+  if (error) {
+    // Falls back to the pre-0017 behaviour rather than throwing: a settings read
+    // that fails must not stop a cashier taking money.
+    console.error('[first-period] settings read failed:', error.message)
+    return firstPeriodRules(false, null)
+  }
+
+  return firstPeriodRules(true, data as Parameters<typeof firstPeriodRules>[1])
 }

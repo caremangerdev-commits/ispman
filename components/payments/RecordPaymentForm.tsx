@@ -8,13 +8,13 @@ import {
 } from 'react'
 import { useFormStatus } from 'react-dom'
 
-import { recordPayment, type PaymentResult } from '@/app/actions/payments'
+import { loadFirstPeriod, recordPayment, type PaymentResult } from '@/app/actions/payments'
 import { ReceiptModal } from '@/components/payments/ReceiptModal'
 import type { SearchHit } from '@/app/api/search/route'
 import { StatusBadge } from '@/components/customers/StatusBadge'
 import {
   amountDue as computeAmountDue, amountDueForMonths, billingPeriodLabel,
-  isPartialPayment, monthsCovered, outstandingBalance, parseYmd,
+  isPartialPayment, MAX_PREPAY_MONTHS, monthsCovered, outstandingBalance, parseYmd,
   prepaymentCredit, PREPAY_MONTH_OPTIONS, proportionalDate, serviceExpiry, ymd,
   type AccessDecision,
 } from '@/lib/billing'
@@ -112,6 +112,18 @@ export function RecordPaymentForm({
   const [state, formAction] = useActionState<PaymentResult | null, FormData>(recordPayment, null)
 
   const [selected, setSelected] = useState<SearchHit | null>(initialCustomer)
+  // Migration 0017. Null for almost every customer, and null until the lookup
+  // returns — the ordinary pricing is shown in the meantime, which is what the
+  // answer turns out to be nearly every time.
+  const [firstPeriod, setFirstPeriod] = useState<
+    { days: number; charge: number; discount: number } | null
+  >(null)
+  // NEVER AUTOMATIC. A short first period is charged in full unless the cashier
+  // ticks this, which is why it starts false on every customer.
+  const [discountTicked, setDiscountTicked] = useState(false)
+  // Who is selected RIGHT NOW, for the lookup callback to check against. State
+  // would be a render behind by the time a response lands.
+  const selectedIdRef = useRef<number | null>(initialCustomer?.id ?? null)
   const [term, setTerm] = useState('')
   const [hits, setHits] = useState<SearchHit[]>([])
   const [open, setOpen] = useState(false)
@@ -239,9 +251,74 @@ export function RecordPaymentForm({
     setNewCategory('')
   }
 
+  // --- First period (migration 0017) ---------------------------------------
+  //
+  // Asked ON SELECTION rather than carried on every search hit: answering it
+  // costs two history queries and a radcheck read per customer, which is a
+  // per-row cost on a search and a one-off cost here. See
+  // app/actions/payments.ts#loadFirstPeriod.
+  //
+  // Null for almost everybody, and null while the lookup is in flight, so the
+  // form shows ordinary pricing until it hears otherwise. Picking a customer is
+  // an EVENT, so the lookup is fired from the handler rather than from an
+  // effect watching the selection.
+  function lookupFirstPeriod(customer: SearchHit, monthsNow: number) {
+    loadFirstPeriod(customer.id)
+      .then((period) => {
+        // A response for a customer who is no longer selected is dropped. Read
+        // in a callback, never during render.
+        if (!period || selectedIdRef.current !== customer.id) return
+        setFirstPeriod(period)
+
+        // ONLY WHEN THE CASHIER HAS NOT TYPED OVER THE SEED. The field is
+        // theirs the moment they touch it, and a lookup that lands a beat
+        // later must not overwrite an amount they have already entered.
+        const untouched = seedAmount(customer, monthsNow)
+        setAmount((current) => (current === untouched ? String(period.charge) : current))
+        setDebouncedAmount((current) =>
+          current === untouched ? String(period.charge) : current
+        )
+      })
+      .catch(() => {
+        // Leaves firstPeriod null, which prices the payment the ordinary way.
+        // The server decides for real on submit regardless.
+      })
+  }
+
+  // The customer this form was opened on, if any. The amount starts seeded at
+  // one month for them (see the useState above), so that is the seed compared
+  // against. setState happens only in the callback, never in the effect body.
+  useEffect(() => {
+    const customer = initialCustomer
+    if (!customer) return
+
+    let live = true
+    loadFirstPeriod(customer.id)
+      .then((period) => {
+        if (!live || !period) return
+        setFirstPeriod(period)
+        const untouched = seedAmount(customer, 1)
+        setAmount((current) => (current === untouched ? String(period.charge) : current))
+        setDebouncedAmount((current) =>
+          current === untouched ? String(period.charge) : current
+        )
+      })
+      .catch(() => {})
+
+    return () => {
+      live = false
+    }
+  }, [initialCustomer])
   function pick(hit: SearchHit) {
     const next = seedAmount(hit, months)
     setSelected(hit)
+    // Cleared before the lookup so the previous customer’s first period cannot
+    // sit on screen against this one, and so a discount ticked for them is
+    // never carried across.
+    selectedIdRef.current = hit.id
+    setFirstPeriod(null)
+    setDiscountTicked(false)
+    lookupFirstPeriod(hit, months)
     setAmount(next)
     // Seeded rather than debounced-into, so a preloaded short amount does not
     // sit for 600ms showing a prompt built from the previous customer.
@@ -267,6 +344,9 @@ export function RecordPaymentForm({
   /** Clears the customer and every field that belongs to their payment. */
   function clearCustomer() {
     setSelected(null)
+    selectedIdRef.current = null
+    setFirstPeriod(null)
+    setDiscountTicked(false)
     setTerm('')
     setAmount('')
     setDebouncedAmount('')
@@ -377,37 +457,60 @@ export function RecordPaymentForm({
   // What is owed IS the carried balance. The bill run has already added this
   // month's charge to it, so adding one here would bill the same month twice —
   // see lib/billing.ts#amountDue.
-  const due = computeAmountDue(carried)
+  // WHAT THE FIRST PERIOD ADDS TO WHAT IS OWED. Zero for everybody else.
+  // Provisioning granted access to the end of this period without charging for
+  // it, and the bill run only charges periods that have closed, so at the first
+  // payment the carried balance reads zero while the customer owes for days they
+  // are already using. Mirrors the same fold in app/actions/payments.ts.
+  const firstPeriodDue = firstPeriod
+    ? firstPeriod.charge - (discountTicked ? firstPeriod.discount : 0)
+    : 0
+  const owed = carried + firstPeriodDue
+
+  const due = computeAmountDue(owed)
   // What the dropdown is asking for, which is what the Amount field was seeded
   // with. Shown as "Amount due" whenever more than one month is selected.
-  const askingFor = amountDueForMonths(carried, monthlyCharge, months)
+  const askingFor = amountDueForMonths(owed, monthlyCharge, months)
 
   const paid = Number(debouncedAmount)
   const partial =
-    selected !== null && Number.isFinite(paid) && isPartialPayment(carried, paid)
+    selected !== null && Number.isFinite(paid) && isPartialPayment(owed, paid)
 
   // Priced off the MONEY, exactly as the server does it, so the preview and the
   // written expiry cannot disagree.
+  //
+  // A first payment buys NO months forward on its own: the expiry it is paying
+  // for is the one the customer already holds. Only money beyond the period
+  // buys anything further, which is why this cannot go through monthsCovered —
+  // that has a floor of 1, correct for a renewal and wrong here.
   const monthsBought =
-    selected && Number.isFinite(paid) ? monthsCovered(carried, monthlyCharge, paid) : 1
+    selected && Number.isFinite(paid)
+      ? firstPeriod
+        ? monthlyCharge > 0
+          ? Math.min(MAX_PREPAY_MONTHS, Math.floor(Math.max(0, paid - owed) / monthlyCharge))
+          : 0
+        : monthsCovered(owed, monthlyCharge, paid)
+      : 1
   const creditAdded =
-    selected && Number.isFinite(paid) ? prepaymentCredit(carried, paid) : 0
+    selected && Number.isFinite(paid) ? prepaymentCredit(owed, paid) : 0
 
   const currentExpiry = selected?.network_expiry ? new Date(selected.network_expiry) : null
 
   // Full payment, and the "Full Period" branch of a short one, land on the
   // same date — the period the customer would have got had they paid in full.
   const fullPeriodExpiry = selected
-    ? serviceExpiry({
+    ? firstPeriod && monthsBought === 0
+      ? currentExpiry
+      : serviceExpiry({
         // cut_off_date, not bill_date — the bill day raises the charge, the
         // cut-off day ends access. Anchored on the registry expiry so paying
         // rolls the customer past the cut-off the bill was due at.
-        cutOffDay: selected.cut_off_date,
-        gracePeriodDays,
-        currentExpiry,
-        from: today,
-        months: monthsBought,
-      })
+          cutOffDay: selected.cut_off_date,
+          gracePeriodDays,
+          currentExpiry,
+          from: today,
+          months: monthsBought,
+        })
     : null
 
   const proportional = selected
@@ -424,7 +527,7 @@ export function RecordPaymentForm({
 
   // Always what is owed less what was handed over, whatever date the cashier
   // picks. The date decides access; it never changes what is owed.
-  const outstanding = selected ? outstandingBalance(carried, paid) : 0
+  const outstanding = selected ? outstandingBalance(owed, paid) : 0
 
   const dateChosen = partial && accessChoice === 'date_selected'
   // ISO dates compare correctly as strings, so no parsing is needed here.
@@ -614,6 +717,40 @@ export function RecordPaymentForm({
                 <div className="my-3 border-t border-gray-700" />
 
                 <dl className="space-y-1.5 text-sm">
+                  {/* Migration 0017. Sits ABOVE the amount due because for a
+                      first payment it is where that figure comes from, and a
+                      cashier asking for 5,367 against a 3,500 plan needs the
+                      arithmetic in front of them rather than in a tooltip. */}
+                  {firstPeriod ? (
+                    <>
+                      <Line
+                        label={'First Period (' + firstPeriod.days + ' days)'}
+                        value={money(firstPeriod.charge)}
+                      />
+                      {firstPeriod.discount > 0 ? (
+                        <label className="flex cursor-pointer items-start justify-between gap-3 rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2">
+                          <span className="text-xs text-amber-300/90">
+                            Apply short-period discount
+                            <span className="mt-0.5 block text-[11px] text-amber-300/60">
+                              {firstPeriod.days} days is under 30. Optional — the full
+                              rate stands unless you apply this.
+                            </span>
+                          </span>
+                          <span className="flex shrink-0 items-center gap-2">
+                            <span className="font-mono text-sm text-amber-200">
+                              {'− ' + money(firstPeriod.discount)}
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={discountTicked}
+                              onChange={(e) => setDiscountTicked(e.target.checked)}
+                              className="h-4 w-4 accent-amber-500"
+                            />
+                          </span>
+                        </label>
+                      ) : null}
+                    </>
+                  ) : null}
                   <Line
                     label={months > 1 ? 'Amount Due (' + months + ' months)' : 'Amount Due'}
                     value={money(months > 1 ? askingFor : due)}
@@ -953,6 +1090,15 @@ export function RecordPaymentForm({
               >
                 Amount
               </label>
+              {/* The cashier’s tick, and the only thing that applies the
+                  discount. The server re-derives whether a discount is even
+                  available and how much it is (app/actions/payments.ts
+                  #resolveFirstPeriod); this posts the decision alone. */}
+              <input
+                type="hidden"
+                name="first_period_discount"
+                value={discountTicked ? '1' : '0'}
+              />
               <div className="relative">
                 <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-xl font-semibold text-gray-500">
                   {symbol}

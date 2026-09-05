@@ -50,6 +50,17 @@ export type SchemaCapabilities = {
    * row to keep the metadata would be the worse trade.
    */
   logMetadata: boolean
+  /**
+   * The two first-period switches added by migration 0017.
+   *
+   * FALLBACK IS ASYMMETRIC AND THAT IS THE POINT. When this reads false the app
+   * must behave exactly as it did before 0017 existed, and that is not "both
+   * rules off": the 21-day rule is already unconditional in the shipped code,
+   * while pro-rata is new. So absent means A ON, B OFF — see
+   * lib/data/company.ts#getFirstPeriodRules, which is the only place allowed to
+   * decide it.
+   */
+  firstPeriod: boolean
 }
 
 /**
@@ -74,6 +85,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     typeRes, expiryRes, catalogRes, generalRes, rateRes, checkoffRes, recordsRes,
     billingCustomerRes, billingPaymentRes, billingSettingRes, thresholdRes,
     otherPaymentRes, paymentCategoryRes, creditReversalRes, logMetadataRes,
+    firstPeriodRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -105,8 +117,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('payment_categories').select('id').limit(1),
     db.from('payments').select('credit_applied').limit(1),
     db.from('log').select('amount, correlation_id, related_customer_id').limit(1),
+    db
+      .from('settings')
+      .select('first_expiry_rule_enabled, prorata_first_payment_enabled')
+      .limit(1),
   ])
-  console.log('[perf]     schema probe: 15 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 16 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -131,6 +147,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   const missingCreditReversal = creditReversalRes.error?.code === '42703'
   // 0016 likewise: one ALTER adding all three columns to log.
   const missingLogMetadata = logMetadataRes.error?.code === '42703'
+  // 0017 lands as two ALTERs on the same table; either missing disables both,
+  // so a half-applied migration cannot leave one rule switchable and one not.
+  const missingFirstPeriod = firstPeriodRes.error?.code === '42703'
   const missingPaymentCategories =
     paymentCategoryRes.error?.code === 'PGRST205' || paymentCategoryRes.error?.code === '42P01'
 
@@ -199,6 +218,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     )
   }
 
+  if (firstPeriodRes.error && !missingFirstPeriod) {
+    throw new Error(
+      'Schema probe failed for first-period settings: ' + firstPeriodRes.error.message
+    )
+  }
+
   return {
     connectionTypes: !missingType,
     expiryMode: !missingExpiry,
@@ -211,6 +236,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     otherPayments: !missingOtherPaymentCols && !missingPaymentCategories,
     creditReversal: !missingCreditReversal,
     logMetadata: !missingLogMetadata,
+    firstPeriod: !missingFirstPeriod,
   }
 })
 

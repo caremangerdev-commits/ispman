@@ -8,6 +8,7 @@ import { BALANCE_ADJUSTED } from '@/lib/data/balance-adjustments'
 import { formatCurrency } from '@/lib/format'
 import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
+import { getFirstPeriodRules } from '@/lib/data/company'
 import { getSchemaCapabilities } from '@/lib/schema'
 import {
   ACTION_EVENT_TYPE, applyRadiusWrite, networkEventDetails, networkFailureDetails,
@@ -677,15 +678,30 @@ async function runNetworkAction(opts: {
  * Creates a customer's radcheck rows for the first time.
  *
  * Writes both rows — `Auth-Type := Accept` and `Expiration` — in one
- * transaction. The first expiry follows the 21-day rule: the next cut-off day
- * only counts if it is at least three weeks out, so nobody is switched on four
- * days before their cut-off and billed for a month of it.
+ * transaction.
+ *
+ * THE FIRST EXPIRY IS THE 21-DAY RULE, AND IT IS NOW SWITCHABLE (0017). On, the
+ * next cut-off day only counts if it is at least three weeks out, so nobody is
+ * switched on four days before their cut-off and billed for a month of it. Off,
+ * the customer walks to the plain next cut-off day — the same date a
+ * reconnection gets — because a company that turns this off has said a stub
+ * first period is acceptable, and inventing some third behaviour for the
+ * "off" case would be a rule nobody asked for.
+ *
+ * 21 itself is not a setting. See migration 0017 for why.
  */
 export async function provisionCustomer(formData: FormData) {
+  // Resolved BEFORE runNetworkAction because expiryFor is synchronous. Both
+  // reads are cheap: getSession is request-cached, and getFirstPeriodRules is
+  // one narrow settings row.
+  const { company } = await getSession()
+  const { firstExpiryRuleEnabled } = await getFirstPeriodRules(company.id)
+
   return runNetworkAction({
     action: 'provision',
     formData,
-    expiryFor: (t) => provisionExpiry(t.cutOffDate),
+    expiryFor: (t) =>
+      firstExpiryRuleEnabled ? provisionExpiry(t.cutOffDate) : reconnectExpiry(t.cutOffDate),
     success: (t, expiry) => t.fullName + ' provisioned, expires ' + expiry,
   })
 }

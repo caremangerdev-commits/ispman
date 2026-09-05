@@ -4,11 +4,14 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import {
-  billingPeriod, carriedBalanceAfter, isPartialPayment, monthsCovered,
+  billingPeriod, carriedBalanceAfter, firstPeriodCharge, firstPeriodDays,
+  firstPeriodDiscount, isPartialPayment, MAX_PREPAY_MONTHS, monthsCovered,
   outstandingBalance, parseYmd, prepaymentCredit, proportionalDate, reverseCredit,
   serviceExpiry, ymd, type AccessDecision,
 } from '@/lib/billing'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
+import { getFirstPeriodRules } from '@/lib/data/company'
+import { firstPeriodAnchor } from '@/lib/data/first-period'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
 import { getReversalSubject } from '@/lib/data/payments'
 import { can } from '@/lib/permissions'
@@ -401,23 +404,82 @@ export async function recordPayment(
   // stamps it as the month's service charge.
   const monthlyCharge = Number(customer.monthly_rate ?? 0) + addonTotal
   const carriedBefore = caps.billing ? Number(customer.carried_balance ?? 0) : 0
-  const partial = isPartialPayment(carriedBefore, paidAmount)
-  const carriedAfter = carriedBalanceAfter(carriedBefore, paidAmount)
+
+  // --- Where access currently ends -----------------------------------------
+  //
+  // Read BEFORE anything is priced, because the expiry it holds is the anchor
+  // for the prepaid calculation, for the proportional date, AND for the length
+  // of a first period. Anchoring to last_bill_date instead is what previously
+  // wrote an expiry earlier than the customer already had.
+  const identity =
+    customer.customer_type === 'pppoe' ? customer.pppoe_username : customer.mac_address
+
+  const registered =
+    identity && radiusConfigured()
+      ? await readNetworkRecord(identity).catch(() => null)
+      : null
+
+  const registryExpiry = registered?.expiry ?? null
+
+  // --- First period (migration 0017) ---------------------------------------
+  //
+  // Null for everybody except a customer making their first payment since
+  // ISPMan provisioned them, with the company switch on. See resolveFirstPeriod.
+  //
+  // Sits here, after the registry read and before the pricing, because the
+  // expiry provisioning wrote is what says how long the first period is.
+  const firstPeriod = await resolveFirstPeriod({
+    companyId: company.id,
+    customerId: customer.id,
+    monthlyCharge,
+    registryExpiry,
+    discountRequested: str(formData, 'first_period_discount') === '1',
+  })
+
+  // --- What this payment is settling ---------------------------------------
+  //
+  // For everybody else the amount due IS the carried balance and nothing else
+  // (lib/billing.ts#amountDue): the bill run charged the month when it ended,
+  // and this settles it.
+  //
+  // A FIRST PERIOD HAS NEVER BEEN BILLED. Provisioning granted access to the
+  // end of it without charging anything, and the bill run only charges periods
+  // that have already closed — so at the moment of the first payment the
+  // customer owes for days they are already using while the carried balance
+  // still says zero. Folding it in here is what lets the rest of this function
+  // price the payment with no second billing path: the shortfall, the credit
+  // and the partial-payment decision all measure against this one number.
+  const due = round2(carriedBefore + (firstPeriod?.due ?? 0))
+
+  const partial = isPartialPayment(due, paidAmount)
+  const carriedAfter = carriedBalanceAfter(due, paidAmount)
 
   // --- Prepayment ----------------------------------------------------------
   //
-  // Anything handed over beyond the balance is money for months not yet billed.
+  // Anything handed over beyond what is due is money for months not yet billed.
   // It is held as account_credit and drawn down by future bill runs before they
   // add anything to carried_balance (app/actions/bulk.ts#billBatch), so a
   // customer who paid three months up front never reads as owing during the
   // months they have already paid for.
-  //
-  // monthsPaid comes from the MONEY, not from the form's dropdown — see
-  // lib/billing.ts#monthsCovered. The dropdown only seeds the amount field.
   const creditBefore = caps.billing ? Number(customer.account_credit ?? 0) : 0
-  const creditAdded = caps.billing ? prepaymentCredit(carriedBefore, paidAmount) : 0
+  const creditAdded = caps.billing ? prepaymentCredit(due, paidAmount) : 0
   const creditAfter = round2(creditBefore + creditAdded)
-  const monthsPaid = monthsCovered(carriedBefore, monthlyCharge, paidAmount)
+
+  // MONTHS BOUGHT FORWARD, from the MONEY and never from the form's dropdown.
+  //
+  // A FIRST PAYMENT BUYS NONE BY DEFAULT, and that is the whole difference.
+  // The customer already holds access to the end of the first period — that is
+  // what provisioning wrote and what they are now paying for — so settling it
+  // moves nothing. monthsCovered has a floor of 1 because for a renewal that is
+  // right: the bill run charged a month that has passed, and paying it buys the
+  // next one. Here the period being paid for is the one still running, and only
+  // money BEYOND it buys anything further.
+  const excess = Math.max(0, round2(paidAmount - due))
+  const monthsPaid = firstPeriod
+    ? monthlyCharge > 0
+      ? Math.min(MAX_PREPAY_MONTHS, Math.floor(excess / monthlyCharge))
+      : 0
+    : monthsCovered(due, monthlyCharge, paidAmount)
 
   // A decision only means something for a payment that is actually short. One
   // sent for a payment that covers the bill is dropped rather than stored.
@@ -440,38 +502,32 @@ export async function recordPayment(
     )
   }
 
-  // --- Where access should end ---------------------------------------------
-  //
-  // The registry is read BEFORE the new expiry is computed, because its expiry
-  // is the anchor for both the prepaid calculation and the proportional date.
-  // Anchoring to last_bill_date instead is what previously wrote an expiry
-  // earlier than the customer already had.
-  const identity =
-    customer.customer_type === 'pppoe' ? customer.pppoe_username : customer.mac_address
-
-  const registered =
-    identity && radiusConfigured()
-      ? await readNetworkRecord(identity).catch(() => null)
-      : null
-
-  const registryExpiry = registered?.expiry ?? null
-
   // The date a full payment would have reached, and the "Full Period" branch of
   // a short one. One calculation for everybody now — the months-from-expiry
   // walk went with the prepaid arm and its months-to-pay selector.
-  const fullPeriodExpiry = serviceExpiry({
-    // cut_off_date, not bill_date: the bill day says when the charge is raised,
-    // the cut-off day says when access ends. Anchored on the registry expiry so
-    // settling the bill rolls the customer PAST the cut-off that bill was due
-    // at rather than up to it.
-    cutOffDay: customer.cut_off_date ?? null,
-    gracePeriodDays,
-    currentExpiry: registryExpiry,
-    from: paymentDate,
-    // A prepayment moves the expiry the WHOLE distance now, not one month per
-    // bill run. The customer paid for the months today, so they hold them today.
-    months: monthsPaid,
-  })
+  //
+  // A FIRST PAYMENT THAT BUYS NO FURTHER MONTHS DOES NOT MOVE THE EXPIRY. It
+  // stays exactly where provisioning put it, because that is the end of the
+  // period the money is paying for. serviceExpiry cannot say this — it floors
+  // months at 1, which is right for a renewal and wrong here — so the branch is
+  // taken before the call rather than by passing it a zero it would ignore.
+  const fullPeriodExpiry =
+    firstPeriod && monthsPaid === 0
+      ? firstPeriod.expiry
+      : serviceExpiry({
+          // cut_off_date, not bill_date: the bill day says when the charge is
+          // raised, the cut-off day says when access ends. Anchored on the
+          // registry expiry so settling the bill rolls the customer PAST the
+          // cut-off that bill was due at rather than up to it.
+          cutOffDay: customer.cut_off_date ?? null,
+          gracePeriodDays,
+          currentExpiry: registryExpiry,
+          from: paymentDate,
+          // A prepayment moves the expiry the WHOLE distance now, not one month
+          // per bill run. The customer paid for the months today, so they hold
+          // them today.
+          months: monthsPaid,
+        })
 
   const newExpiry =
     decision === 'date_selected' && chosenDate ? chosenDate : fullPeriodExpiry
@@ -558,6 +614,28 @@ export async function recordPayment(
 
   const paymentId = (inserted as unknown as { id: number }).id
 
+  // A SHORT FIRST PERIOD IS CHARGED AT FULL RATE UNLESS SOMEONE DECIDES
+  // OTHERWISE, and this row is the record of who decided. The reduction is open
+  // to any role and is never applied automatically, so nothing else in the
+  // system says it happened or names the person who allowed it.
+  if (firstPeriod?.discountApplied) {
+    await logEvent({
+      customerId: customer.id,
+      type: 'first_period_discount',
+      tag: '[payments]',
+      details:
+        'First period discount applied | days=' + firstPeriod.days +
+        ' | full_charge=' + firstPeriod.charge.toFixed(2) +
+        ' | discount=' + firstPeriod.discount.toFixed(2) +
+        ' | charged=' + firstPeriod.due.toFixed(2) +
+        ' | payment_id=' + paymentId +
+        ' | by=' + agent,
+      // Negative: this reduced what the customer owed. Dropped with a console
+      // warning until migration 0016 is applied, which is by design.
+      amount: -firstPeriod.discount,
+    })
+  }
+
   // --- Extend network access, where the customer actually has any -----------
   //
   // The payment is already saved and stays saved whatever happens below: the
@@ -584,6 +662,16 @@ export async function recordPayment(
         'not extended. Try again once the connection is restored.'
     } else if (!canExtend(registered.status)) {
       warning = NOT_ACTIVATED
+    } else if (
+      firstPeriod &&
+      monthsPaid === 0 &&
+      newExpiry.getTime() === firstPeriod.expiry.getTime()
+    ) {
+      // DELIBERATELY NOT A WARNING. This is the correct and expected outcome of
+      // a first payment: the customer already holds access to the end of the
+      // period they have just paid for, so there is nothing to move. Writing
+      // the same date back would put an extend through the backwards-write
+      // guard for no reason and log an extension that extended nothing.
     } else {
       // extendInRadius still refuses to move an expiry backwards. A cashier who
       // picks a date earlier than the customer already holds lands here and is
@@ -724,6 +812,157 @@ export async function recordPayment(
   }
 }
 
+/**
+ * What a customer owes for their FIRST period, or null when this is not one.
+ *
+ * Null is the answer for almost every payment, and the checks are ordered so
+ * that the common case costs nothing: the company switch is a settings read
+ * that getFirstPeriodRules keeps narrow, and the two history queries in
+ * lib/data/first-period.ts only run once it says the feature is on.
+ *
+ * WHY A MISSING REGISTRY EXPIRY RETURNS NULL RATHER THAN A ZERO-DAY PERIOD.
+ * The expiry is what the period is measured to. When RADIUS is unconfigured or
+ * the NAS is unreachable there is no honest length to price, and treating that
+ * as "0 days" would charge the customer the bare monthly rate while telling
+ * them it was pro-rata. Falling back to the ordinary path charges them the same
+ * thing without the claim.
+ *
+ * THE DISCOUNT IS REQUESTED, NEVER ASSUMED. discountRequested is the cashier
+ * ticking a box; a period of 30 days or more offers nothing to tick, which is
+ * why the flag is combined with a positive discount rather than trusted alone.
+ */
+type FirstPeriod = {
+  /** When ISPMan provisioned them. The start of the period. */
+  anchor: Date
+  /** The expiry provisioning wrote. The end of the period. */
+  expiry: Date
+  /** Whole days from anchor to expiry. */
+  days: number
+  /** The full charge for those days. Never below the monthly rate. */
+  charge: number
+  /** What may be taken off when the period is SHORT of 30 days. Often 0. */
+  discount: number
+  /** Whether the cashier actually applied it. */
+  discountApplied: boolean
+  /** charge less the discount if applied. What this payment is settling. */
+  due: number
+}
+
+/**
+ * The first-period figures for ONE customer, for the till to preview.
+ *
+ * Returns null for the overwhelming majority of customers, which is what the
+ * form treats as "price this the ordinary way".
+ *
+ * WHY A SERVER ACTION AND NOT A FIELD ON THE SEARCH HIT. Answering this needs
+ * two history queries and a radcheck read per customer. On a search that is a
+ * per-row cost paid for every name the cashier types past; here it is paid
+ * once, when they actually pick somebody.
+ *
+ * NOTHING HERE IS TRUSTED ON SUBMIT. recordPayment recomputes all of it from
+ * the same functions against the same rows — this only decides what the cashier
+ * is SHOWN, in the same way the form already previews the expiry and the
+ * proportional date.
+ */
+export async function loadFirstPeriod(customerId: number): Promise<{
+  days: number
+  charge: number
+  discount: number
+} | null> {
+  const { company, profile } = await getSession()
+  if (!can(profile.role, 'record_payment')) return null
+
+  const caps = await getSchemaCapabilities()
+  const db = tenantClient()
+
+  const cols =
+    'id, monthly_rate, mac_address' +
+    (caps.connectionTypes ? ', customer_type, pppoe_username' : '')
+
+  const { data } = await db
+    .from('customers')
+    .select(cols)
+    .eq('company_id', company.id)
+    .eq('id', customerId)
+    .maybeSingle()
+
+  const customer = data as unknown as {
+    id: number
+    monthly_rate: number | string | null
+    mac_address: string | null
+    customer_type?: string | null
+    pppoe_username?: string | null
+  } | null
+
+  if (!customer) return null
+
+  // The same monthly charge the till prices against: rate plus active add-ons.
+  let addonTotal = 0
+  if (caps.billing && caps.catalog) {
+    const { data: links } = await db
+      .from('customer_additional_services')
+      .select('additional_services(monthly_price)')
+      .eq('customer_id', customer.id)
+
+    addonTotal = ((links ?? []) as unknown as {
+      additional_services: { monthly_price: number | string | null } | null
+    }[]).reduce((sum, l) => sum + Number(l.additional_services?.monthly_price ?? 0), 0)
+  }
+
+  const identity =
+    customer.customer_type === 'pppoe' ? customer.pppoe_username : customer.mac_address
+
+  const registered =
+    identity && radiusConfigured()
+      ? await readNetworkRecord(identity).catch(() => null)
+      : null
+
+  const period = await resolveFirstPeriod({
+    companyId: company.id,
+    customerId: customer.id,
+    monthlyCharge: Number(customer.monthly_rate ?? 0) + addonTotal,
+    registryExpiry: registered?.expiry ?? null,
+    // The preview always shows what the discount WOULD be. Whether it is
+    // applied is the cashier’s tick at submit time, not a property of the
+    // customer, so it is deliberately not asked here.
+    discountRequested: false,
+  })
+
+  if (!period) return null
+
+  return { days: period.days, charge: period.charge, discount: period.discount }
+}
+async function resolveFirstPeriod(opts: {
+  companyId: number
+  customerId: number
+  monthlyCharge: number
+  registryExpiry: Date | null
+  discountRequested: boolean
+}): Promise<FirstPeriod | null> {
+  const { companyId, customerId, monthlyCharge, registryExpiry, discountRequested } = opts
+
+  const { prorataFirstPaymentEnabled } = await getFirstPeriodRules(companyId)
+  if (!prorataFirstPaymentEnabled) return null
+  if (!registryExpiry) return null
+
+  const anchor = await firstPeriodAnchor(companyId, customerId)
+  if (!anchor) return null
+
+  const days = firstPeriodDays(anchor, registryExpiry)
+  const charge = firstPeriodCharge(monthlyCharge, days)
+  const discount = firstPeriodDiscount(monthlyCharge, days)
+  const discountApplied = discountRequested && discount > 0
+
+  return {
+    anchor,
+    expiry: registryExpiry,
+    days,
+    charge,
+    discount,
+    discountApplied,
+    due: round2(charge - (discountApplied ? discount : 0)),
+  }
+}
 /**
  * Loads a payment for mutation and confirms the caller may act on it.
  *

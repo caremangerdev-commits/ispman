@@ -97,6 +97,7 @@ export function GeneralSettingsForm({
   generalAvailable,
   defaultRateAvailable,
   thresholdsAvailable,
+  firstPeriodAvailable,
   currencySymbol,
 }: {
   settings: GeneralSettings
@@ -109,6 +110,8 @@ export function GeneralSettingsForm({
   /** migration 0011 — the default billing type for new customers. */
   /** migration 0012 — the three billing policy thresholds. */
   thresholdsAvailable: boolean
+  /** migration 0017 — the two first-period rules. */
+  firstPeriodAvailable: boolean
   currencySymbol: string
 }) {
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveCompanyProfile, null)
@@ -116,12 +119,15 @@ export function GeneralSettingsForm({
   const [mode, setMode] = useState<ExpiryMode>(settings.defaultExpiryMode)
   // Not state any more: there is no control to change it. See lib/billing.ts.
   const billingType: BillingType = settings.defaultBillingType
+  const [firstExpiryRule, setFirstExpiryRule] = useState(settings.firstExpiryRuleEnabled)
+  const [prorata, setProrata] = useState(settings.prorataFirstPaymentEnabled)
   const [sms, setSms] = useState(settings.smsEnabled)
   const [emailOn, setEmailOn] = useState(settings.emailEnabled)
   const [showSecret, setShowSecret] = useState(false)
 
   const lockedHint = generalAvailable ? undefined : 'Needs migration 0007.'
   const thresholdHint = thresholdsAvailable ? undefined : 'Needs migration 0012.'
+  const firstPeriodHint = firstPeriodAvailable ? undefined : 'Needs migration 0017.'
   const lockedInput = (available: boolean) =>
     settingsInput + (available ? '' : ' cursor-not-allowed opacity-50')
 
@@ -259,6 +265,45 @@ export function GeneralSettingsForm({
             />
           </Field>
 
+          {/* ---- First period (migration 0017) ---- */}
+          <div className="space-y-3 rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-3">
+            <div>
+              <span className="block text-xs font-semibold text-gray-300">First Period</span>
+              <p className="text-[11px] text-gray-600">
+                How a customer’s very first period is dated and priced. Neither rule
+                ever applies to a renewal or a reconnection.
+                {firstPeriodHint ? ' ' + firstPeriodHint : ''}
+              </p>
+            </div>
+
+            <Toggle
+              name="first_expiry_rule_enabled"
+              label="21-day first expiry"
+              checked={firstExpiryRule}
+              onChange={setFirstExpiryRule}
+              disabled={!firstPeriodAvailable}
+            />
+            <p className="text-[11px] text-gray-600">
+              A new customer’s first expiry is the first cut-off day at least 21 days
+              away, so nobody switched on days before their cut-off pays a full month
+              for a stub. Off, they run to the plain next cut-off day.
+            </p>
+
+            <Toggle
+              name="prorata_first_payment_enabled"
+              label="Pro-rata first payment"
+              checked={prorata}
+              onChange={setProrata}
+              disabled={!firstPeriodAvailable}
+            />
+            <p className="text-[11px] text-gray-600">
+              The first payment is charged for the days it actually buys: the monthly
+              rate plus a daily rate for every day beyond 30. A first period SHORTER
+              than 30 days is still charged the full rate — the till offers the
+              difference as a discount the cashier may apply, and it is never
+              automatic.
+            </p>
+          </div>
           <Field
             label="Tax Rate %"
             htmlFor="tax_rate"

@@ -473,6 +473,93 @@ function safe(n: number | string | null | undefined): number {
   return Number.isFinite(v) ? v : 0
 }
 
+// ---------------------------------------------------------------------------
+// First period (migration 0017)
+//
+// A customer connected on the 20th with a cut-off of the 5th buys 46 days of
+// service. Before this, they paid the same as one connected on the 2nd who
+// bought 34, and the same as one connected on the 6th who bought 30. These
+// functions price the first period by its actual length.
+//
+// PURE, AND CLIENT-SAFE LIKE THE REST OF THIS FILE. Whether a customer IS in
+// their first period is a question about stored history and lives on the server
+// in lib/data/first-period.ts; everything here is arithmetic over numbers the
+// caller has already established.
+// ---------------------------------------------------------------------------
+
+/**
+ * The divisor for the daily rate. NOT the length of any particular month.
+ *
+ * A 31-day month and a 28-day month both price at rate/30 here. That is on
+ * purpose: the number a cashier is quoting has to be checkable on a phone
+ * calculator at the counter, and "rate divided by thirty" is checkable in a way
+ * that "rate divided by however long February is" is not. It also keeps the
+ * daily rate stable across the year, so the same 46-day first period costs the
+ * same in February as in August.
+ */
+export const DAYS_IN_BILLING_MONTH = 30
+
+/** The monthly charge spread over a 30-day month. */
+export function dailyRate(monthlyCharge: number): number {
+  return safe(monthlyCharge) / DAYS_IN_BILLING_MONTH
+}
+
+/**
+ * What the FIRST payment should ask for, given how long the first period is.
+ *
+ *   rate 3,500, cut-off 5, daily 116.67
+ *     connected 2 Aug  -> 5 Sep, 34 days -> 3,500 + 4 x 116.67 = 3,967
+ *     connected 6 Aug  -> 5 Sep, 30 days -> 3,500
+ *     connected 20 Aug -> 5 Oct, 46 days -> 3,500 + 16 x 116.67 = 5,367
+ *
+ * NEVER LESS THAN THE MONTHLY CHARGE. A period shorter than 30 days returns the
+ * full rate, not a reduced one. The difference is not silently dropped — it is
+ * offered to the cashier by firstPeriodDiscount below, for them to apply or
+ * not. Automatically discounting a short first period would make every customer
+ * connected just before their cut-off cheaper than the rate card without anyone
+ * deciding that, which is a pricing change disguised as arithmetic.
+ */
+export function firstPeriodCharge(monthlyCharge: number, days: number): number {
+  const rate = safe(monthlyCharge)
+  const extra = Math.max(0, Math.floor(safe(days)) - DAYS_IN_BILLING_MONTH)
+  return round2(rate + extra * dailyRate(rate))
+}
+
+/**
+ * The discount a cashier MAY apply when the first period is short of 30 days.
+ *
+ * Zero for a period of 30 days or more, so a caller can offer it unconditionally
+ * and get nothing when there is nothing to offer.
+ *
+ *   rate 3,500, connected 10 Aug -> 5 Sep, 26 days -> 4 x 116.67 = 467
+ *
+ * NOTHING IN THIS FILE APPLIES IT. It is returned so the till can show it as a
+ * choice; app/actions/payments.ts subtracts it only when the form says the
+ * cashier ticked it, and logs who did (`first_period_discount`). See the note
+ * on firstPeriodCharge for why it is not automatic.
+ */
+export function firstPeriodDiscount(monthlyCharge: number, days: number): number {
+  const rate = safe(monthlyCharge)
+  const short = Math.max(0, DAYS_IN_BILLING_MONTH - Math.floor(safe(days)))
+  return round2(short * dailyRate(rate))
+}
+
+/**
+ * Whole days in a first period: provisioning date to the expiry it wrote.
+ *
+ * daysBetween already floors both ends to local midnight, so the answer is a
+ * count of calendar days and never a fraction rounded across a timezone offset
+ * or a daylight-saving step.
+ *
+ * Negative spans return 0 rather than a negative charge — an expiry behind the
+ * provisioning date is corrupt data, and the safe reading of corrupt data here
+ * is "no extra days", which prices the first period at exactly the monthly
+ * rate rather than below it.
+ */
+export function firstPeriodDays(provisionedAt: Date, expiry: Date): number {
+  return Math.max(0, daysBetween(provisionedAt, expiry))
+}
+
 /** Money is stored as numeric; keep float drift out of what we write back. */
 function round2(n: number): number {
   return Math.round(n * 100) / 100

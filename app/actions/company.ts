@@ -174,6 +174,14 @@ export async function saveCompanyProfile(
     patch.max_carried_balance = maxCarried ?? 2
   }
 
+  // Migration 0017. Both are NOT NULL in the schema, so an unchecked box has to
+  // be written as false rather than left out — a missing key would keep the
+  // previous value and make the toggle look broken.
+  if (caps.firstPeriod) {
+    patch.first_expiry_rule_enabled = bool(formData, 'first_expiry_rule_enabled')
+    patch.prorata_first_payment_enabled = bool(formData, 'prorata_first_payment_enabled')
+  }
+
   // 0007 guarantees a settings row per company, but this page must still work
   // before that migration runs.
   const { data: existing } = await db
