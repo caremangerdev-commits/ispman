@@ -2,10 +2,14 @@
 --
 -- RUN THIS IN THE SUPABASE SQL EDITOR.
 --
--- NOT YET APPLIED. lib/schema.ts#firstPeriod probes for these two columns, and
--- until they exist the app behaves EXACTLY as it does today: the 21-day rule on
--- (it is unconditional in the current code), pro-rata off (it does not exist
--- yet). That asymmetry is deliberate — see the fallback note in lib/schema.ts.
+-- NOT YET APPLIED. lib/schema.ts#firstPeriod probes for ALL THREE columns below
+-- — the two switches on `settings` and payments.amount_due — and any one of
+-- them missing disables the lot, so a half-applied 0017 cannot price a first
+-- period without stamping what was due.
+--
+-- Until then the app behaves EXACTLY as it does today: the 21-day rule on (it
+-- is unconditional in the current code), pro-rata off (it does not exist yet).
+-- That asymmetry is deliberate — see the fallback note in lib/schema.ts.
 --
 -- READ THIS BEFORE APPLYING
 -- Both columns default TRUE, so applying this migration TURNS PRO-RATA ON FOR
@@ -69,6 +73,57 @@ ALTER TABLE public.settings
 -- ---------------------------------------------------------------------------
 ALTER TABLE public.settings
   ADD COLUMN IF NOT EXISTS prorata_first_payment_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+
+-- ---------------------------------------------------------------------------
+-- payments.amount_due — what the customer was asked to settle.
+--
+-- THE RECEIPT RESTATES, IT DOES NOT RECOMPUTE. The printed receipt used to add
+-- a "Monthly service" line to "Balance b/f" and total the two, which double
+-- counted: the bill run puts the monthly charge INTO carried_balance
+-- (app/actions/bulk.ts#billBatch), so the two were the same money printed
+-- twice. The fix prints from what the payment stamped, and this is the field it
+-- prints as "Balance due".
+--
+-- WHY NOT JUST carried_balance_before. For every payment that exists today
+-- these are the same number, and if pro-rata never shipped this column would be
+-- redundant. It is not, because a FIRST PERIOD is a charge that carried_balance
+-- has never held: provisioning grants access to the end of that period without
+-- billing it, and the bill run only charges periods that have closed. At the
+-- first payment carried_balance_before reads 0 while the customer genuinely
+-- owes for the days they are already using. A receipt printing
+-- carried_balance_before would show "Balance due 0.00" against a payment of
+-- 5,367.
+--
+-- So this is the amount due INCLUDING anything not in the carried balance, and
+-- the receipt has one unconditional rule instead of a sum it has to know how to
+-- assemble. Assembling it at print time is exactly the mistake being fixed.
+--
+-- NET OF THE FIRST-PERIOD DISCOUNT, because that is what the customer was
+-- actually asked for. The discount itself is not on this row: it is a
+-- discretionary decision and it is recorded in the log with the name of the
+-- agent who made it (type first_period_discount).
+--
+-- DELIBERATELY NOT A COPY OF carried_balance_before FOR REVERSALS. Nothing in
+-- app/actions/payments.ts#updatePayment or #deletePayment reads this. Those
+-- restate the carried balance from carried_balance_before/_after, which still
+-- mean exactly what they meant before this column existed.
+--
+-- NULL means the payment predates this migration, or is an "other" payment,
+-- which settles itself and has no balance to state. The receipt falls back to
+-- carried_balance_before for the first case and prints its own category line
+-- for the second, so neither needs backfilling — and neither could be
+-- backfilled honestly.
+-- ---------------------------------------------------------------------------
+ALTER TABLE public.payments
+  ADD COLUMN IF NOT EXISTS amount_due NUMERIC(10,2);
+
+-- An amount owed is never negative. The carried balance carries its own >= 0
+-- check (0011), a first-period charge is never below zero (the discount is
+-- capped at the monthly rate by construction — see lib/billing.ts
+-- #firstPeriodDiscount), so their sum cannot be either.
+ALTER TABLE public.payments DROP CONSTRAINT IF EXISTS payments_amount_due_check;
+ALTER TABLE public.payments ADD CONSTRAINT payments_amount_due_check
+  CHECK (amount_due IS NULL OR amount_due >= 0);
 
 -- ---------------------------------------------------------------------------
 -- NO SCHEMA IS ADDED FOR "HAS THIS CUSTOMER PAID SINCE PROVISIONING"

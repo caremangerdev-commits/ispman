@@ -309,6 +309,7 @@ export function RecordPaymentForm({
       live = false
     }
   }, [initialCustomer])
+
   function pick(hit: SearchHit) {
     const next = seedAmount(hit, months)
     setSelected(hit)

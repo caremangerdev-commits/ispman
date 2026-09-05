@@ -20,7 +20,7 @@ import { dateOnlyParts } from '@/lib/format'
  * 80mm of paper at the usual 12 CPI leaves 32 usable columns, which is what the
  * specified layout is built around:
  *
- *     Monthly service         3,500.00
+ *     Balance due             3,500.00
  *     |-------------|         |------|
  *     label, left             right-aligned, column 32
  */
@@ -50,15 +50,27 @@ export type Receipt = {
   /** Omitted from the receipt entirely when null. */
   accountNumber: string | null
   /**
-   * The charges being settled. One line for an "other" payment (the category
-   * name); for a service payment the monthly charge and, when there was one,
-   * the balance brought forward.
+   * The charges being settled.
+   *
+   * An "other" payment has one: the category name against the amount, which
+   * settles itself and nothing else.
+   *
+   * A SERVICE PAYMENT HAS ONE TOO — "Balance due", the figure the payment
+   * stamped. It used to have two, a monthly charge on top of a balance brought
+   * forward, and totalled them. That double counted: the bill run adds the
+   * monthly charge INTO carried_balance (app/actions/bulk.ts#billBatch), so the
+   * two lines were the same money printed twice and "Total due" was a number
+   * added to itself. A receipt reading 10,000 due, 5,000 paid, balance 0.00 is
+   * how it was found. See lib/data/receipts.ts.
    */
   lines: ReceiptLine[]
   /**
-   * Sum of `lines`. Null for a pre-0013 service payment, whose monthly charge
-   * was never stored — the receipt then prints the amount paid alone rather
-   * than inventing a breakdown. See migration 0013.
+   * Sum of `lines`, printed under a rule as "Total due".
+   *
+   * NULL FOR EVERY SERVICE PAYMENT, and not because there is nothing to total:
+   * because with a single "Balance due" line a total would restate the line
+   * directly above it. Kept for "other" payments, where it is the established
+   * shape of that receipt.
    */
   totalDue: number | null
   /** e.g. "Paid (Cash)". */
@@ -66,6 +78,20 @@ export type Receipt = {
   paid: number
   /** Service only. Always printed when present, including at 0.00. */
   balance: number | null
+  /**
+   * Money this payment carried forward as account credit, when it made any.
+   *
+   * Null or zero prints nothing. A prepayment receipt that ended at
+   * "Balance 0.00" told a customer who had just handed over three months
+   * nothing about where the rest of it went — the balance is settled and the
+   * surplus is invisible.
+   *
+   * Read from the stamped payments.credit_applied (migration 0015), never
+   * recomputed from the account_credit the customer holds today: that has moved
+   * on with every bill run since, and a reprint has to say what THIS payment
+   * did.
+   */
+  creditCarried: number | null
   /** Service only. Omitted when the payment set no expiry. */
   activeUntil: string | null
 }
@@ -160,6 +186,12 @@ export function renderReceipt(r: Receipt): string[] {
   // customer is looking for, and omitting it reads as an oversight.
   if (r.balance !== null) {
     out.push(columns('Balance', receiptMoney(r.balance)))
+  }
+
+  // Below the balance, because it is not part of settling it: the balance went
+  // to zero and THEN there was money left over.
+  if (r.creditCarried !== null && r.creditCarried > 0) {
+    out.push(columns('Credit c/fwd', receiptMoney(r.creditCarried)))
   }
 
   if (r.activeUntil) {

@@ -34,6 +34,8 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     'id, amount, payment_date, created_at, agent, payment_type, notes' +
     (caps.checkoff ? ', payment_method' : '') +
     (caps.billing ? ', carried_balance_before, carried_balance_after' : '') +
+    (caps.creditReversal ? ', credit_applied' : '') +
+    (caps.firstPeriod ? ', amount_due' : '') +
     (caps.otherPayments
       ? ', payment_kind, paid_on, service_charge, service_active_until, ' +
         'payment_categories(name)'
@@ -63,6 +65,8 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     notes: string | null
     carried_balance_before?: number | string | null
     carried_balance_after?: number | string | null
+    credit_applied?: number | string | null
+    amount_due?: number | string | null
     payment_kind?: string | null
     paid_on?: string | null
     service_charge?: number | string | null
@@ -112,6 +116,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
   let totalDue: number | null = null
   let balance: number | null = null
   let activeUntil: string | null = null
+  let creditCarried: number | null = null
 
   if (kind === 'other') {
     // The line item is the category name. No balance, no expiry, no brought
@@ -119,24 +124,60 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     lines.push({ label: r.payment_categories?.name ?? 'Other', amount: paid })
     totalDue = paid
   } else {
-    const charge = r.service_charge === null || r.service_charge === undefined
-      ? null
-      : Number(r.service_charge)
-    const before = Number(r.carried_balance_before ?? 0)
+    // ONE LINE, RESTATED, NEVER REASSEMBLED.
+    //
+    // This printed two lines and totalled them: "Balance b/f" from
+    // carried_balance_before, plus "Monthly service" from the stamped
+    // service_charge. Both are the same money. The bill run adds the monthly
+    // charge INTO carried_balance (app/actions/bulk.ts#billBatch), so by the
+    // time a payment is taken the charge is already inside the balance brought
+    // forward, and "Total due" was that number added to itself — 5,000 owed
+    // printed as 10,000 due, then settled to 0.00 by a payment of 5,000.
+    //
+    // The double count is a leftover from the retired prepaid model, where a
+    // customer did pay the coming month ON TOP of what they owed. After the
+    // collapse carried_balance is authoritative for everybody (lib/billing.ts
+    // #amountDue), and there is nothing to add to it.
+    //
+    // service_charge is deliberately no longer read. It is still stamped, and
+    // it is still the honest record of the rate that was in force, but it is
+    // not a charge this payment settled on top of the balance and printing it
+    // as one is what caused this.
+    //
+    // PREFERRING amount_due (migration 0017) IS NOT REDUNDANCY. For every
+    // payment written before 0017 the two are identical and the fallback is
+    // exact. They diverge for a FIRST payment, whose period carried_balance has
+    // never held: provisioning grants access to the end of it without billing
+    // it, so carried_balance_before reads 0 while the customer owes for days
+    // they are already using. amount_due is the figure the till actually asked
+    // for, discount included.
+    const stampedDue =
+      r.amount_due === null || r.amount_due === undefined
+        ? r.carried_balance_before === null || r.carried_balance_before === undefined
+          ? null
+          : Number(r.carried_balance_before)
+        : Number(r.amount_due)
 
-    if (charge !== null) {
-      // Balance b/f is printed ABOVE the month's own charge: the column reads
-      // what was owed coming in, then what this month added, then the total.
-      // Only when something was actually carried in.
-      if (before > 0) lines.push({ label: 'Balance b/f', amount: before })
-      lines.push({ label: 'Monthly service', amount: charge })
-      totalDue = charge + before
-    }
-    // With no stored charge (a payment taken before 0013) there is no honest
-    // breakdown to print, so the receipt shows the amount paid alone rather
-    // than a total reconstructed from today's rate. See migration 0013.
+    // Null only for a payment taken before the balance columns existed, where
+    // there is no stamped figure and nothing honest to print. The receipt then
+    // shows the amount paid alone rather than a total rebuilt from today.
+    if (stampedDue !== null) lines.push({ label: 'Balance due', amount: stampedDue })
+
+    // No "Total due" on a service receipt. With one charge line a total would
+    // restate the line above it, and totalling was how the double count showed
+    // up. totalDue stays null and renderReceipt draws no rule.
 
     balance = Number(r.carried_balance_after ?? 0)
+
+    // What this payment carried forward, from the value IT stamped (0015) and
+    // never from the credit the customer holds now — that has moved on with
+    // every bill run since, and a reprint has to say what this payment did.
+    // Stamped 0 for a payment that made none, and NULL on rows predating 0015;
+    // both print nothing.
+    creditCarried =
+      r.credit_applied === null || r.credit_applied === undefined
+        ? null
+        : Number(r.credit_applied)
 
     // Also a DATE column, and the one the off-by-one was reported against.
     if (r.service_active_until) activeUntil = receiptDate(r.service_active_until)
@@ -161,6 +202,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     paidLabel: 'Paid (' + PAYMENT_METHOD_LABELS[method] + ')',
     paid,
     balance,
+    creditCarried,
     activeUntil,
   }
 }

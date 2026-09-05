@@ -595,6 +595,14 @@ export async function recordPayment(
     insertRow.access_decision = decision
   }
 
+  if (caps.firstPeriod) {
+    // WHAT THE CUSTOMER WAS ASKED FOR, so the receipt can restate it rather
+    // than reassembling it from parts. Equal to carried_balance_before for an
+    // ordinary payment; larger for a first payment, whose period the carried
+    // balance has never held. See migration 0017 and lib/data/receipts.ts.
+    insertRow.amount_due = due
+  }
+
   if (caps.creditReversal) {
     // THE REVERSAL RECORD (migration 0015). Written for EVERY payment, zero
     // included, not just the ones that created credit: a correction has to be

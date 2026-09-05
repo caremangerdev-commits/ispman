@@ -51,9 +51,11 @@ export type SchemaCapabilities = {
    */
   logMetadata: boolean
   /**
-   * The two first-period switches added by migration 0017.
-   *
-   * FALLBACK IS ASYMMETRIC AND THAT IS THE POINT. When this reads false the app
+   * Migration 0017: the two first-period switches on `settings`, AND
+   * `payments.amount_due`, which the receipt prints as "Balance due". All three
+   * are required together — pricing a first period without stamping what was
+   * due would print a receipt that cannot be restated.
+   *   * FALLBACK IS ASYMMETRIC AND THAT IS THE POINT. When this reads false the app
    * must behave exactly as it did before 0017 existed, and that is not "both
    * rules off": the 21-day rule is already unconditional in the shipped code,
    * while pro-rata is new. So absent means A ON, B OFF — see
@@ -85,7 +87,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     typeRes, expiryRes, catalogRes, generalRes, rateRes, checkoffRes, recordsRes,
     billingCustomerRes, billingPaymentRes, billingSettingRes, thresholdRes,
     otherPaymentRes, paymentCategoryRes, creditReversalRes, logMetadataRes,
-    firstPeriodRes,
+    firstPeriodRes, amountDueRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -121,8 +123,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
       .from('settings')
       .select('first_expiry_rule_enabled, prorata_first_payment_enabled')
       .limit(1),
+    db.from('payments').select('amount_due').limit(1),
   ])
-  console.log('[perf]     schema probe: 16 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 17 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -147,9 +150,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   const missingCreditReversal = creditReversalRes.error?.code === '42703'
   // 0016 likewise: one ALTER adding all three columns to log.
   const missingLogMetadata = logMetadataRes.error?.code === '42703'
-  // 0017 lands as two ALTERs on the same table; either missing disables both,
-  // so a half-applied migration cannot leave one rule switchable and one not.
-  const missingFirstPeriod = firstPeriodRes.error?.code === '42703'
+  // 0017 spans two tables: the two switches on `settings` and payments.amount_due,
+  // which the receipt prints as "Balance due". ANY missing piece disables the
+  // lot — a half-applied 0017 that priced a first period without stamping what
+  // was due would print a receipt it cannot restate.
+  const missingFirstPeriod =
+    firstPeriodRes.error?.code === '42703' || amountDueRes.error?.code === '42703'
   const missingPaymentCategories =
     paymentCategoryRes.error?.code === 'PGRST205' || paymentCategoryRes.error?.code === '42P01'
 
@@ -218,9 +224,14 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     )
   }
 
-  if (firstPeriodRes.error && !missingFirstPeriod) {
+  if (firstPeriodRes.error && firstPeriodRes.error.code !== '42703') {
     throw new Error(
       'Schema probe failed for first-period settings: ' + firstPeriodRes.error.message
+    )
+  }
+  if (amountDueRes.error && amountDueRes.error.code !== '42703') {
+    throw new Error(
+      'Schema probe failed for payments.amount_due: ' + amountDueRes.error.message
     )
   }
 
