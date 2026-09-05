@@ -601,6 +601,12 @@ export async function recordPayment(
     // ordinary payment; larger for a first payment, whose period the carried
     // balance has never held. See migration 0017 and lib/data/receipts.ts.
     insertRow.amount_due = due
+    // Stamped for EVERY payment, zero included, on the same reasoning as
+    // credit_applied in 0015: a stamped 0 says no discount was given, where
+    // NULL would only say nobody recorded one. The receipt prints neither, but
+    // the two are different facts.
+    insertRow.first_period_discount =
+      firstPeriod?.discountApplied ? firstPeriod.discount : 0
   }
 
   if (caps.creditReversal) {

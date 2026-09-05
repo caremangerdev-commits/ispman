@@ -3,8 +3,8 @@
 -- RUN THIS IN THE SUPABASE SQL EDITOR.
 --
 -- NOT YET APPLIED. lib/schema.ts#firstPeriod probes for ALL THREE columns below
--- — the two switches on `settings` and payments.amount_due — and any one of
--- them missing disables the lot, so a half-applied 0017 cannot price a first
+-- — the two switches on `settings` and the two payments columns — and any one
+-- of them missing disables the lot, so a half-applied 0017 cannot price a first
 -- period without stamping what was due.
 --
 -- Until then the app behaves EXACTLY as it does today: the 21-day rule on (it
@@ -98,10 +98,10 @@ ALTER TABLE public.settings
 -- the receipt has one unconditional rule instead of a sum it has to know how to
 -- assemble. Assembling it at print time is exactly the mistake being fixed.
 --
--- NET OF THE FIRST-PERIOD DISCOUNT, because that is what the customer was
--- actually asked for. The discount itself is not on this row: it is a
--- discretionary decision and it is recorded in the log with the name of the
--- agent who made it (type first_period_discount).
+-- NET OF ANY DISCOUNT, because that is what the customer was actually asked
+-- for, and because it keeps the useful invariant: amount_due minus amount is
+-- the change in the carried balance. A gross figure would not satisfy that.
+-- The discount itself is stamped alongside it, below.
 --
 -- DELIBERATELY NOT A COPY OF carried_balance_before FOR REVERSALS. Nothing in
 -- app/actions/payments.ts#updatePayment or #deletePayment reads this. Those
@@ -124,6 +124,47 @@ ALTER TABLE public.payments
 ALTER TABLE public.payments DROP CONSTRAINT IF EXISTS payments_amount_due_check;
 ALTER TABLE public.payments ADD CONSTRAINT payments_amount_due_check
   CHECK (amount_due IS NULL OR amount_due >= 0);
+
+-- ---------------------------------------------------------------------------
+-- payments.first_period_discount — the reduction a cashier chose to give.
+--
+-- SO THE RECEIPT CAN SHOW IT. A customer handed a receipt reading "Balance due
+-- 3,033" cannot tell they were given anything, and neither can anyone going
+-- through the paper afterwards. The log row (type first_period_discount) names
+-- the agent and the figures, but nobody holding the receipt is reading the log.
+--
+-- WITH THIS, THE RECEIPT RESTATES BOTH ENDS instead of one:
+--
+--     Balance due             3,500.00   <- amount_due + this
+--     Short period disc.       -467.00   <- this
+--                            ---------
+--     Total due               3,033.00   <- amount_due
+--
+-- The one addition is over two stamped numbers, not over a rate or a live
+-- column, so a reprint years later prints what was agreed at the counter.
+-- "Total due" comes back for this case ONLY: it was dropped from the service
+-- receipt because a total over a single line restated it, which is not true
+-- when there are two.
+--
+-- ZERO IS WRITTEN, NOT NULL, for every payment once this migration is applied —
+-- the same reasoning as payments.credit_applied in 0015. A stamped 0 says "no
+-- discount was given"; NULL says "this predates the column and nobody knows".
+-- The receipt prints neither, but a later report can tell them apart.
+--
+-- NAMED FOR WHAT IT IS. The only discount this app has is the one on a short
+-- first period (lib/billing.ts#firstPeriodDiscount). A general `discount`
+-- column would promise a feature that does not exist and invite a second,
+-- unrelated writer.
+-- ---------------------------------------------------------------------------
+ALTER TABLE public.payments
+  ADD COLUMN IF NOT EXISTS first_period_discount NUMERIC(10,2);
+
+-- A discount is a reduction, so it is recorded as a positive amount and
+-- SUBTRACTED at the point of use. It can never exceed the monthly rate: it is
+-- (30 - days) x rate/30 with days capped at 0 below.
+ALTER TABLE public.payments DROP CONSTRAINT IF EXISTS payments_first_period_discount_check;
+ALTER TABLE public.payments ADD CONSTRAINT payments_first_period_discount_check
+  CHECK (first_period_discount IS NULL OR first_period_discount >= 0);
 
 -- ---------------------------------------------------------------------------
 -- NO SCHEMA IS ADDED FOR "HAS THIS CUSTOMER PAID SINCE PROVISIONING"

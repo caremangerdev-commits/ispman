@@ -35,7 +35,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     (caps.checkoff ? ', payment_method' : '') +
     (caps.billing ? ', carried_balance_before, carried_balance_after' : '') +
     (caps.creditReversal ? ', credit_applied' : '') +
-    (caps.firstPeriod ? ', amount_due' : '') +
+    (caps.firstPeriod ? ', amount_due, first_period_discount' : '') +
     (caps.otherPayments
       ? ', payment_kind, paid_on, service_charge, service_active_until, ' +
         'payment_categories(name)'
@@ -67,6 +67,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     carried_balance_after?: number | string | null
     credit_applied?: number | string | null
     amount_due?: number | string | null
+    first_period_discount?: number | string | null
     payment_kind?: string | null
     paid_on?: string | null
     service_charge?: number | string | null
@@ -161,11 +162,31 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     // Null only for a payment taken before the balance columns existed, where
     // there is no stamped figure and nothing honest to print. The receipt then
     // shows the amount paid alone rather than a total rebuilt from today.
-    if (stampedDue !== null) lines.push({ label: 'Balance due', amount: stampedDue })
+    // A DISCOUNT HAS TO BE VISIBLE ON THE PAPER. It is discretionary and it is
+    // given by a person, so a receipt reading only the net figure lets neither
+    // the customer nor anyone going through the paper afterwards see that
+    // anything was given. The log row names the agent, but nobody holding a
+    // receipt is reading the log.
+    //
+    // amount_due is stamped NET, so the gross is the two stamped numbers added.
+    // That is a sum over two recorded facts, not a figure rebuilt from a rate
+    // or a live column, so a reprint years from now still prints what was
+    // agreed at the counter.
+    const discount = Number(r.first_period_discount ?? 0)
 
-    // No "Total due" on a service receipt. With one charge line a total would
-    // restate the line above it, and totalling was how the double count showed
-    // up. totalDue stays null and renderReceipt draws no rule.
+    if (stampedDue !== null) {
+      if (discount > 0) {
+        lines.push({ label: 'Balance due', amount: stampedDue + discount })
+        lines.push({ label: 'Short period disc.', amount: -discount })
+        // "Total due" comes back HERE ONLY. It was dropped from the service
+        // receipt because a total over a single line restates it — which stops
+        // being true the moment there are two, and the customer needs to see
+        // what the two came to.
+        totalDue = stampedDue
+      } else {
+        lines.push({ label: 'Balance due', amount: stampedDue })
+      }
+    }
 
     balance = Number(r.carried_balance_after ?? 0)
 

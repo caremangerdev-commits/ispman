@@ -67,10 +67,13 @@ export type Receipt = {
   /**
    * Sum of `lines`, printed under a rule as "Total due".
    *
-   * NULL FOR EVERY SERVICE PAYMENT, and not because there is nothing to total:
-   * because with a single "Balance due" line a total would restate the line
-   * directly above it. Kept for "other" payments, where it is the established
-   * shape of that receipt.
+   * NULL FOR AN ORDINARY SERVICE PAYMENT, and not because there is nothing to
+   * total: because with a single "Balance due" line a total would restate the
+   * line directly above it.
+   *
+   * Set again the moment there are two lines to total — a service payment that
+   * was given a short-period discount — and kept for "other" payments, where a
+   * total under the category line is the established shape of that receipt.
    */
   totalDue: number | null
   /** e.g. "Paid (Cash)". */

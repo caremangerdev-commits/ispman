@@ -51,8 +51,9 @@ export type SchemaCapabilities = {
    */
   logMetadata: boolean
   /**
-   * Migration 0017: the two first-period switches on `settings`, AND
-   * `payments.amount_due`, which the receipt prints as "Balance due". All three
+   * Migration 0017: the two first-period switches on `settings`, AND the two
+   * payments columns the receipt restates from — `amount_due` and
+   * `first_period_discount`. All four
    * are required together — pricing a first period without stamping what was
    * due would print a receipt that cannot be restated.
    *   * FALLBACK IS ASYMMETRIC AND THAT IS THE POINT. When this reads false the app
@@ -123,7 +124,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
       .from('settings')
       .select('first_expiry_rule_enabled, prorata_first_payment_enabled')
       .limit(1),
-    db.from('payments').select('amount_due').limit(1),
+    db.from('payments').select('amount_due, first_period_discount').limit(1),
   ])
   console.log('[perf]     schema probe: 17 parallel queries  %dms', Date.now() - tProbe)
 
