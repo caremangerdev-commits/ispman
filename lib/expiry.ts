@@ -106,55 +106,6 @@ export function addMonths(from: Date, months: number): Date {
 }
 
 /**
- * The expiry a prepaid payment should push a customer out to.
- *
- * The single implementation behind BOTH the cashier's preview
- * (components/payments/RecordPaymentForm.tsx) and the radcheck write
- * (lib/radius/operations.ts#paymentExpiry). They used to hold a copy each,
- * which is exactly how the preview and the written expiry drifted apart.
- *
- *   from_expiry  — "From Cut Off Date". Each month paid buys the customer to
- *                  the next occurrence of their cut-off day, walked one month
- *                  at a time. Cut-off 5, expiry 12 Sep: one month buys 5 Oct,
- *                  two 5 Nov, three 5 Dec. Expiry 3 Sep buys 5 Sep for one
- *                  month, because that month's cut-off is still ahead.
- *   from_payment — payment date + whole months paid. UNCHANGED by the cut-off
- *                  work; this mode deliberately ignores the cut-off day.
- *
- * `currentExpiry` MUST be the expiry held in the network registry, never one
- * derived from `last_bill_date`.
- *
- * A registry expiry already in the past is not used as the anchor: walking
- * forward from it could still land in the past and leave a paying customer
- * offline, so those anchor to the payment date instead.
- *
- * A from_expiry customer with no cut-off day on record has nothing to walk to,
- * and falls back to whole months from the same anchor.
- */
-export function prepaidExpiry(opts: {
-  mode: 'from_expiry' | 'from_payment'
-  currentExpiry: Date | null
-  monthsPaid: number
-  paymentDate: Date
-  cutOffDay: number | null
-}): Date {
-  const { mode, currentExpiry, monthsPaid, paymentDate, cutOffDay } = opts
-
-  const base =
-    mode === 'from_expiry' && currentExpiry && currentExpiry.getTime() > paymentDate.getTime()
-      ? new Date(currentExpiry)
-      : new Date(paymentDate)
-
-  if (mode === 'from_expiry') {
-    const anchor = midnight(base.getFullYear(), base.getMonth(), base.getDate())
-    const stepped = advanceCutOff(anchor, cutOffDay, monthsPaid)
-    if (stepped) return stepped
-  }
-
-  return addMonths(base, monthsPaid)
-}
-
-/**
  * The expiry a FIRST-TIME provision should be given — the 21-day rule.
  *
  * A customer switched on a few days before their cut-off day would otherwise

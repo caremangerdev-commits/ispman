@@ -80,21 +80,20 @@ const num = (v: unknown) => {
 }
 
 /**
- * What one customer owes, from whichever column is authoritative for them.
+ * What one customer owes: `carried_balance`, for everybody.
  *
- * Postpaid debt lives in `carried_balance`: the bill run adds the monthly rate
- * there and never touches `balance`. Prepaid debt lives in `balance`, which is
- * also the only column adjustBalance() moves when a payment is corrected.
+ * This used to branch on billing_type and read `balance` for prepaid. That was
+ * the bug: `balance` has no writer that ever CHARGES it — the bill run adds the
+ * monthly rate to carried_balance and never touches balance, and the payment
+ * path only ever decremented it — so every prepaid company reported an
+ * Outstanding Balance of 0 while its customers carried real arrears. One
+ * company had 237 accounts carrying 740,500 between them and the dashboard
+ * showed nothing.
  *
- * NOT the sum of the two. A prepaid payment writes the same shortfall to BOTH
- * columns (app/actions/payments.ts, the else branch of the settle step), so
- * adding them reports every prepaid arrear twice.
- *
- * Before migration 0011 every row reads as prepaid — withBillingDefaults makes
- * sure of that — so this is exactly the old `balance` behaviour until it lands.
+ * NOT the sum of the two columns, and never was. See lib/billing.ts.
  */
 function amountOwed(c: Customer): number {
-  return c.billing_type === 'postpaid' ? num(c.carried_balance) : num(c.balance)
+  return num(c.carried_balance)
 }
 
 export async function getDashboardData(companyId: number): Promise<DashboardData> {

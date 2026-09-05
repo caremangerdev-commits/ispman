@@ -152,12 +152,14 @@ export async function createCustomer(
 
   // Capped at 28, like the cut-off day: days 29-31 do not occur in every month,
   // so a bill day in that range is a billing cycle that skips February. The
-  // database CHECK from 0011 still permits 1-31 and postpaidExpiry still clamps
+  // database CHECK from 0011 still permits 1-31 and serviceExpiry still clamps
   // to the length of the target month — that is what keeps rows written before
   // this cap from rolling forward twice.
-  if (caps.billing && billing_type === 'postpaid') {
+  //
+  // Required of every customer now that there is one billing model.
+  if (caps.billing) {
     if (bill_date === null) {
-      fieldErrors.bill_date = 'A postpaid customer needs a bill date.'
+      fieldErrors.bill_date = 'A bill date is required.'
     } else if (bill_date < 1 || bill_date > 28) {
       fieldErrors.bill_date = 'Must be a day between 1 and 28.'
     }
@@ -196,7 +198,9 @@ export async function createCustomer(
     gps: gps && gps.ok ? gps.value : null,
     mac_address: mac_address || null,
     monthly_rate,
-    balance: 0,
+    // `balance` is NOT written. It is the retired split's column and nothing
+    // charges it; it keeps whatever default it carries until it is dropped.
+    // See lib/billing.ts.
     cut_off_date,
     // bill_due_date is deliberately absent. The column still exists but nothing
     // reads it; postpaid billing runs off bill_date. New rows take whatever
@@ -216,8 +220,10 @@ export async function createCustomer(
   }
   // A prepaid customer gets no bill date: there is no bill run to generate.
   if (caps.billing) {
+    // billing_type is still written so the column round-trips, but NOTHING
+    // BRANCHES ON IT any more — see lib/billing.ts.
     row.billing_type = billing_type
-    row.bill_date = billing_type === 'postpaid' ? bill_date : null
+    row.bill_date = bill_date
     row.carried_balance = 0
     row.account_credit = 0
   }
@@ -321,16 +327,24 @@ export async function updateCustomer(
     // moment the field stopped rendering.
   }
 
-  // The detail page renders this control for postpaid customers only, so the
-  // key is absent for everyone else. Keyed on presence rather than value: an
-  // unconditional patch would null out a postpaid customer's bill day whenever
-  // the form that submitted never rendered the field.
+  // Keyed on presence rather than value: an unconditional patch would null out
+  // a customer's bill day whenever the form that submitted never rendered the
+  // field.
+  //
+  // AN EMPTY VALUE IS "LEAVE IT ALONE", NOT AN ERROR. The detail page now
+  // renders this control for every customer rather than postpaid ones only, and
+  // 338 rows written before the billing split was retired carry no bill day at
+  // all — rejecting a blank would have made every one of those customers
+  // impossible to edit at all, for any field.
   if (caps.billing && formData.has('bill_date')) {
-    const bill_date = numOrNull(formData, 'bill_date')
-    if (bill_date === null || bill_date < 1 || bill_date > 28) {
-      return { ok: false, error: 'Bill date must be a day between 1 and 28.' }
+    const raw = str(formData, 'bill_date')
+    if (raw) {
+      const bill_date = numOrNull(formData, 'bill_date')
+      if (bill_date === null || bill_date < 1 || bill_date > 28) {
+        return { ok: false, error: 'Bill date must be a day between 1 and 28.' }
+      }
+      patch.bill_date = bill_date
     }
-    patch.bill_date = bill_date
   }
 
   if (caps.connectionTypes) {
@@ -638,7 +652,7 @@ async function runNetworkAction(opts: {
 
   // Billing dates are deliberately untouched. Status and expiry live in the
   // registry now, and last_bill_date is record-keeping that must never feed an
-  // expiry calculation (lib/radius/operations.ts#paymentExpiry).
+  // expiry calculation (lib/billing.ts#serviceExpiry).
 
   revalidatePath('/dashboard/customers')
   revalidatePath('/dashboard/customers/' + id)

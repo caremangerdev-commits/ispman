@@ -27,6 +27,7 @@ export type FieldTarget =
   | 'service_plan'
   | 'monthly_rate'
   | 'cut_off_day'
+  | 'date_added'
   | 'mac_address'
   | 'pppoe_username'
   | 'notes'
@@ -35,7 +36,8 @@ export type FieldTarget =
 /** Dropdown order in step 2. `ignore` sits last as the opt-out. */
 export const FIELD_TARGETS: FieldTarget[] = [
   'full_name', 'first_name', 'last_name', 'phone', 'address', 'service_plan',
-  'monthly_rate', 'cut_off_day', 'mac_address', 'pppoe_username', 'notes', 'ignore',
+  'monthly_rate', 'cut_off_day', 'date_added', 'mac_address', 'pppoe_username',
+  'notes', 'ignore',
 ]
 
 export const FIELD_LABELS: Record<FieldTarget, string> = {
@@ -47,6 +49,7 @@ export const FIELD_LABELS: Record<FieldTarget, string> = {
   service_plan: 'Service plan',
   monthly_rate: 'Monthly rate',
   cut_off_day: 'Cut off day',
+  date_added: 'Date added',
   mac_address: 'MAC address',
   pppoe_username: 'PPPoE username',
   notes: 'Notes',
@@ -62,7 +65,7 @@ export const FIELD_LABELS: Record<FieldTarget, string> = {
  */
 export type ImportField =
   'name' | 'first' | 'last' | 'phone' | 'address' | 'plan' | 'rate' | 'cutOff'
-  | 'mac' | 'pppoe' | 'notes'
+  | 'dateAdded' | 'mac' | 'pppoe' | 'notes'
 
 const TARGET_FIELD: Record<Exclude<FieldTarget, 'ignore'>, ImportField> = {
   full_name: 'name',
@@ -73,6 +76,7 @@ const TARGET_FIELD: Record<Exclude<FieldTarget, 'ignore'>, ImportField> = {
   service_plan: 'plan',
   monthly_rate: 'rate',
   cut_off_day: 'cutOff',
+  date_added: 'dateAdded',
   mac_address: 'mac',
   pppoe_username: 'pppoe',
   notes: 'notes',
@@ -116,6 +120,12 @@ const GUESSES: { target: Exclude<FieldTarget, 'ignore'>; hints: string[]; unless
   // the bill day as the cut-off day, and guessing it as the cut-off would be
   // wrong more often than right. "DUE DAY" is unambiguous enough.
   { target: 'cut_off_day', hints: ['cutoff', 'dueday'] },
+  // Ahead of the money rule for the same reason the cut-off rule is: a header
+  // carrying a date must never be read as a charge. The fragments are narrow on
+  // purpose — a bare "date" is as often a bill date, an expiry or a payment
+  // date as it is a signup, and guessing it here would take a column the
+  // operator meant for something else.
+  { target: 'date_added', hints: ['dateadded', 'joined', 'signup'] },
   {
     target: 'monthly_rate',
     hints: ['monthl', 'rate', 'amount', 'price', 'charge', 'bill', 'fee', 'cost', 'tariff'],
@@ -320,6 +330,78 @@ export function parseCutOffDay(raw: string | null | undefined): CutOffDayResult 
 }
 
 // ---------------------------------------------------------------------------
+// Date added
+// ---------------------------------------------------------------------------
+
+export type DateAddedResult =
+  | { kind: 'ok'; ymd: string }
+  /** Empty cell. The customer simply has no recorded start date, which is a
+   *  real state and NOT an exception. */
+  | { kind: 'blank' }
+  /** Not a date this can read. Left blank, and listed. */
+  | { kind: 'invalid' }
+  /** A readable date that has not happened yet. Left blank, and listed. */
+  | { kind: 'future' }
+
+/**
+ * Reads the date a customer was signed up, as `YYYY-MM-DD`.
+ *
+ * ISO ONLY, deliberately. `07/09/2026` is the 7th of September to half the
+ * world and the 9th of July to the other half, and there is nothing in a
+ * spreadsheet to say which — a wrong-but-plausible date would be written and
+ * never questioned. A file that carries dates in another format is one the
+ * operator should convert before importing, and the exception list tells them
+ * so row by row.
+ *
+ * THE STRING IS NEVER TURNED INTO AN INSTANT. The parts are read out of it and
+ * checked as numbers, then handed on as the same digits that arrived. Building
+ * a Date here would re-introduce exactly the timezone slip that has already
+ * moved dates by a day elsewhere in this app — see lib/format.ts#dateOnlyParts.
+ *
+ * A future date is reported rather than stored. Nobody was signed up next
+ * month; it is a typo or a mis-mapped column, and stamping it would quietly
+ * corrupt the customer's history.
+ */
+export function parseDateAdded(
+  raw: string | null | undefined,
+  today: string = todayYmdLocal()
+): DateAddedResult {
+  const trimmed = (raw ?? '').trim()
+  if (!trimmed) return { kind: 'blank' }
+
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed)
+  if (!m) return { kind: 'invalid' }
+
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  if (month < 1 || month > 12 || day < 1 || day > 31) return { kind: 'invalid' }
+
+  // Rejects 31 April and 29 February in a common year, which the range check
+  // above lets through. Local parts in, local parts out — no zone is involved.
+  const probe = new Date(year, month - 1, day)
+  if (
+    probe.getFullYear() !== year ||
+    probe.getMonth() !== month - 1 ||
+    probe.getDate() !== day
+  ) {
+    return { kind: 'invalid' }
+  }
+
+  // Both sides are YYYY-MM-DD, which compares correctly as text.
+  if (trimmed > today) return { kind: 'future' }
+
+  return { kind: 'ok', ymd: trimmed }
+}
+
+/** Today as YYYY-MM-DD from LOCAL parts, for the future check above. */
+function todayYmdLocal(): string {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate())
+}
+
+// ---------------------------------------------------------------------------
 // Rows that are not customers
 // ---------------------------------------------------------------------------
 
@@ -366,6 +448,8 @@ export type ExceptionReason =
   | 'MAC already used by an existing customer'
   | 'missing or non numeric monthly rate'
   | 'invalid cut off day, using company default'
+  | 'unreadable date added, left blank'
+  | 'date added is in the future, left blank'
 
 /**
  * A spreadsheet row turned into the values that will be written, plus whatever
@@ -390,6 +474,9 @@ export type ResolvedRow = {
   rate: number | null
   /** Day from the file, or null for "fall back to the company setting". */
   cutOffDay: number | null
+  /** `YYYY-MM-DD` from the file, or null for "no start date recorded". Null
+   *  does NOT mean today — see buildPayload in app/actions/import.ts. */
+  dateAdded: string | null
   reasons: ExceptionReason[]
 }
 
@@ -400,6 +487,9 @@ export type ResolveOptions = {
   rateMapped: boolean
   /** Unmapped means every customer takes the company setting, as before. */
   cutOffMapped: boolean
+  /** Unmapped means every customer is stamped with today, as before. Mapped
+   *  means the file decides, including deciding on nothing. */
+  dateAddedMapped: boolean
 }
 
 export function resolveRow(
@@ -452,6 +542,18 @@ export function resolveRow(
     }
   }
 
+  // Blank is silent: a customer with no recorded start date is an ordinary
+  // thing and flagging it would bury the real exceptions. A value that was
+  // present but unusable IS listed, because someone typed something and it is
+  // not being honoured — the same rule the cut-off day follows above.
+  let dateAdded: string | null = null
+  if (options.dateAddedMapped) {
+    const parsed = parseDateAdded(raw.dateAdded)
+    if (parsed.kind === 'ok') dateAdded = parsed.ymd
+    else if (parsed.kind === 'invalid') reasons.push('unreadable date added, left blank')
+    else if (parsed.kind === 'future') reasons.push('date added is in the future, left blank')
+  }
+
   return {
     rowNumber,
     first_name: first,
@@ -464,6 +566,7 @@ export function resolveRow(
     mac,
     rate,
     cutOffDay,
+    dateAdded,
     reasons,
   }
 }

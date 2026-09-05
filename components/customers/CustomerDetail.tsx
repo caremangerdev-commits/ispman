@@ -23,7 +23,7 @@ import { can, type Role } from '@/lib/permissions'
 // From format.ts, not client.ts: this is a client component and client.ts
 // pulls in mysql2.
 import { formatBytes, type RadiusStatus } from '@/lib/radius/format'
-import { BILLING_TYPE_LABELS, type BillingType } from '@/lib/billing'
+import { type BillingType } from '@/lib/billing'
 import {
   CONNECTION_TYPES, CONNECTION_TYPE_LABELS, CUSTOMER_CATEGORIES,
   CUSTOMER_CATEGORY_LABELS, CUSTOMER_TYPES, CUSTOMER_TYPE_LABELS, describePlan,
@@ -226,6 +226,20 @@ export function CustomerDetail({
   // two zones. A UTC server and a Jamaica browser is exactly that gap, which is
   // why this and the list disagreed on every midnight expiry.
   const networkDaysLeft = daysUntilDateOnly(radius.expiryDate)
+
+  // WHAT THE CUSTOMER OWES, FOR BOTH BILLING TYPES — and it is carried_balance,
+  // not `balance`.
+  //
+  // `balance` has no writer that ever CHARGES it. The bill run adds the monthly
+  // rate to carried_balance (app/actions/bulk.ts#billBatch) and explicitly does
+  // not touch balance; the payment path only ever DECREMENTS balance by what
+  // was paid. A column that is decremented and never incremented decays to 0
+  // and stays there, so this field read 0 for every customer who actually owed
+  // — 237 of them on one company, carrying 740,500 between them.
+  //
+  // Falls back to `balance` only before migration 0011, where carried_balance
+  // does not exist and balance is the only figure there is.
+  const owed = c.billingAvailable ? c.carried_balance : Number(c.balance ?? 0)
 
   // The four network actions. Each is CSR-or-above and applies to a distinct
   // set of statuses, so at most two are ever offered at once. The server action
@@ -603,23 +617,18 @@ export function CustomerDetail({
           <Row
             label="Balance"
             value={
-              <span className={Number(c.balance ?? 0) > 0 ? 'text-orange-400' : 'text-gray-200'}>
-                {formatCurrency(c.balance)}
+              <span className={owed > 0 ? 'text-orange-400' : 'text-gray-200'}>
+                {formatCurrency(owed)}
               </span>
             }
           />
-          {/* Read-only. Which billing type a customer is on changes how every
-              later payment is calculated, so it is not something to flip from
-              the same inline edit that renames them. */}
+          {/* No "Billing Type" row. There is one billing model, so the field
+              named a choice that no longer exists — see lib/billing.ts. */}
           {c.billingAvailable ? (
-            <Row label="Billing Type" value={BILLING_TYPE_LABELS[c.billingType]} />
-          ) : null}
-
-          {c.billingAvailable && c.billingType === 'postpaid' ? (
             <>
               {/* Editable, capped 1-28 like the cut-off day. This is the field
-                  postpaidExpiry runs on, so it is the one an operator needs to
-                  be able to correct. */}
+                  serviceExpiry runs on, so it is the one an operator needs to
+                  be able to correct. Shown for every customer now. */}
               <Row
                 label="Bill Date"
                 value={c.bill_date ? 'Day ' + c.bill_date + ' of each month' : '—'}
@@ -628,14 +637,10 @@ export function CustomerDetail({
                 type="number"
                 defaultValue={c.bill_date ?? ''}
               />
-              <Row
-                label="Carried Balance"
-                value={
-                  <span className={c.carried_balance > 0 ? 'text-red-400' : 'text-gray-200'}>
-                    {formatCurrency(c.carried_balance)}
-                  </span>
-                }
-              />
+              {/* No "Carried Balance" row here any more: the Balance field
+                  above now shows carried_balance for every billing type, and
+                  two rows carrying the same number under two labels is how the
+                  two columns got confused in the first place. */}
               {/* DATE column — same reason as Date Added. */}
               <Row label="Last Billed" value={formatDateOnly(c.last_billed_date)} />
             </>

@@ -109,16 +109,47 @@ export function parseRadiusExpiration(value: string | null): Date | null {
 }
 
 /**
+ * The canonical form of a RADIUS identity, for COMPARING two of them.
+ *
+ * radcheck.username is `utf8_unicode_ci`, so MySQL happily matches
+ * 'f4:92:bf:4c:b2:77' against 'F4:92:BF:4C:B2:77'. JavaScript does not, and any
+ * place this app matched a value read back out of radcheck against a customer's
+ * MAC in JS reported those customers unprovisioned while they were online. 980
+ * radcheck rows are lower or mixed case.
+ *
+ * Whitespace is stripped for the same reason: some rows carry a LEADING space,
+ * which is significant to the collation and to FreeRADIUS but is plainly not
+ * part of anyone's identity.
+ *
+ * MAC-SHAPED VALUES ARE UPPERCASED; ANYTHING ELSE IS ONLY TRIMMED. A PPPoE
+ * username is case-sensitive to FreeRADIUS, so folding its case would merge two
+ * genuinely different subscribers.
+ *
+ * Total, and never throws — it is applied to whatever the database returns.
+ * An empty or missing value keys to '' and matches nothing.
+ */
+export function usernameKey(value: string | null | undefined): string {
+  const trimmed = (value ?? '').trim()
+  if (!trimmed) return ''
+
+  const looksLikeMac = /^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$/.test(trimmed)
+  return looksLikeMac ? trimmed.toUpperCase().replace(/-/g, ':') : trimmed
+}
+
+/**
  * MAC addresses are stored uppercase with colons throughout this app, and the
  * RADIUS username must match byte for byte or authentication silently fails.
  * PPPoE usernames pass through unchanged.
+ *
+ * THE WRITE PATH. Identical rule to usernameKey above, but it refuses an empty
+ * value rather than returning one, because writing a blank username to radcheck
+ * would create a row nothing can ever authenticate against or find again.
  */
 export function normaliseUsername(value: string): string {
   const trimmed = value.trim()
   if (!trimmed) throw new Error('RADIUS username cannot be empty.')
 
-  const looksLikeMac = /^([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}$/.test(trimmed)
-  return looksLikeMac ? trimmed.toUpperCase().replace(/-/g, ':') : trimmed
+  return usernameKey(trimmed)
 }
 
 /**

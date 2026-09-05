@@ -8,7 +8,7 @@ import { saveCompanyProfile, type CompanyResult } from '@/app/actions/company'
 import { settingsInput } from '@/components/settings/Modal'
 import type { GeneralSettings } from '@/lib/data/company'
 import {
-  BILLING_TYPES, BILLING_TYPE_HELP, BILLING_TYPE_LABELS, type BillingType,
+  type BillingType,
 } from '@/lib/billing'
 import { EXPIRY_MODES, EXPIRY_MODE_HELP, EXPIRY_MODE_LABELS, type ExpiryMode } from '@/lib/types'
 
@@ -96,7 +96,6 @@ export function GeneralSettingsForm({
   expiryModeAvailable,
   generalAvailable,
   defaultRateAvailable,
-  billingAvailable,
   thresholdsAvailable,
   currencySymbol,
 }: {
@@ -108,7 +107,6 @@ export function GeneralSettingsForm({
   generalAvailable: boolean
   defaultRateAvailable: boolean
   /** migration 0011 — the default billing type for new customers. */
-  billingAvailable: boolean
   /** migration 0012 — the three billing policy thresholds. */
   thresholdsAvailable: boolean
   currencySymbol: string
@@ -116,7 +114,8 @@ export function GeneralSettingsForm({
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveCompanyProfile, null)
 
   const [mode, setMode] = useState<ExpiryMode>(settings.defaultExpiryMode)
-  const [billingType, setBillingType] = useState<BillingType>(settings.defaultBillingType)
+  // Not state any more: there is no control to change it. See lib/billing.ts.
+  const billingType: BillingType = settings.defaultBillingType
   const [sms, setSms] = useState(settings.smsEnabled)
   const [emailOn, setEmailOn] = useState(settings.emailEnabled)
   const [showSecret, setShowSecret] = useState(false)
@@ -213,32 +212,10 @@ export function GeneralSettingsForm({
             </Field>
           </div>
 
-          <div className="space-y-1.5">
-            <span className="block text-xs font-medium text-gray-400">Default Billing Type</span>
-            <input type="hidden" name="default_billing_type" value={billingType} />
-            <div className="flex gap-2" role="group" aria-label="Default billing type">
-              {BILLING_TYPES.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setBillingType(t)}
-                  aria-pressed={billingType === t}
-                  disabled={!billingAvailable}
-                  className={
-                    'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ' +
-                    (billingType === t
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200')
-                  }
-                >
-                  {BILLING_TYPE_LABELS[t]}
-                </button>
-              ))}
-            </div>
-            <p className="text-[11px] text-gray-600">
-              {billingAvailable ? BILLING_TYPE_HELP[billingType] : 'Needs migration 0011.'}
-            </p>
-          </div>
+          {/* No Default Billing Type control. One billing model — see
+              lib/billing.ts. The setting column is still posted so the save
+              action and the settings row are unchanged. */}
+          <input type="hidden" name="default_billing_type" value={billingType} />
 
           <div className="space-y-1.5">
             <span className="block text-xs font-medium text-gray-400">Default Expiry Mode</span>

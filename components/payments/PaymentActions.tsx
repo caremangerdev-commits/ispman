@@ -6,10 +6,10 @@ import { useFormStatus } from 'react-dom'
 
 import { deletePayment, updatePayment, type PaymentResult } from '@/app/actions/payments'
 import { Modal } from '@/components/settings/Modal'
+import { PREPAY_MONTH_OPTIONS } from '@/lib/billing'
 import { formatCurrency } from '@/lib/format'
 
 const PAYMENT_TYPES = ['cash', 'card', 'online'] as const
-const MONTH_OPTIONS = [1, 2, 3, 4, 5, 6]
 
 const inputBase =
   'w-full rounded-lg border bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 outline-none transition focus:ring-2'
@@ -149,7 +149,7 @@ function EditForm({ payment, onCancel }: { payment: EditablePayment; onCancel: (
         <div className="space-y-1.5">
           <span className="block text-xs font-medium text-gray-400">Months Paid</span>
           <div className="flex gap-1.5" role="group" aria-label="Months paid">
-            {MONTH_OPTIONS.map((m) => (
+            {PREPAY_MONTH_OPTIONS.map((m) => (
               <button
                 key={m}
                 type="button"
@@ -169,6 +169,14 @@ function EditForm({ payment, onCancel }: { payment: EditablePayment; onCancel: (
           {errors.months_paid ? (
             <p role="alert" className="text-xs text-red-400">{errors.months_paid}</p>
           ) : null}
+          {/* Says plainly what this control does here, which is NOT what the
+              same-looking control on the till does. There it seeds an amount
+              and the money buys months of access; here it corrects a number
+              recorded against a payment already taken. */}
+          <p className="text-[11px] text-gray-600">
+            Corrects the recorded figure only. Does not move their expiry or
+            their account credit.
+          </p>
         </div>
 
         <div className="space-y-1.5">

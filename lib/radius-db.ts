@@ -3,7 +3,7 @@ import 'server-only'
 import mysql from 'mysql2/promise'
 
 import {
-  formatRadiusExpiration, normaliseUsername, parseRadiusExpiration,
+  formatRadiusExpiration, normaliseUsername, parseRadiusExpiration, usernameKey,
 } from '@/lib/radius/format'
 import type { CustomerStatus } from '@/lib/status'
 
@@ -234,6 +234,8 @@ function deriveStatus(
   if (records.length === 0) return UNPROVISIONED
 
   const rawExpiry = records.find((r) => r.attribute === EXPIRATION)?.value ?? null
+  // records arrives already reduced to ONE spelling by the callers below, so
+  // find() cannot pick between a clean row and a whitespace variant here.
   const expiry = parseRadiusExpiration(rawExpiry)
 
   // Rows exist but carry no usable expiry: nothing constrains the account, so
@@ -249,18 +251,36 @@ function deriveStatus(
   return { exists: true, status, expiry, rawExpiry }
 }
 
-/** Reads one customer's current radcheck state. */
+/**
+ * Reads one customer's current radcheck state.
+ *
+ * The OR TRIM branch is not redundant with the collation. `username` is
+ * `utf8_unicode_ci`, so `= ?` already matches a differently-cased row — but a
+ * LEADING SPACE is significant and would hide the row completely. Trailing
+ * spaces the collation ignores on its own.
+ *
+ * Where both a clean row and a whitespace variant exist, the clean one wins:
+ * that is the row FreeRADIUS itself authenticates against, so it is the row
+ * whose expiry describes the customer's real access.
+ */
 export async function getRadiusStatus(mac: string): Promise<RadiusRecord> {
   const username = normaliseUsername(mac)
 
   const [rows] = await withRetry(() =>
     radiusPool().execute(
-      'SELECT attribute, value FROM radcheck WHERE username = ?',
-      [username]
+      'SELECT username, attribute, value FROM radcheck WHERE username = ? OR TRIM(username) = ?',
+      [username, username]
     )
   )
 
-  return deriveStatus(rows as { attribute: string; value: string }[])
+  // Same rule as the batch path: where both a clean row and a whitespace
+  // variant came back, only the clean one is derived from. Merging the two
+  // would let a dead variant's Expiration decide a live customer's status —
+  // and on this data those differ by as much as three years.
+  const all = rows as { username: string; attribute: string; value: string }[]
+  const clean = all.filter((r) => r.username === username)
+
+  return deriveStatus(clean.length > 0 ? clean : all)
 }
 
 /**
@@ -281,23 +301,40 @@ export async function batchGetRadiusStatus(
   )]
   if (list.length === 0) return out
 
+  // OR TRIM catches the rows a leading space hides. The collation already makes
+  // the IN case-insensitive, so a lower or mixed case row comes back either way.
   const [rows] = await withRetry(() =>
     radiusPool().query(
-      'SELECT username, attribute, value FROM radcheck WHERE username IN (?)',
-      [list]
+      'SELECT username, attribute, value FROM radcheck ' +
+      'WHERE username IN (?) OR TRIM(username) IN (?)',
+      [list, list]
     )
   )
 
-  const grouped = new Map<string, { attribute: string; value: string }[]>()
+  // THE BUG THIS REPLACES: the rows were bucketed under `r.username` exactly as
+  // radcheck spells it, then read back under the uppercase form. MySQL had
+  // matched 'f4:92:bf:4c:b2:77' case-insensitively and handed it over, and the
+  // JS Map lookup then missed it — so the customer derived from an empty record
+  // set and rendered Unprovisioned while they were online.
+  //
+  // Two buckets, not one. Where a clean row and a whitespace variant both
+  // exist for an identity, the clean row is the one FreeRADIUS authenticates
+  // against, so it must win rather than whichever the database listed first.
+  const exact = new Map<string, { attribute: string; value: string }[]>()
+  const variant = new Map<string, { attribute: string; value: string }[]>()
+
   for (const r of rows as { username: string; attribute: string; value: string }[]) {
-    const bucket = grouped.get(r.username) ?? []
+    const key = usernameKey(r.username)
+    if (!key) continue
+    const into = r.username === key ? exact : variant
+    const bucket = into.get(key) ?? []
     bucket.push({ attribute: r.attribute, value: r.value })
-    grouped.set(r.username, bucket)
+    into.set(key, bucket)
   }
 
   const now = new Date()
   for (const username of list) {
-    out.set(username, deriveStatus(grouped.get(username) ?? [], now))
+    out.set(username, deriveStatus(exact.get(username) ?? variant.get(username) ?? [], now))
   }
 
   return out
@@ -372,11 +409,18 @@ export async function getProvisionedIdentities(
 
   const [rows] = await withRetry(() =>
     radiusPool().query(
-      'SELECT DISTINCT username FROM radcheck WHERE username IN (?)', [list]
+      'SELECT DISTINCT username FROM radcheck WHERE username IN (?) OR TRIM(username) IN (?)',
+      [list, list]
     )
   )
 
-  return new Set((rows as { username: string }[]).map((r) => r.username))
+  // Normalised on the way out, so callers compare like with like. This used to
+  // return radcheck's own spelling, which meant a caller holding an uppercase
+  // MAC missed every lower-case row and re-provisioned a customer who was
+  // already on the network.
+  return new Set(
+    (rows as { username: string }[]).map((r) => usernameKey(r.username)).filter(Boolean)
+  )
 }
 
 export type RadiusUsage = {

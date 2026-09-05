@@ -9,8 +9,7 @@ import { createCustomer, type ActionResult } from '@/app/actions/customers'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
 import { formatCurrency } from '@/lib/format'
 import {
-  BILLING_TYPES, BILLING_TYPE_HELP, BILLING_TYPE_LABELS, toBillingType,
-  type BillingType,
+  toBillingType, type BillingType,
 } from '@/lib/billing'
 import {
   CONNECTION_TYPES, CONNECTION_TYPE_LABELS, CUSTOMER_CATEGORIES,
@@ -118,9 +117,10 @@ export function NewCustomerForm({
   const [addons, setAddons] = useState<number[]>([])
   // A failed submit re-seeds from what was posted, so switching to postpaid and
   // tripping a validation error elsewhere does not silently revert the choice.
-  const [billingType, setBillingType] = useState<BillingType>(
+  // Not state any more: there is no control to change it. Still submitted so
+  // the column round-trips — see lib/billing.ts.
+  const billingType: BillingType =
     prior.billing_type ? toBillingType(prior.billing_type) : defaultBillingType
-  )
 
   const showPppoeFields = authType === 'pppoe' || authType === 'hotspot'
   // Matches the server rule: MAC only becomes optional for PPPoE once
@@ -328,37 +328,13 @@ export function NewCustomerForm({
             </div>
           </Field>
 
-          {/* Billing type decides when the money is collected, so it sits
-              above the dates it governs. Bill Date only exists for postpaid —
-              a prepaid customer has no bill run to generate. */}
-          <Field
-            label="Billing Type"
-            hint={billingAvailable ? BILLING_TYPE_HELP[billingType] : 'Needs migration 0011.'}
-            className="sm:col-span-2"
-          >
-            <input type="hidden" name="billing_type" value={billingType} />
-            <div className="flex gap-2" role="group" aria-label="Billing type">
-              {BILLING_TYPES.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setBillingType(t)}
-                  aria-pressed={billingType === t}
-                  disabled={!billingAvailable}
-                  className={
-                    'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ' +
-                    (billingType === t
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200')
-                  }
-                >
-                  {BILLING_TYPE_LABELS[t]}
-                </button>
-              ))}
-            </div>
-          </Field>
+          {/* No billing type chooser. There is one billing model, so the
+              control offered a choice that changed nothing — see
+              lib/billing.ts. The column is still written, from the company
+              default, so it round-trips until it is dropped. */}
+          <input type="hidden" name="billing_type" value={billingType} />
 
-          {billingAvailable && billingType === 'postpaid' ? (
+          {billingAvailable ? (
             <Field
               label="Bill Date"
               htmlFor="bill_date"

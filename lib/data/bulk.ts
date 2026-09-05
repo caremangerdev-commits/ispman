@@ -1,6 +1,7 @@
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { getProvisionedIdentities } from '@/lib/radius-db'
+import { usernameKey } from '@/lib/radius/format'
 import { radiusIdentity } from '@/lib/radius/format'
 
 /**
@@ -99,24 +100,57 @@ export async function countAllCustomers(companyId: number): Promise<number> {
 // Bill All
 // ---------------------------------------------------------------------------
 
-export type PostpaidCustomer = {
+export type BillableCustomer = {
   id: number
   name: string
   /** Never null: a missing rate reads as 0 and is skipped by the caller. */
   monthlyRate: number
   carriedBalance: number
+  /** Prepayment held. The run draws this down before charging carried_balance. */
+  accountCredit: number
   /**
    * `YYYY-MM-DD` of the last period this customer was billed FOR — not the day
    * a run happened. That distinction is the whole idempotency guard: see
    * app/actions/bulk.ts#billBatch.
    */
   lastBilledDate: string | null
+  /**
+   * The name this customer authenticates under in radcheck: the PPPoE username
+   * for a PPPoE subscriber, the MAC for everyone else. Null when neither is
+   * recorded, which means there is no row in the registry to ask about.
+   *
+   * Carried here so the bill run can test whether service was actually being
+   * delivered — see app/actions/bulk.ts#billBatch.
+   */
+  identity: string | null
 }
 
-const POSTPAID_COLUMNS =
-  'id, first_name, last_name, monthly_rate, carried_balance, last_billed_date'
+const BILLABLE_BASE =
+  'id, first_name, last_name, monthly_rate, carried_balance, account_credit, ' +
+  'last_billed_date, mac_address'
 
-function toPostpaid(row: Record<string, unknown>): PostpaidCustomer {
+/**
+ * The select list, plus the 0003 identity columns where they exist.
+ *
+ * Assembled rather than constant for the same reason as everywhere else:
+ * PostgREST rejects the whole query for one unknown column, so a database
+ * without migration 0003 has to ask for less. Without those columns every
+ * customer is identified by MAC, which is what the app did before PPPoE.
+ */
+async function billableColumns(): Promise<string> {
+  const caps = await getSchemaCapabilities()
+  return caps.connectionTypes
+    ? BILLABLE_BASE + ', customer_type, pppoe_username'
+    : BILLABLE_BASE
+}
+
+function toBillable(row: Record<string, unknown>): BillableCustomer {
+  // Same rule as every other radcheck caller: PPPoE authenticates by username,
+  // everyone else by MAC.
+  const pppoe = (row.pppoe_username as string | null | undefined) ?? null
+  const mac = (row.mac_address as string | null | undefined) ?? null
+  const identity = row.customer_type === 'pppoe' ? pppoe : mac
+
   return {
     id: row.id as number,
     name:
@@ -125,40 +159,43 @@ function toPostpaid(row: Record<string, unknown>): PostpaidCustomer {
         .join(' ') || 'Customer #' + (row.id as number),
     monthlyRate: Number(row.monthly_rate ?? 0) || 0,
     carriedBalance: Number(row.carried_balance ?? 0) || 0,
+    accountCredit: Number(row.account_credit ?? 0) || 0,
     lastBilledDate: (row.last_billed_date as string | null) ?? null,
+    identity: identity && identity.trim() ? identity.trim() : null,
   }
 }
 
 /**
- * Every postpaid customer in the company, paged past the 1000-row cap.
+ * Every customer in the company, paged past the 1000-row cap.
  *
- * Prepaid customers are excluded by the query, not filtered afterwards: a bill
- * run must never see them, and a filter that lives in the caller is a filter
- * somebody eventually forgets to apply.
+ * NO LONGER FILTERED ON billing_type. Under the retired prepaid/postpaid split
+ * this excluded prepaid customers, which meant the bill run never charged them
+ * and their debt was expected to live in `customers.balance` — a column nothing
+ * ever charged. Every company now bills the same way. See lib/billing.ts.
  *
  * Returns [] when migration 0011 has not been applied — the columns do not
  * exist and PostgREST would reject the select outright.
  */
-export async function readPostpaidCustomers(companyId: number): Promise<PostpaidCustomer[]> {
+export async function readBillableCustomers(companyId: number): Promise<BillableCustomer[]> {
   const caps = await getSchemaCapabilities()
   if (!caps.billing) return []
 
   const db = tenantClient()
-  const out: PostpaidCustomer[] = []
+  const cols = await billableColumns()
+  const out: BillableCustomer[] = []
 
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await db
       .from('customers')
-      .select(POSTPAID_COLUMNS)
+      .select(cols)
       .eq('company_id', companyId)
-      .eq('billing_type', 'postpaid')
       .order('id', { ascending: true })
       .range(from, from + PAGE - 1)
 
-    if (error) throw new Error('Failed to load postpaid customers: ' + error.message)
+    if (error) throw new Error('Failed to load billable customers: ' + error.message)
 
     const rows = (data ?? []) as unknown as Record<string, unknown>[]
-    for (const row of rows) out.push(toPostpaid(row))
+    for (const row of rows) out.push(toBillable(row))
     if (rows.length < PAGE) break
   }
 
@@ -166,36 +203,32 @@ export async function readPostpaidCustomers(companyId: number): Promise<Postpaid
 }
 
 /**
- * The postpaid customers named by a batch, read back from the database.
+ * The customers named by a batch, read back from the database.
  *
  * The client posts ids and nothing else. Every amount that gets added is
  * computed here from the row the write is about to touch, so a stale or
  * tampered preview cannot change what anybody is billed.
- *
- * Also re-filters on billing_type: a customer switched to prepaid between the
- * preview and the write drops out of the result and is reported as failed
- * rather than billed.
  */
-export async function readPostpaidByIds(
+export async function readBillableByIds(
   companyId: number,
   ids: number[]
-): Promise<PostpaidCustomer[]> {
+): Promise<BillableCustomer[]> {
   if (ids.length === 0) return []
 
   const caps = await getSchemaCapabilities()
   if (!caps.billing) return []
 
   const db = tenantClient()
+  const cols = await billableColumns()
   const { data, error } = await db
     .from('customers')
-    .select(POSTPAID_COLUMNS)
+    .select(cols)
     .eq('company_id', companyId)
-    .eq('billing_type', 'postpaid')
     .in('id', ids)
 
-  if (error) throw new Error('Failed to load postpaid customers: ' + error.message)
+  if (error) throw new Error('Failed to load billable customers: ' + error.message)
 
-  return ((data ?? []) as unknown as Record<string, unknown>[]).map(toPostpaid)
+  return ((data ?? []) as unknown as Record<string, unknown>[]).map(toBillable)
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +300,10 @@ export async function getProvisionPlan(companyId: number): Promise<ProvisionPlan
   const ready: ProvisionCandidate[] = []
   const alreadyProvisioned: { id: number; name: string }[] = []
   for (const candidate of withIdentity) {
-    if (provisioned.has(candidate.identity.toUpperCase()) || provisioned.has(candidate.identity)) {
+    // One normalised comparison. This was two .has() calls trying to guess at
+    // the casing radcheck happened to use, which still missed every mixed-case
+    // row — getProvisionedIdentities now returns normalised keys.
+    if (provisioned.has(usernameKey(candidate.identity))) {
       alreadyProvisioned.push({ id: candidate.id, name: candidate.name })
     } else {
       ready.push(candidate)

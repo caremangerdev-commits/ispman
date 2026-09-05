@@ -982,6 +982,8 @@ type BillSummary = {
   totalAmount: number
   skippedAlready: number
   skippedZeroRate: number
+  skippedDisconnected: number
+  skippedUnprovisioned: number
   failed: BillOutcome[]
 }
 
@@ -1111,6 +1113,12 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
         plan.alreadyBilled + outcomes.filter((o) => o.result === 'skipped_already').length,
       skippedZeroRate:
         plan.zeroRate + outcomes.filter((o) => o.result === 'skipped_zero_rate').length,
+      skippedDisconnected:
+        plan.disconnected +
+        outcomes.filter((o) => o.result === 'skipped_disconnected').length,
+      skippedUnprovisioned:
+        plan.unprovisioned +
+        outcomes.filter((o) => o.result === 'skipped_unprovisioned').length,
       failed: outcomes.filter((o) => o.result === 'failed'),
     }
 
@@ -1121,6 +1129,8 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
         totalAmount: collected.totalAmount,
         skippedAlready: collected.skippedAlready,
         skippedZeroRate: collected.skippedZeroRate,
+        skippedDisconnected: collected.skippedDisconnected,
+        skippedUnprovisioned: collected.skippedUnprovisioned,
         failed: collected.failed.length,
       })
     } catch {
@@ -1133,7 +1143,7 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
   }, [plan, targets, router])
 
   return (
-    <Modal title="Bill all postpaid customers" onClose={onClose}>
+    <Modal title="Bill all customers" onClose={onClose}>
       {loadError ? <ErrorNote>{loadError}</ErrorNote> : null}
       {!plan && !loadError && !summary ? <Loading /> : null}
 
@@ -1171,6 +1181,14 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
             <Row
               label="Skipped"
               value={summary.skippedZeroRate.toLocaleString() + ' — no monthly rate'}
+            />
+            <Row
+              label="Skipped"
+              value={summary.skippedDisconnected.toLocaleString() + ' — disconnected'}
+            />
+            <Row
+              label="Skipped"
+              value={summary.skippedUnprovisioned.toLocaleString() + ' — never provisioned'}
             />
             <Row
               icon={summary.failed.length > 0 ? 'bad' : undefined}
@@ -1251,7 +1269,7 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
           <dl className="space-y-1.5 rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2.5 text-sm">
             <SummaryLine
               label="Customers"
-              value={plan.postpaidCount.toLocaleString() + ' postpaid'}
+              value={plan.customerCount.toLocaleString() + ' customers'}
             />
             <SummaryLine label="Already billed" value={plan.alreadyBilled.toLocaleString()} />
             {plan.zeroRate > 0 ? (
@@ -1260,13 +1278,34 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
                 value={plan.zeroRate.toLocaleString() + ' — skipped'}
               />
             ) : null}
+            {plan.disconnected > 0 ? (
+              <SummaryLine
+                label="Disconnected"
+                value={plan.disconnected.toLocaleString() + ' — skipped'}
+              />
+            ) : null}
+            {plan.unprovisioned > 0 ? (
+              <SummaryLine
+                label="Never provisioned"
+                value={plan.unprovisioned.toLocaleString() + ' — skipped'}
+              />
+            ) : null}
             <SummaryLine label="Will be billed" value={targets.length.toLocaleString()} />
             <SummaryLine label="Total to bill" value={formatCurrency(plan.totalAmount)} />
+            {plan.creditApplied > 0 ? (
+              <SummaryLine
+                label="Covered by credit"
+                value={formatCurrency(plan.creditApplied)}
+              />
+            ) : null}
           </dl>
 
           <p className="text-xs text-gray-500">
             Each customer&apos;s monthly rate is added to their carried balance. This does NOT
             change anyone&apos;s expiry date, and nobody goes offline because of it.
+            {' '}Customers whose access has expired are not billed: the charge is for service
+            delivered, and expiry is read live from the network registry at the moment the run
+            fires. There is no grace period.
           </p>
 
           {plan.alreadyBilled > 0 ? (
@@ -1281,8 +1320,8 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
 
           {targets.length === 0 ? (
             <ErrorNote>
-              {plan.postpaidCount === 0
-                ? 'There are no postpaid customers to bill.'
+              {plan.customerCount === 0
+                ? 'There are no customers to bill.'
                 : 'There is nobody left to bill for ' + plan.period.label + '.'}
             </ErrorNote>
           ) : (

@@ -23,7 +23,6 @@ export type SearchHit = {
   /** Billing fields, so the payment page can act on a pick without a second
    *  round trip. Already covered by the view_customer_billing_history gate. */
   monthly_rate: number
-  balance: number
   /** Billing expiry, derived from last_bill_date. Drives the renewal preview. */
   expires_at: string | null
   /** Network expiry from the registry — what the customer card displays. */
@@ -74,7 +73,7 @@ export async function GET(request: NextRequest) {
   // change the shape of the filter expression.
   const pattern = '%' + query.replace(/[%,()]/g, '') + '%'
   const columns =
-    'id, first_name, last_name, phone, mac_address, last_bill_date, monthly_rate, balance, cut_off_date' +
+    'id, first_name, last_name, phone, mac_address, last_bill_date, monthly_rate, cut_off_date' +
     (caps.connectionTypes ? ', customer_type' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
@@ -110,7 +109,6 @@ export async function GET(request: NextRequest) {
     mac_address: string | null
     last_bill_date: string | null
     monthly_rate: number | string | null
-    balance: number | string | null
     cut_off_date: number | null
     customer_type?: string | null
     expiry_mode?: string | null
@@ -211,7 +209,6 @@ export async function GET(request: NextRequest) {
       })(),
       customer_type: caps.connectionTypes ? toCustomerType(r.customer_type) : null,
       monthly_rate: Number(r.monthly_rate ?? 0),
-      balance: Number(r.balance ?? 0),
       expires_at: expiry ? expiry.toISOString() : null,
       expiry_mode: toExpiryMode(caps.expiryMode ? r.expiry_mode : 'from_expiry'),
       cut_off_date: r.cut_off_date ?? null,

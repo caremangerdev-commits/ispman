@@ -7,7 +7,7 @@ import {
   getRadiusStatus as readRadcheck,
   radiusConfigured,
 } from '@/lib/radius-db'
-import { addMonths, firstExpiry, nextCutOff, prepaidExpiry } from '@/lib/expiry'
+import { addMonths, firstExpiry, nextCutOff } from '@/lib/expiry'
 import { formatRadiusExpiration, parseRadiusExpiration } from '@/lib/radius/format'
 import type { NetworkEventType } from '@/lib/status'
 
@@ -272,33 +272,4 @@ export function provisionExpiry(cutOffDate: number | null, from: Date = new Date
 export function reconnectExpiry(cutOffDate: number | null, from: Date = new Date()): Date {
   const anchor = new Date(from.getFullYear(), from.getMonth(), from.getDate(), 0, 0, 0, 0)
   return nextCutOff(anchor, cutOffDate) ?? addMonths(anchor, 1)
-}
-
-/**
- * Expiry a payment should push the customer out to. PREPAID ONLY.
- *
- * A thin server-side wrapper over lib/expiry.ts#prepaidExpiry, which is the
- * single implementation the cashier's preview also runs — the two used to hold
- * a copy each, which is how the previewed date and the written one drifted.
- *
- * `currentExpiry` MUST be the expiry held in the network registry, never one
- * derived from `last_bill_date`. Anchoring to the billing date is what caused
- * payments to write an expiry three months EARLIER than the customer already
- * had, silently cutting access they had paid for. `last_bill_date` is kept in
- * Postgres for record keeping only and must not feed any expiry calculation.
- */
-export function paymentExpiry(
-  mode: 'from_expiry' | 'from_payment',
-  currentExpiry: Date | null,
-  monthsPaid: number,
-  paymentDate: Date,
-  cutOffDate: number | null = null
-): Date {
-  return prepaidExpiry({
-    mode,
-    currentExpiry,
-    monthsPaid,
-    paymentDate,
-    cutOffDay: cutOffDate,
-  })
 }

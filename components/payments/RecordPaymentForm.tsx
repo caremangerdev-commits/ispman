@@ -13,9 +13,10 @@ import { ReceiptModal } from '@/components/payments/ReceiptModal'
 import type { SearchHit } from '@/app/api/search/route'
 import { StatusBadge } from '@/components/customers/StatusBadge'
 import {
-  amountDue as computeAmountDue, billingPeriodLabel, isPartialPayment,
-  outstandingBalance, parseYmd, postpaidExpiry, proportionalDate, ymd,
-  type AccessDecision, type BillingType,
+  amountDue as computeAmountDue, amountDueForMonths, billingPeriodLabel,
+  isPartialPayment, monthsCovered, outstandingBalance, parseYmd,
+  prepaymentCredit, PREPAY_MONTH_OPTIONS, proportionalDate, serviceExpiry, ymd,
+  type AccessDecision,
 } from '@/lib/billing'
 import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type PaymentMethod,
@@ -23,12 +24,8 @@ import {
 import {
   CATEGORY_NAME_MAX, type PaymentCategory,
 } from '@/lib/data/payment-categories'
-import { prepaidExpiry } from '@/lib/expiry'
 import { currencySymbol } from '@/lib/format'
 import { canExtend, STATUS_DOT } from '@/lib/status'
-import { toExpiryMode } from '@/lib/types'
-
-const MONTH_OPTIONS = [1, 2, 3, 4, 5, 6]
 
 /** What the Purpose dropdown submits for its "+ Add new category" row. */
 const NEW_CATEGORY = '__new__'
@@ -63,42 +60,18 @@ const fmtDate = (d: Date) =>
   d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
 
 /**
- * The preview of the expiry the server is about to write to radcheck.
- *
- * Runs lib/expiry.ts#prepaidExpiry — the very function app/actions/payments.ts
- * runs on submit — so the date on screen and the date written cannot disagree.
- * The server remains the source of truth; nothing computed here is trusted.
- *
- * Anchored on network_expiry — the date held in the registry — NOT on
- * expires_at, which is derived from last_bill_date. Using the billing date
- * here previewed (and wrote) an expiry earlier than the customer already had.
- *
- * PREPAID ONLY. Postpaid runs to its bill date plus the grace period instead,
- * which is lib/billing.ts#postpaidExpiry.
- */
-function previewExpiry(hit: SearchHit, months: number, paymentDate: Date): Date {
-  return prepaidExpiry({
-    mode: toExpiryMode(hit.expiry_mode),
-    currentExpiry: hit.network_expiry ? new Date(hit.network_expiry) : null,
-    monthsPaid: months,
-    paymentDate,
-    cutOffDay: hit.cut_off_date,
-  })
-}
-
-/**
  * What the Amount field should start at.
  *
- * Postpaid bills for a period already used, so there is one figure to collect —
- * the carried balance the bill run wrote — and it is pre-filled. Prepaid buys
- * months forward, so it stays driven by the months dropdown exactly as before.
+ * One month is the carried balance alone — what the bill run charged and the
+ * only thing actually owed. Each further month adds a whole monthly charge,
+ * which is prepayment: money for periods that have not been billed yet.
+ *
+ * Only a seed. The cashier can type over it, and what they take is what the
+ * server prices the access from — see lib/billing.ts#monthsCovered.
  */
-function seedAmount(hit: SearchHit | null, postpaid: boolean, months: number): string {
+function seedAmount(hit: SearchHit | null, months: number): string {
   if (!hit) return ''
-  if (postpaid) {
-    return String(computeAmountDue('postpaid', hit.total_monthly, hit.carried_balance))
-  }
-  return String(hit.total_monthly * months)
+  return String(amountDueForMonths(hit.carried_balance, hit.total_monthly, months))
 }
 
 function SubmitButton() {
@@ -118,7 +91,6 @@ export function RecordPaymentForm({
   initialCustomer,
   currency,
   gracePeriodDays,
-  billingAvailable,
   paymentCategories,
   otherPaymentsAvailable,
   onCustomerChange,
@@ -127,8 +99,6 @@ export function RecordPaymentForm({
   currency: string
   /** Company-wide grace period, added to a postpaid customer's bill date. */
   gracePeriodDays: number
-  /** False until migration 0011 is applied; every customer then reads prepaid. */
-  billingAvailable: boolean
   /** The Purpose list for "other" payments. Empty until 0013 is applied. */
   paymentCategories: PaymentCategory[]
   /** False until migration 0013 is applied; the type toggle is then not shown
@@ -147,13 +117,10 @@ export function RecordPaymentForm({
   const [open, setOpen] = useState(false)
   const [searching, setSearching] = useState(false)
 
-  const isPostpaid = (hit: SearchHit | null) =>
-    Boolean(billingAvailable && hit && hit.billing_type === 'postpaid')
-
+  // Seeds the amount field and nothing else. How many months the payment
+  // actually buys is derived from the money on the server.
   const [months, setMonths] = useState(1)
-  const [amount, setAmount] = useState(
-    seedAmount(initialCustomer, isPostpaid(initialCustomer), 1)
-  )
+  const [amount, setAmount] = useState(seedAmount(initialCustomer, 1))
   const [method, setMethod] = useState<PaymentMethod>('cash')
   const [notes, setNotes] = useState('')
 
@@ -273,7 +240,7 @@ export function RecordPaymentForm({
   }
 
   function pick(hit: SearchHit) {
-    const next = seedAmount(hit, isPostpaid(hit), months)
+    const next = seedAmount(hit, months)
     setSelected(hit)
     setAmount(next)
     // Seeded rather than debounced-into, so a preloaded short amount does not
@@ -284,6 +251,17 @@ export function RecordPaymentForm({
     setHits([])
     setOpen(false)
     onCustomerChange?.(hit)
+  }
+
+  function chooseMonths(m: number) {
+    setMonths(m)
+    // Re-seeds the amount so the field matches what was just asked for. The
+    // cashier may still type over it; the money is what gets priced.
+    if (selected) {
+      const next = seedAmount(selected, m)
+      setAmount(next)
+      setDebouncedAmount(next)
+    }
   }
 
   /** Clears the customer and every field that belongs to their payment. */
@@ -298,11 +276,6 @@ export function RecordPaymentForm({
     resetPartial()
     resetOther()
     onCustomerChange?.(null)
-  }
-
-  function chooseMonths(m: number) {
-    setMonths(m)
-    if (selected) setAmount(String(selected.total_monthly * m))
   }
 
   // --- success state ---
@@ -395,46 +368,50 @@ export function RecordPaymentForm({
   // submit — only the cashier's two decisions (how much, and which date) are.
   // -------------------------------------------------------------------------
   const today = new Date()
-  const postpaid = isPostpaid(selected)
 
   // The customer's full monthly charge — their rate plus every active add-on.
-  // Billing the bare monthly_rate would drop add-ons from the amount due.
+  // No longer part of what is OWED; it prices the proportional-access maths.
   const monthlyCharge = selected ? selected.total_monthly : 0
   const carried = selected ? selected.carried_balance : 0
-  const billingType: BillingType = postpaid ? 'postpaid' : 'prepaid'
 
-  // Postpaid resolves to the carried balance alone. The bill run has already
-  // added this month's charge to it, so adding one here would bill the same
-  // month twice — see lib/billing.ts#amountDue.
-  const due = computeAmountDue(billingType, monthlyCharge, carried)
+  // What is owed IS the carried balance. The bill run has already added this
+  // month's charge to it, so adding one here would bill the same month twice —
+  // see lib/billing.ts#amountDue.
+  const due = computeAmountDue(carried)
+  // What the dropdown is asking for, which is what the Amount field was seeded
+  // with. Shown as "Amount due" whenever more than one month is selected.
+  const askingFor = amountDueForMonths(carried, monthlyCharge, months)
 
   const paid = Number(debouncedAmount)
   const partial =
-    selected !== null &&
-    Number.isFinite(paid) &&
-    isPartialPayment(billingType, monthlyCharge, carried, paid)
+    selected !== null && Number.isFinite(paid) && isPartialPayment(carried, paid)
+
+  // Priced off the MONEY, exactly as the server does it, so the preview and the
+  // written expiry cannot disagree.
+  const monthsBought =
+    selected && Number.isFinite(paid) ? monthsCovered(carried, monthlyCharge, paid) : 1
+  const creditAdded =
+    selected && Number.isFinite(paid) ? prepaymentCredit(carried, paid) : 0
 
   const currentExpiry = selected?.network_expiry ? new Date(selected.network_expiry) : null
 
   // Full payment, and the "Full Period" branch of a short one, land on the
   // same date — the period the customer would have got had they paid in full.
   const fullPeriodExpiry = selected
-    ? postpaid
-      ? postpaidExpiry({
-          // cut_off_date, not bill_date — the bill day raises the charge, the
-          // cut-off day ends access. Anchored on the registry expiry so paying
-          // rolls the customer past the cut-off the bill was due at.
-          cutOffDay: selected.cut_off_date,
-          gracePeriodDays,
-          currentExpiry,
-          from: today,
-        })
-      : previewExpiry(selected, months, today)
+    ? serviceExpiry({
+        // cut_off_date, not bill_date — the bill day raises the charge, the
+        // cut-off day ends access. Anchored on the registry expiry so paying
+        // rolls the customer past the cut-off the bill was due at.
+        cutOffDay: selected.cut_off_date,
+        gracePeriodDays,
+        currentExpiry,
+        from: today,
+        months: monthsBought,
+      })
     : null
 
   const proportional = selected
     ? proportionalDate({
-        billingType: postpaid ? 'postpaid' : 'prepaid',
         amountPaid: paid,
         monthlyCharge,
         currentExpiry,
@@ -447,9 +424,7 @@ export function RecordPaymentForm({
 
   // Always what is owed less what was handed over, whatever date the cashier
   // picks. The date decides access; it never changes what is owed.
-  const outstanding = selected
-    ? outstandingBalance(billingType, monthlyCharge, carried, paid)
-    : 0
+  const outstanding = selected ? outstandingBalance(carried, paid) : 0
 
   const dateChosen = partial && accessChoice === 'date_selected'
   // ISO dates compare correctly as strings, so no parsing is needed here.
@@ -606,7 +581,7 @@ export function RecordPaymentForm({
               <span>{selected.phone ?? 'No phone'}</span>
               <span className="text-gray-700">|</span>
               <StatusBadge status={selected.status} />
-              {postpaid ? (
+              {false ? (
                 <>
                   <span className="text-gray-700">|</span>
                   <span className="rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-purple-300">
@@ -639,16 +614,23 @@ export function RecordPaymentForm({
                 <div className="my-3 border-t border-gray-700" />
 
                 <dl className="space-y-1.5 text-sm">
-                  <Line label="Amount Due" value={money(due)} emphasis />
+                  <Line
+                    label={months > 1 ? 'Amount Due (' + months + ' months)' : 'Amount Due'}
+                    value={money(months > 1 ? askingFor : due)}
+                    emphasis
+                  />
                   {/* Shown whenever anything is carried, so the customer is never
                       asked for a figure larger than their plan without being told
                       where the difference came from. */}
                   {carried > 0 ? (
                     <p className="text-right text-xs text-gray-500">
-                      {postpaid
-                        ? 'Billed ' + billingPeriodLabel(today, selected.bill_date)
-                        : money(monthlyCharge) + ' monthly + ' + money(carried) + ' balance'}
+                      {'Billed ' + billingPeriodLabel(today, selected.bill_date)}
                     </p>
+                  ) : null}
+                  {/* Prepayment is money collected, not a discount — it is shown
+                      as its own line so nobody reads it as one. */}
+                  {creditAdded > 0 ? (
+                    <Line label="Account Credit" value={'+ ' + money(creditAdded)} />
                   ) : null}
                   <Line
                     label="Current Balance"
@@ -865,35 +847,40 @@ export function RecordPaymentForm({
           ) : (
           <>
           <div className="grid gap-4 sm:grid-cols-2">
-            {/* Prepaid buys months forward, so the dropdown drives the amount.
-                Postpaid bills for one period already used — there is nothing
-                to choose, so the control is not rendered at all and the server
-                falls back to a single month. */}
-            {postpaid ? null : (
-              <div className="space-y-1.5">
-                <label htmlFor="months_paid" className="block text-xs font-medium text-gray-400">
-                  Months to pay
-                </label>
-                <select
-                  id="months_paid"
-                  name="months_paid"
-                  value={months}
-                  onChange={(e) => chooseMonths(Number(e.target.value))}
-                  className={inputBase + (errors.months_paid ? inputBad : inputOk)}
-                >
-                  {MONTH_OPTIONS.map((m) => (
-                    <option key={m} value={m}>
-                      {m} {m === 1 ? 'month' : 'months'}
-                    </option>
-                  ))}
-                </select>
-                {errors.months_paid ? (
-                  <p role="alert" className="text-xs text-red-400">{errors.months_paid}</p>
-                ) : null}
-              </div>
-            )}
+            {/* Applies to EVERY customer — there is one billing model, so
+                there is no type to gate this on. One month collects the
+                balance; more than one is prepayment, and the excess becomes
+                account credit that later bill runs draw down.
 
-            <div className={'space-y-1.5' + (postpaid ? ' sm:col-span-2' : '')}>
+                The dropdown seeds the amount. It does not decide what the
+                customer gets: the server prices access off the money actually
+                taken (lib/billing.ts#monthsCovered), so editing the amount
+                down after picking 3 months buys fewer months, not three. */}
+            <div className="space-y-1.5">
+              <label htmlFor="months_paid" className="block text-xs font-medium text-gray-400">
+                Months to pay
+              </label>
+              <select
+                id="months_paid"
+                name="months_paid"
+                value={months}
+                onChange={(e) => chooseMonths(Number(e.target.value))}
+                className={inputBase + inputOk}
+              >
+                {PREPAY_MONTH_OPTIONS.map((m) => (
+                  <option key={m} value={m}>
+                    {m} {m === 1 ? 'month' : 'months'}
+                  </option>
+                ))}
+              </select>
+              {months > 1 ? (
+                <p className="text-[11px] text-gray-600">
+                  {money(carried)} owed + {months - 1}&times; {money(monthlyCharge)} prepaid
+                </p>
+              ) : null}
+            </div>
+
+            <div className="space-y-1.5">
               <label htmlFor="payment_method" className="block text-xs font-medium text-gray-400">
                 Payment Method
               </label>
@@ -939,7 +926,7 @@ export function RecordPaymentForm({
                 is entered. Defaults to today and cannot be set forward. There
                 is still no agent field: a payment is attributed to whoever is
                 signed in and that is not restatable at the till. */}
-            <div className={'space-y-1.5' + (postpaid ? ' sm:col-span-2' : '')}>
+            <div className="space-y-1.5 sm:col-span-2">
               <label htmlFor="paid_on" className="block text-xs font-medium text-gray-400">
                 Date
               </label>
@@ -1093,15 +1080,9 @@ export function RecordPaymentForm({
                   Outstanding balance: {money(outstanding)}
                   {accessChoice === 'full_period' ? ' carried to next bill' : ''}
                 </p>
-              ) : postpaid ? (
-                <p className="mt-0.5 text-xs text-gray-400">
-                  Bill period: {billingPeriodLabel(today, selected.bill_date)}
-                </p>
               ) : (
                 <p className="mt-0.5 text-xs text-gray-400">
-                  {toExpiryMode(selected.expiry_mode) === 'from_expiry'
-                    ? 'From Cut Off Date'
-                    : 'From Payment Date'}
+                  Bill period: {billingPeriodLabel(today, selected.bill_date)}
                 </p>
               )}
 

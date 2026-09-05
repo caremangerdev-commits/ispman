@@ -1,48 +1,44 @@
 /**
- * Prepaid and postpaid billing arithmetic (migration 0011).
+ * Billing arithmetic (migration 0011).
  *
  * Client-safe on purpose: the record-payment form previews every figure the
  * server is about to write, so both sides have to run the same functions. The
  * server remains the source of truth — nothing here is trusted from the form.
  *
- * The two billing types differ in when the money is collected, and therefore in
- * WHERE THE DEBT ALREADY IS by the time a cashier sees the customer:
+ * ONE BILLING MODEL. Every company bills the same way:
  *
- *   prepaid  — buys months up front. The month being bought is not on the
- *              account yet, so the amount due is this month's charge plus
- *              anything carried, and access runs from the expiry already held.
- *   postpaid — is billed for a period already used. THE BILL RUN
- *              (app/actions/bulk.ts#billBatch) HAS ALREADY ADDED THE MONTHLY
- *              CHARGE TO `carried_balance`, so the amount due IS the carried
- *              balance. Adding a monthly charge on top of it at the till bills
- *              the customer twice for the same month.
+ *   the bill run (app/actions/bulk.ts#billBatch) adds monthly_rate to
+ *   `carried_balance`; payments reduce it. THE AMOUNT DUE IS THE CARRIED
+ *   BALANCE, full stop. Adding a monthly charge on top of it at the till bills
+ *   the customer twice for the same month.
  *
- * That asymmetry is why every money function below takes a BillingType. It is
- * the FIRST parameter rather than the last so that a call with its arguments in
- * the wrong order fails to compile instead of quietly returning a wrong figure.
+ * THE PREPAID/POSTPAID SPLIT IS RETIRED. It modelled a distinction that did not
+ * exist in the data: the prepaid arm read its debt from `customers.balance`, a
+ * column no writer ever CHARGED — the bill run never touched it and the payment
+ * path only decremented it — so it decayed to 0 and every prepaid customer read
+ * as owing nothing while carrying real arrears. `carried_balance` was already
+ * the authoritative debt for both arms, so the arms were collapsed into the
+ * postpaid one, which is the arm that was correct.
  *
- * The same split governs the dates. `bill_date` decides WHEN A BILL IS
- * GENERATED; `cut_off_date` decides WHEN ACCESS EXPIRES. They are different
- * columns describing different events, and neither substitutes for the other.
+ * `customers.billing_type` still exists as a column and is still read back as
+ * data, but NOTHING BRANCHES ON IT. Do not reintroduce a branch here without
+ * first giving the other model a column that is actually charged.
+ *
+ * `bill_date` decides WHEN A BILL IS GENERATED; `cut_off_date` decides WHEN
+ * ACCESS EXPIRES. They are different columns describing different events, and
+ * neither substitutes for the other.
  */
 
-import { addMonths, nextCutOff } from '@/lib/expiry'
+import { addMonths, advanceCutOff } from '@/lib/expiry'
 
 /** `customers.billing_type`. */
 export type BillingType = 'prepaid' | 'postpaid'
 
-export const BILLING_TYPES: BillingType[] = ['prepaid', 'postpaid']
+const BILLING_TYPES: BillingType[] = ['prepaid', 'postpaid']
 
-export const BILLING_TYPE_LABELS: Record<BillingType, string> = {
-  prepaid: 'Prepaid',
-  postpaid: 'Postpaid',
-}
-
-export const BILLING_TYPE_HELP: Record<BillingType, string> = {
-  prepaid: 'Pays in advance. Access runs from their current expiry.',
-  postpaid: 'Billed for the month just used. Access runs to their cut off date.',
-}
-
+// No LABELS and no HELP: nothing presents billing type as a choice any more,
+// and a label is what a choice needs. toBillingType survives only to keep the
+// column's values legal on the way in and out.
 export function toBillingType(value: string | null | undefined): BillingType {
   return BILLING_TYPES.includes(value as BillingType) ? (value as BillingType) : 'prepaid'
 }
@@ -108,13 +104,13 @@ export function daysBetween(from: Date, to: Date): number {
 }
 
 /**
- * The first of the month a postpaid payment is settling.
+ * The first of the month a payment is settling.
  *
- * Postpaid bills IN ARREARS: the run on `bill_date` charges for the month that
+ * Billing is IN ARREARS: the run on `bill_date` charges for the month that
  * has just ended. A payment is therefore NEVER settling the month it is taken
  * in — on a bill date of the 1st, money taken on 4 September pays the August
  * bill. Reading the period off the payment date, as this used to, labelled every
- * postpaid payment with a month the customer had not been billed for yet.
+ * payment with a month the customer had not been billed for yet.
  *
  * A payment taken BEFORE this month's bill has been generated goes back one
  * month further, because the charge it is clearing came from the previous run:
@@ -122,10 +118,9 @@ export function daysBetween(from: Date, to: Date): number {
  * bill date of the 1st can never reach that branch, which is why a company
  * billing on the 1st always sees simply "the previous month".
  *
- * Derived from `bill_date` rather than from `last_billed_date`, even though the
- * bill run stamps the period end there: a postpaid payment overwrites that same
- * column with the payment date (app/actions/payments.ts, the settle step), so it
- * cannot be relied on to still describe a billing period.
+ * Derived from `bill_date` rather than from `last_billed_date`. The bill run
+ * stamps the period end there and is the only writer of it, but it is stamped
+ * per RUN rather than per customer-month, so bill_date is the stabler anchor.
  */
 function settledMonthStart(from: Date, billDate: number | null): Date {
   const day = billDate && billDate >= 1 ? Math.floor(billDate) : 1
@@ -133,7 +128,7 @@ function settledMonthStart(from: Date, billDate: number | null): Date {
   return new Date(from.getFullYear(), from.getMonth() - back, 1)
 }
 
-/** The month a postpaid payment covers — first and last day inclusive. */
+/** The month a payment covers — first and last day inclusive. */
 export function billingPeriod(
   from: Date,
   billDate: number | null
@@ -154,73 +149,153 @@ export function billingPeriodLabel(from: Date, billDate: number | null): string 
 // ---------------------------------------------------------------------------
 
 /**
- * What the customer owes today.
+ * What the customer owes today: the carried balance, and nothing else.
  *
- * PREPAID   — this month's charge plus anything carried. The month is being
- *             bought now, so it is not on the account until this figure is paid.
- * POSTPAID  — the carried balance, and nothing else. The bill run put the
- *             monthly charge there when the period ended; charging a month again
- *             here is the same month billed twice.
+ * The bill run put the monthly charge there when the period ended, so charging
+ * a month again here is the same month billed twice.
  *
- * `monthlyCharge` is the customer's full monthly figure — their rate plus every
- * active add-on — not the bare `monthly_rate` column. Billing the bare rate
- * would silently drop add-ons from a prepaid amount due. It is still required
- * for postpaid because the proportional-access maths is priced off a month.
+ * Takes no monthly charge and no billing type. Both were parameters of the
+ * retired split — see the note at the top of this file.
  */
-export function amountDue(
-  billingType: BillingType,
-  monthlyCharge: number,
-  carriedBalance: number
-): number {
-  if (billingType === 'postpaid') return round2(safe(carriedBalance))
-  return round2(safe(monthlyCharge) + safe(carriedBalance))
+export function amountDue(carriedBalance: number): number {
+  return round2(safe(carriedBalance))
 }
 
 /**
- * What a payment leaves owing — measured against whichever figure the customer
- * is actually short of.
+ * What a payment leaves owing.
  *
- * PREPAID   — the monthly charge alone, NOT the amount due. A short payment
- *             carries one month's shortfall forward, and the balance already
- *             being carried is not re-carried on top of itself.
- * POSTPAID  — the carried balance, which is the whole of what is owed. Measuring
- *             a postpaid shortfall against one month's charge wrote off every
- *             month beyond the first: a customer carrying two months at 4,500
- *             who handed over 4,000 was left owing 500 instead of 5,000.
+ * Measured against the carried balance, which is the whole of what is owed.
+ * Measuring a shortfall against one month's charge instead wrote off every
+ * month beyond the first: a customer carrying two months at 4,500 who handed
+ * over 4,000 was left owing 500 instead of 5,000.
  *
  * This is the rule the activity log and the customer's new `carried_balance`
  * both use, so the figure the cashier is shown is the figure that gets written.
  */
-export function outstandingBalance(
-  billingType: BillingType,
-  monthlyCharge: number,
-  carriedBalance: number,
-  amountPaid: number
-): number {
-  const owed = billingType === 'postpaid' ? safe(carriedBalance) : safe(monthlyCharge)
-  return round2(Math.max(0, owed - safe(amountPaid)))
+export function outstandingBalance(carriedBalance: number, amountPaid: number): number {
+  return round2(Math.max(0, safe(carriedBalance) - safe(amountPaid)))
 }
 
-/** The `carried_balance` to write. Clearing the full amount due clears it. */
-export function carriedBalanceAfter(
-  billingType: BillingType,
-  monthlyCharge: number,
-  carriedBalance: number,
-  amountPaid: number
-): number {
-  if (safe(amountPaid) >= amountDue(billingType, monthlyCharge, carriedBalance)) return 0
-  return outstandingBalance(billingType, monthlyCharge, carriedBalance, amountPaid)
+/**
+ * The `carried_balance` to write. Clearing the full amount due clears it.
+ *
+ * Identical to outstandingBalance now that the amount due IS the carried
+ * balance — the two diverged only under the retired prepaid arm, where the
+ * amount due carried a monthly charge the shortfall was not measured against.
+ * Kept as its own function because the two say different things at the call
+ * site, and a later billing rule may separate them again.
+ */
+export function carriedBalanceAfter(carriedBalance: number, amountPaid: number): number {
+  return outstandingBalance(carriedBalance, amountPaid)
 }
 
 /** True when the money taken does not cover what is owed. */
-export function isPartialPayment(
-  billingType: BillingType,
-  monthlyCharge: number,
-  carriedBalance: number,
-  amountPaid: number
-): boolean {
+export function isPartialPayment(carriedBalance: number, amountPaid: number): boolean {
   const paid = safe(amountPaid)
-  return paid > 0 && paid < amountDue(billingType, monthlyCharge, carriedBalance)
+  return paid > 0 && paid < amountDue(carriedBalance)
+}
+
+// ---------------------------------------------------------------------------
+// Prepayment
+// ---------------------------------------------------------------------------
+
+/**
+ * The most months one payment can buy forward.
+ *
+ * Caps what a mistyped amount can do: at a rate of 3,500 an extra zero would
+ * otherwise push an expiry out by twenty years. Money beyond the cap is still
+ * kept — it becomes credit — it just buys no further expiry.
+ */
+export const MAX_PREPAY_MONTHS = 6
+
+export const PREPAY_MONTH_OPTIONS = [1, 2, 3, 4, 5, 6]
+
+/**
+ * What the till should ask for when the cashier picks `months`.
+ *
+ * The FIRST month is what the customer already owes — their carried balance —
+ * and every month after it is a full monthly charge paid forward. So one month
+ * asks for the balance alone, which is what the form did before prepayment
+ * existed.
+ *
+ * With nothing owed, one month asks for nothing: a customer who is square and
+ * wants to pay ahead picks two or more.
+ */
+export function amountDueForMonths(
+  carriedBalance: number,
+  monthlyCharge: number,
+  months: number
+): number {
+  const extra = Math.max(0, Math.floor(months) - 1)
+  return round2(safe(carriedBalance) + safe(monthlyCharge) * extra)
+}
+
+/**
+ * Money received beyond what was owed. This is what becomes `account_credit`.
+ *
+ * Never negative: a payment short of the balance creates no credit, it leaves
+ * a carried balance — see outstandingBalance.
+ */
+export function prepaymentCredit(carriedBalance: number, amountPaid: number): number {
+  return round2(Math.max(0, safe(amountPaid) - safe(carriedBalance)))
+}
+
+/**
+ * How many months of ACCESS the money actually bought.
+ *
+ * DERIVED FROM THE MONEY, NOT FROM THE DROPDOWN. The dropdown seeds the amount
+ * field; the cashier can then type over it, and what the customer handed across
+ * the counter is what they get. Picking "3 months" and taking one month's money
+ * must not buy three months of access, and the two agree exactly whenever the
+ * seeded amount is the amount paid — which is the ordinary case.
+ *
+ * The first month is always included and is the one the cut-off walk already
+ * bought, whether or not there was a balance to settle. Each further whole
+ * monthly charge on top buys one more.
+ *
+ *   rate 3,500, owes 3,500, pays 10,500 -> credit 7,000 -> 1 + 2 = 3 months
+ *   rate 3,500, owes 3,500, pays  3,500 -> credit     0 -> 1 month
+ *   rate 3,500, owes     0, pays 10,500 -> credit 10,500 -> 1 + 3 = 4 months
+ *
+ * A short payment yields 1: the partial-payment machinery decides that expiry,
+ * exactly as it did before prepayment existed.
+ */
+export function monthsCovered(
+  carriedBalance: number,
+  monthlyCharge: number,
+  amountPaid: number
+): number {
+  const charge = safe(monthlyCharge)
+  if (charge <= 0) return 1
+
+  const extra = Math.floor(prepaymentCredit(carriedBalance, amountPaid) / charge)
+  return Math.min(MAX_PREPAY_MONTHS, 1 + Math.max(0, extra))
+}
+
+/**
+ * What a bill run's charge does against a standing credit.
+ *
+ * Credit is drawn down BEFORE anything is added to the carried balance, so a
+ * customer who paid three months up front is not shown as owing money in the
+ * two runs their prepayment already covers.
+ *
+ * Both columns carry a `>= 0` CHECK (migration 0011) and neither result here
+ * can go negative: the draw is capped at the credit held and at the charge.
+ */
+export function applyCredit(
+  accountCredit: number,
+  carriedBalance: number,
+  charge: number
+): { credit: number; carriedBalance: number; drawn: number } {
+  const held = Math.max(0, safe(accountCredit))
+  const due = Math.max(0, safe(charge))
+  const drawn = Math.min(held, due)
+
+  return {
+    credit: round2(held - drawn),
+    carriedBalance: round2(safe(carriedBalance) + (due - drawn)),
+    drawn: round2(drawn),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,37 +319,36 @@ export function proportionalDays(amountPaid: number, monthlyCharge: number): num
 /**
  * The date a short payment proportionally reaches — the picker's suggestion.
  *
- * Prepaid runs from today, because a prepaid customer is buying forward from
- * now. Postpaid runs from the expiry already held in the network registry,
- * because that is where their paid-for access currently ends; an unprovisioned
- * postpaid customer has no such anchor and runs from today instead.
+ * Runs from the expiry already held in the network registry, because that is
+ * where the customer's paid-for access currently ends. An unprovisioned
+ * customer has no such anchor and runs from the payment date instead.
  *
  * A registry expiry already in the past is used as-is rather than being pulled
  * forward to today: the customer is being credited only the days they paid for,
  * and the cashier can move the picker if the result is unusable.
  */
 export function proportionalDate(opts: {
-  billingType: BillingType
   amountPaid: number
   monthlyCharge: number
   /** Expiry held in the network registry. Null when unprovisioned. */
   currentExpiry: Date | null
   from: Date
 }): Date {
-  const { billingType, amountPaid, monthlyCharge, currentExpiry, from } = opts
+  const { amountPaid, monthlyCharge, currentExpiry, from } = opts
 
-  const base =
-    billingType === 'postpaid' && currentExpiry
-      ? startOfDay(currentExpiry)
-      : startOfDay(from)
+  const base = currentExpiry ? startOfDay(currentExpiry) : startOfDay(from)
 
   base.setDate(base.getDate() + proportionalDays(amountPaid, monthlyCharge))
   return base
 }
 
 /**
- * Expiry a full postpaid payment reaches: the CUT-OFF DAY AFTER THE ONE THE
- * CUSTOMER IS CURRENTLY PAID THROUGH, plus the company grace period.
+ * Expiry a full payment reaches: the CUT-OFF DAY AFTER THE ONE THE CUSTOMER IS
+ * CURRENTLY PAID THROUGH, plus the company grace period.
+ *
+ * Was `postpaidExpiry`. It is now the only expiry calculation there is — the
+ * retired prepaid arm used a months-from-expiry walk instead, driven by the
+ * months-to-pay selector that went with it.
  *
  * Two things here were previously wrong, and they compounded.
  *
@@ -307,18 +381,28 @@ export function proportionalDate(opts: {
  *
  * nextCutOff clamps a day longer than the target month, so a cut-off of 31 lands
  * on 30 September rather than rolling into October. Falls back to whole months
- * when no cut-off day is recorded — the same fallback prepaid uses.
+ * when no cut-off day is recorded.
  */
-export function postpaidExpiry(opts: {
+export function serviceExpiry(opts: {
   cutOffDay: number | null
   gracePeriodDays: number
   /** Expiry held in the network registry. Null when unprovisioned. */
   currentExpiry: Date | null
   from: Date
+  /**
+   * Months of access this payment bought. 1 is a plain renewal and is what
+   * every caller meant before prepayment existed, so it is the default.
+   *
+   * MOVED IN ONE JUMP, AT THE MOMENT OF PAYMENT — a customer paying three
+   * months forward has a three-month expiry the instant the money is taken,
+   * not one that creeps forward as each bill run passes.
+   */
+  months?: number
 }): Date {
-  const { cutOffDay, gracePeriodDays, currentExpiry, from } = opts
+  const { cutOffDay, gracePeriodDays, currentExpiry, from, months = 1 } = opts
 
   const grace = Math.max(0, Math.floor(safe(gracePeriodDays)))
+  const count = Math.max(1, Math.floor(safe(months)))
   const today = startOfDay(from)
 
   const anchor =
@@ -326,9 +410,16 @@ export function postpaidExpiry(opts: {
       ? startOfDay(currentExpiry)
       : today
 
-  // nextCutOff is strictly after the anchor and the anchor is never behind
+  // advanceCutOff walks the cut-off day ONE MONTH AT A TIME, re-deriving it from
+  // the original day at every hop. That is not the same as taking the next
+  // cut-off and adding months to it, and the difference is a real drift: from
+  // 15 Jan with a cut-off of 31, walking gives 31 Jan -> 28 Feb -> 31 Mar, while
+  // adding two months to 31 Jan gives 31 Mar via 28 Feb only by luck and lands
+  // on 30 Apr the following hop. Do not "simplify" this to addMonths.
+  //
+  // Both branches are strictly after the anchor and the anchor is never behind
   // today, so this can never return a date that has already passed.
-  const next = nextCutOff(anchor, cutOffDay) ?? addMonths(anchor, 1)
+  const next = advanceCutOff(anchor, cutOffDay, count) ?? addMonths(anchor, count)
   next.setDate(next.getDate() + grace)
   return next
 }

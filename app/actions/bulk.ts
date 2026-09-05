@@ -9,12 +9,15 @@ import { tenantClient } from '@/lib/supabase/tenant'
 import { getGeneralSettings } from '@/lib/data/company'
 import {
   bulkCustomerName, countAllCustomers, findProvisioned, getProvisionPlan,
-  readCustomersByIds, readPostpaidByIds, readPostpaidCustomers,
+  readCustomersByIds, readBillableByIds, readBillableCustomers,
+  type BillableCustomer,
 } from '@/lib/data/bulk'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { formatCurrency } from '@/lib/format'
-import { activateInRadius, radiusConfigured } from '@/lib/radius-db'
+import { activateInRadius, batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
+import { usernameKey } from '@/lib/radius/format'
 import { formatRadiusExpiration, radiusIdentity } from '@/lib/radius/format'
+import { applyCredit } from '@/lib/billing'
 import { addMonths, nextCutOff } from '@/lib/expiry'
 
 /**
@@ -404,7 +407,8 @@ export async function provisionBatch(input: {
       continue
     }
 
-    if (provisioned.has(target.identity.toUpperCase()) || provisioned.has(target.identity)) {
+    // Normalised both sides — see the same comparison in lib/data/bulk.ts.
+    if (provisioned.has(usernameKey(target.identity))) {
       outcomes.push({ id: target.id, name: target.name, result: 'skipped_already' })
       continue
     }
@@ -504,7 +508,7 @@ export async function logBulkProvision(summary: {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Bill all postpaid customers
+// 3. Bill all customers
 // ---------------------------------------------------------------------------
 
 const MONTH_NAMES = [
@@ -549,6 +553,80 @@ function billedInPeriod(lastBilledDate: string | null, period: BillPeriod): bool
   return lastBilledDate !== null && lastBilledDate >= period.start && lastBilledDate <= period.end
 }
 
+/**
+ * Which of these customers had service at the moment the run fired.
+ *
+ * SERVICE DELIVERED IS THE TEST FOR WHETHER A BILL IS OWED. A customer whose
+ * access had expired when the run fired did not have the month they would be
+ * charged for, so they are not charged for it.
+ *
+ * THE EXPIRY COMES FROM radcheck AND NOWHERE ELSE. Not last_billed_date, not
+ * last_bill_date, not a cut-off day walked forward — those are billing records
+ * and derived dates, and the whole point of this rule is to bill against what
+ * the network actually did. radcheck is the only authority on that.
+ *
+ * NO GRACE PERIOD, DELIBERATELY. A customer cut off on the 5th whose run fires
+ * on the 25th is disconnected and is skipped, even though they had service for
+ * part of the period. Adding grace here would re-introduce the "charge them
+ * anyway" behaviour this rule exists to remove; a part-month that should be
+ * charged is a manual payment, not a bill run.
+ *
+ * A customer with no radcheck row at all — never provisioned, or no MAC and no
+ * PPPoE username to look one up by — is reported separately. They are skipped
+ * too: no row means no access, which means no service to bill for.
+ *
+ * THROWS IF THE REGISTRY CANNOT BE REACHED. Both fallbacks are wrong: billing
+ * everybody charges customers who were cut off, and billing nobody silently
+ * reports a run that did nothing. Neither is safe on a company's whole book, so
+ * the run refuses rather than guessing.
+ */
+async function serviceStateFor(
+  customers: BillableCustomer[]
+): Promise<Map<number, 'active' | 'disconnected' | 'unprovisioned'>> {
+  const out = new Map<number, 'active' | 'disconnected' | 'unprovisioned'>()
+  if (customers.length === 0) return out
+
+  if (!radiusConfigured()) {
+    throw new Error(
+      'The network registry is not configured, so the bill run cannot tell which ' +
+      'customers had service. Nothing was billed.'
+    )
+  }
+
+  let registry
+  try {
+    registry = await batchGetRadiusStatus(customers.map((c) => c.identity))
+  } catch (err) {
+    throw new Error(
+      'The network registry could not be read, so the bill run cannot tell which ' +
+      'customers had service. Nothing was billed. (' + (err as Error).message + ')'
+    )
+  }
+
+  for (const customer of customers) {
+    if (!customer.identity) {
+      out.set(customer.id, 'unprovisioned')
+      continue
+    }
+
+    // Keyed the way batchGetRadiusStatus normalises identities, not by the
+    // spelling the customers row happens to hold.
+    const record = registry.get(usernameKey(customer.identity))
+
+    if (!record || !record.exists) {
+      out.set(customer.id, 'unprovisioned')
+      continue
+    }
+
+    // 'active' is the only state that means access has not expired.
+    // 'expired' and 'inactive' are both an expiry in the past — they differ
+    // only in how long ago, which this rule does not care about.
+    out.set(customer.id, record.status === 'active' ? 'active' : 'disconnected')
+  }
+
+  return out
+}
+
 export type BillTarget = {
   id: number
   name: string
@@ -560,12 +638,23 @@ export type BillAllPlan = {
   /** False until migration 0011 is applied; the modal refuses to run. */
   available: boolean
   period: BillPeriod
-  /** Every postpaid customer in the company. */
-  postpaidCount: number
-  /** Postpaid customers whose last_billed_date already falls in this period. */
+  /** Every customer in the company. Was postpaid-only before the split was
+   *  retired — see lib/billing.ts. */
+  customerCount: number
+  /** Customers whose last_billed_date already falls in this period. */
   alreadyBilled: number
-  /** Postpaid, unbilled, but on a monthly rate of zero. Skipped entirely. */
+  /** Unbilled, but on a monthly rate of zero. Skipped entirely. */
   zeroRate: number
+  /** Access had expired in radcheck when the plan was read. Not billed. */
+  disconnected: number
+  /** No radcheck row at all — never provisioned. Not billed. */
+  unprovisioned: number
+  /**
+   * Of `totalAmount`, how much standing account_credit would absorb rather
+   * than land on a carried balance. Money already collected — it is not a
+   * discount, and it is not deducted from what the run charges.
+   */
+  creditApplied: number
   /** Who would actually be billed, and for how much. */
   targets: BillTarget[]
   /** Sum of `targets`. */
@@ -591,36 +680,60 @@ export async function loadBillAllPlan(periodKey: string): Promise<BillAllPlan> {
     return {
       available: false,
       period,
-      postpaidCount: 0,
+      customerCount: 0,
       alreadyBilled: 0,
       zeroRate: 0,
+      disconnected: 0,
+      unprovisioned: 0,
+      creditApplied: 0,
       targets: [],
       totalAmount: 0,
     }
   }
 
-  const customers = await readPostpaidCustomers(company.id)
+  const customers = await readBillableCustomers(company.id)
+  const service = await serviceStateFor(customers)
 
   let alreadyBilled = 0
   let zeroRate = 0
+  let disconnected = 0
+  let unprovisioned = 0
+  let creditApplied = 0
   const targets: BillTarget[] = []
 
   for (const customer of customers) {
+    const state = service.get(customer.id)
+
     if (billedInPeriod(customer.lastBilledDate, period)) {
       alreadyBilled++
     } else if (customer.monthlyRate <= 0) {
       zeroRate++
+    } else if (state === 'disconnected') {
+      // Tested before the rate so an operator sees "disconnected" rather than
+      // a zero-rate skip for someone who is both.
+      disconnected++
+    } else if (state === 'unprovisioned') {
+      unprovisioned++
     } else {
       targets.push({ id: customer.id, name: customer.name, amount: customer.monthlyRate })
+      // Preview only. billBatch recomputes this from the row it is about to
+      // write, so a credit spent between the preview and the run cannot be
+      // spent twice.
+      creditApplied += applyCredit(
+        customer.accountCredit, customer.carriedBalance, customer.monthlyRate
+      ).drawn
     }
   }
 
   return {
     available: true,
     period,
-    postpaidCount: customers.length,
+    customerCount: customers.length,
     alreadyBilled,
     zeroRate,
+    disconnected,
+    unprovisioned,
+    creditApplied: Math.round(creditApplied * 100) / 100,
     targets,
     totalAmount: targets.reduce((sum, t) => sum + t.amount, 0),
   }
@@ -629,7 +742,13 @@ export async function loadBillAllPlan(periodKey: string): Promise<BillAllPlan> {
 export type BillOutcome = {
   id: number
   name: string
-  result: 'billed' | 'skipped_already' | 'skipped_zero_rate' | 'failed'
+  result:
+    | 'billed'
+    | 'skipped_already'
+    | 'skipped_zero_rate'
+    | 'skipped_disconnected'
+    | 'skipped_unprovisioned'
+    | 'failed'
   /** Added to carried_balance. Populated for `billed`. */
   amount?: number
   /** Populated for `failed`. */
@@ -637,16 +756,22 @@ export type BillOutcome = {
 }
 
 /**
- * Bills one batch of postpaid customers for one period.
+ * Bills one batch of customers for one period.
  *
  * WHAT IT WRITES, per customer, and nothing else:
  *   carried_balance  += monthly_rate
  *   last_billed_date  = the LAST DAY OF THE PERIOD BILLED
  *
- * It does not touch radcheck, expiry_mode, balance, cut_off_date, bill_date or
- * billing_type, and it creates no payment rows. A customer who is online stays
- * online with the expiry they already hold; a bill is a debt, not a
- * disconnection.
+ * It does not WRITE to radcheck, and does not touch expiry_mode, balance,
+ * cut_off_date, bill_date or billing_type, and it creates no payment rows. A
+ * customer who is online stays online with the expiry they already hold; a bill
+ * is a debt, not a disconnection.
+ *
+ * It does READ radcheck, and that read decides who is billed at all: a customer
+ * whose access has expired when the run fires had no service to be charged for
+ * and is skipped. `bill_date` plays no part in any of this — the period comes
+ * from the operator, and a customer with no bill day recorded bills exactly like
+ * one who has it. See serviceStateFor.
  *
  * last_billed_date IS THE PERIOD, NOT THE RUN DATE. Billing August 2026 writes
  * 2026-08-31 whether the run happens on 1 September or on 14 October. Stamping
@@ -690,8 +815,14 @@ export async function billBatch(input: {
   }
 
   const db = tenantClient()
-  const customers = await readPostpaidByIds(company.id, input.ids)
+  const customers = await readBillableByIds(company.id, input.ids)
   const byId = new Map(customers.map((c) => [c.id, c]))
+
+  // Re-read at WRITE time, not carried from the plan. The modal may have been
+  // open for minutes and a customer can lapse in between; "expired at the
+  // moment the run fires" is what the rule says, so this is the reading that
+  // decides. Same reasoning as the unbilled guard in the WHERE clause below.
+  const service = await serviceStateFor(customers)
 
   // Matches a row that has NOT been billed for this period: never billed, last
   // billed before it, or last billed after it. The three arms are what let an
@@ -711,7 +842,7 @@ export async function billBatch(input: {
         id,
         name: 'Customer #' + id,
         result: 'failed',
-        error: 'This customer no longer exists, or is no longer postpaid.',
+        error: 'This customer no longer exists.',
       })
       continue
     }
@@ -728,17 +859,43 @@ export async function billBatch(input: {
       continue
     }
 
+    // No service, no bill. last_billed_date is deliberately NOT stamped for
+    // these, exactly as for a zero rate: the period stays open, so a customer
+    // reconnected later can still be billed for it if that is the right call.
+    const state = service.get(id)
+    if (state === 'disconnected') {
+      outcomes.push({ id, name: customer.name, result: 'skipped_disconnected' })
+      continue
+    }
+    if (state === 'unprovisioned') {
+      outcomes.push({ id, name: customer.name, result: 'skipped_unprovisioned' })
+      continue
+    }
+
     const stamp =
       customer.lastBilledDate && customer.lastBilledDate > period.end
         ? customer.lastBilledDate
         : period.end
+
+    // PREPAYMENT IS SPENT BEFORE ANYTHING IS OWED. A customer who paid three
+    // months up front has the charge taken out of their credit, so the two runs
+    // their money already covers leave carried_balance at zero rather than
+    // showing them in arrears and then being paid off again.
+    //
+    // Computed from the row read at the top of this batch, and written in the
+    // same guarded statement as the charge — the `unbilled` filter below means
+    // a second concurrent run matches nothing and draws the credit down once.
+    const applied = applyCredit(
+      customer.accountCredit, customer.carriedBalance, customer.monthlyRate
+    )
 
     try {
       const { error, count } = await db
         .from('customers')
         .update(
           {
-            carried_balance: customer.carriedBalance + customer.monthlyRate,
+            carried_balance: applied.carriedBalance,
+            account_credit: applied.credit,
             last_billed_date: stamp,
           },
           { count: 'exact' }
@@ -776,6 +933,8 @@ export async function logBulkBill(summary: {
   totalAmount: number
   skippedAlready: number
   skippedZeroRate: number
+  skippedDisconnected: number
+  skippedUnprovisioned: number
   failed: number
 }): Promise<void> {
   const { profile } = await authorize()
@@ -789,7 +948,9 @@ export async function logBulkBill(summary: {
     (summary.billed === 1 ? ' customer' : ' customers') +
     ' billed ' + formatCurrency(summary.totalAmount) + ' in total, added to carried balance. ' +
     'Skipped ' + summary.skippedAlready + ' already billed for this period, ' +
-    summary.skippedZeroRate + ' with no monthly rate. ' +
+    summary.skippedZeroRate + ' with no monthly rate, ' +
+    summary.skippedDisconnected + ' disconnected, ' +
+    summary.skippedUnprovisioned + ' never provisioned. ' +
     summary.failed + ' failed. Last billed date set to ' + stamp +
     '. No expiry dates, network records or payments were changed. ' +
     'By ' + (profile.first_name ?? profile.email)

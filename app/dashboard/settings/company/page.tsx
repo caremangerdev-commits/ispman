@@ -56,7 +56,6 @@ export default async function GeneralSettingsPage() {
         expiryModeAvailable={caps.expiryMode}
         generalAvailable={caps.generalSettings}
         defaultRateAvailable={caps.defaultMonthlyRate}
-        billingAvailable={caps.billing}
         thresholdsAvailable={caps.billingThresholds}
         currencySymbol={currencySymbol(settings.currency)}
       />

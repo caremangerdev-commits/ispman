@@ -29,7 +29,7 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
   const db = tenantClient()
 
   const cols =
-    'id, first_name, last_name, phone, mac_address, last_bill_date, monthly_rate, balance, cut_off_date' +
+    'id, first_name, last_name, phone, mac_address, last_bill_date, monthly_rate, cut_off_date' +
     (caps.connectionTypes ? ', customer_type' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
@@ -56,7 +56,6 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
     mac_address: string | null
     last_bill_date: string | null
     monthly_rate: number | string | null
-    balance: number | string | null
     cut_off_date: number | null
     customer_type?: string | null
     expiry_mode?: string | null
@@ -115,7 +114,6 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
     })()),
     customer_type: caps.connectionTypes ? toCustomerType(r.customer_type) : null,
     monthly_rate: base,
-    balance: Number(r.balance ?? 0),
     expires_at: expiry ? expiry.toISOString() : null,
     expiry_mode: toExpiryMode(caps.expiryMode ? r.expiry_mode : 'from_expiry'),
     cut_off_date: r.cut_off_date ?? null,
@@ -187,7 +185,6 @@ export default async function RecordPaymentPage({
         initialCustomer={initialCustomer}
         currency={settings.currency}
         gracePeriodDays={settings.gracePeriodDays}
-        billingAvailable={caps.billing}
         paymentCategories={paymentCategories}
         otherPaymentsAvailable={caps.otherPayments}
         stats={

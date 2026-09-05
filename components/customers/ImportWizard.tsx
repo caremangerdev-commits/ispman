@@ -139,6 +139,7 @@ export function ImportWizard({
   const rateMapped = mapped.has('monthly_rate')
   const planMapped = mapped.has('service_plan')
   const cutOffMapped = mapped.has('cut_off_day')
+  const dateAddedMapped = mapped.has('date_added')
 
   // --- the file, read through the mapping ---------------------------------
   const scan = useMemo(() => {
@@ -162,12 +163,12 @@ export function ImportWizard({
         raws.push(raw)
         // The header is line 1, so the first data row is line 2 — the number
         // the operator sees when they open the file in a spreadsheet.
-        rows.push(resolveRow(i + 2, raw, { macMapped, rateMapped, cutOffMapped }))
+        rows.push(resolveRow(i + 2, raw, { macMapped, rateMapped, cutOffMapped, dateAddedMapped }))
       })
     }
 
     return { raws, rows, blank, sectionHeaders }
-  }, [parsed, mapping, macMapped, rateMapped, cutOffMapped])
+  }, [parsed, mapping, macMapped, rateMapped, cutOffMapped, dateAddedMapped])
 
   // withMacConflicts preserves order, so index i still matches scan.raws[i].
   const rows = useMemo(
@@ -387,7 +388,7 @@ export function ImportWizard({
         const slice = importable.slice(i, i + BATCH_SIZE)
         const result = await importCustomerBatch({
           rows: slice.map((e) => ({ rowNumber: e.row.rowNumber, raw: e.raw })),
-          options: { macMapped, rateMapped, cutOffMapped },
+          options: { macMapped, rateMapped, cutOffMapped, dateAddedMapped },
           planIds,
         })
 

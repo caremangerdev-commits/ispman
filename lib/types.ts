@@ -245,7 +245,5 @@ export type CustomerWithExpiry = Customer & {
  * the row types it describes, matching how ExpiryMode and CustomerType are
  * already used across the app. lib/billing.ts stays the definition site.
  */
-export {
-  BILLING_TYPES, BILLING_TYPE_HELP, BILLING_TYPE_LABELS, toBillingType,
-} from '@/lib/billing'
+export { toBillingType } from '@/lib/billing'
 export type { AccessDecision, BillingType } from '@/lib/billing'

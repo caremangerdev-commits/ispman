@@ -46,6 +46,7 @@ export type CustomerHit = {
   name: string
   phone: string | null
   mac_address: string | null
+  /** carried_balance — the only column that carries real debt. */
   balance: number | string | null
 }
 
@@ -70,7 +71,7 @@ export async function searchCustomersLite(
 
   const { data, error } = await db
     .from('customers')
-    .select('id, first_name, last_name, phone, mac_address, balance')
+    .select('id, first_name, last_name, phone, mac_address, carried_balance')
     .eq('company_id', companyId)
     .or(
       [
@@ -90,7 +91,7 @@ export async function searchCustomersLite(
     last_name: string | null
     phone: string | null
     mac_address: string | null
-    balance: number | string | null
+    carried_balance: number | string | null
     status: string | null
   }
 
@@ -99,7 +100,10 @@ export async function searchCustomersLite(
     name: [r.first_name, r.last_name].filter(Boolean).join(' ') || 'Unknown',
     phone: r.phone,
     mac_address: r.mac_address,
-    balance: r.balance,
+    // carried_balance, not balance: see lib/billing.ts. `balance` reads 0 for
+    // everybody who actually owes, so a cashier looking a customer up at the
+    // till was told they owed nothing.
+    balance: r.carried_balance,
   }))
 }
 

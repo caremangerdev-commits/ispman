@@ -221,7 +221,10 @@ function buildPayload(
   companyId: number,
   planIds: Record<string, number>,
   caps: SchemaCapabilities,
-  defaults: ImportDefaults
+  defaults: ImportDefaults,
+  /** Whether the operator pointed a column at Date added. Unmapped keeps the
+   *  old behaviour of stamping today on everyone. */
+  dateAddedMapped: boolean
 ): Record<string, unknown> {
   const today = todayYmd()
 
@@ -245,7 +248,8 @@ function buildPayload(
     // was never in the file gets billed.
     monthly_rate: row.rate ?? 0,
 
-    balance: 0,
+    // `balance` is NOT written — the retired split's column, which nothing
+    // charges. See lib/billing.ts.
 
     // Three steps, in order: the day from the file, then the company setting,
     // then the column's own default. resolveRow leaves cutOffDay null both when
@@ -255,7 +259,16 @@ function buildPayload(
     cut_off_date: row.cutOffDay ?? defaults.cutOffDate ?? DEFAULT_CUT_OFF_DAY,
 
     last_bill_date: today,
-    date_added: today,
+
+    // ALWAYS PRESENT, AND EXPLICITLY NULL WHEN THE FILE HAD NO USABLE DATE.
+    // Same trap as mac_address above for the same reason: the column carries
+    // DEFAULT CURRENT_DATE, so omitting the key stamps today on a customer the
+    // file said nothing about, and the migrated history would read as though
+    // every one of them signed up on import day.
+    //
+    // Unmapped is the untouched path: no Date added column means today, which
+    // is what this did before the column existed.
+    date_added: dateAddedMapped ? row.dateAdded : today,
   }
 
   if (caps.connectionTypes) {
@@ -266,8 +279,9 @@ function buildPayload(
   }
 
   if (caps.billing) {
+    // billing_type still round-trips; nothing branches on it. See lib/billing.ts.
     payload.billing_type = defaults.billingType
-    payload.bill_date = defaults.billingType === 'postpaid' ? defaults.billDate : null
+    payload.bill_date = defaults.billDate
     payload.carried_balance = 0
     payload.account_credit = 0
   }
@@ -328,7 +342,9 @@ export async function importCustomerBatch(batch: ImportBatch): Promise<BatchResu
 
     prepared.push({
       row,
-      payload: buildPayload(row, company.id, batch.planIds, caps, defaults),
+      payload: buildPayload(
+        row, company.id, batch.planIds, caps, defaults, batch.options.dateAddedMapped
+      ),
     })
   }
 

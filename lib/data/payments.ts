@@ -204,7 +204,7 @@ export async function getPayment(
     .from('payments')
     .select(
       'id, amount, months_paid, payment_type, payment_date, agent, notes, created_at, ' +
-      'customers(id, first_name, last_name, email, phone, address, monthly_rate, balance)'
+      'customers(id, first_name, last_name, email, phone, address, monthly_rate, carried_balance)'
     )
     .eq('company_id', companyId)
     .eq('id', id)
@@ -230,7 +230,7 @@ export async function getPayment(
       phone: string | null
       address: string | null
       monthly_rate: number | string | null
-      balance: number | string | null
+      carried_balance: number | string | null
     } | null
   }
 
@@ -252,7 +252,8 @@ export async function getPayment(
           phone: r.customers.phone,
           address: r.customers.address,
           monthly_rate: Number(r.customers.monthly_rate ?? 0),
-          balance: Number(r.customers.balance ?? 0),
+          // carried_balance, not balance — see lib/billing.ts.
+          balance: Number(r.customers.carried_balance ?? 0),
         }
       : null,
   }

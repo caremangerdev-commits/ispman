@@ -4,24 +4,22 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import {
-  billingPeriod, carriedBalanceAfter, isPartialPayment,
-  outstandingBalance, parseYmd, postpaidExpiry, proportionalDate, toBillingType,
+  billingPeriod, carriedBalanceAfter, isPartialPayment, monthsCovered,
+  outstandingBalance, parseYmd, prepaymentCredit, proportionalDate, serviceExpiry,
   ymd, type AccessDecision,
 } from '@/lib/billing'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
-import { renewal } from '@/lib/domain'
 import { can } from '@/lib/permissions'
 import { canExtend } from '@/lib/status'
 import { getRadiusStatus as readNetworkRecord, radiusConfigured } from '@/lib/radius-db'
 import {
-  applyRadiusWrite, paymentExpiry, radiusLogDetails,
+  applyRadiusWrite, radiusLogDetails,
 } from '@/lib/radius/operations'
 import { getSchemaCapabilities, type SchemaCapabilities } from '@/lib/schema'
 import { logEvent } from '@/lib/audit'
 import { displayName, getSession, type Session } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { toExpiryMode } from '@/lib/types'
 
 export type PaymentResult =
   | {
@@ -58,6 +56,9 @@ const num = (fd: FormData, key: string) => {
   const n = Number(v)
   return Number.isFinite(n) ? n : null
 }
+
+/** Money is stored as numeric; keep float drift out of what we write back. */
+const round2 = (n: number) => Math.round(n * 100) / 100
 
 const money = (n: number) =>
   'J$' + new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(n)
@@ -290,7 +291,10 @@ export async function recordPayment(
 
   const customerId = num(formData, 'customer_id')
   const amount = num(formData, 'amount')
-  const monthsPaid = num(formData, 'months_paid') ?? 1
+  // NOTE: months_paid is deliberately NOT read from the form. How many months a
+  // payment bought is derived from the money received further down
+  // (lib/billing.ts#monthsCovered), so a dropdown left on '3 months' while one
+  // month of cash is handed over cannot buy three months of access.
   const paymentType = str(formData, 'payment_type') || 'cash'
   const paymentMethodRaw = str(formData, 'payment_method')
   // The Date field posts as paid_on. payment_date is still accepted so the
@@ -315,7 +319,6 @@ export async function recordPayment(
     fieldErrors.notes = 'Describe the payment method.'
   }
   if (amount === null || amount <= 0) fieldErrors.amount = 'Enter an amount greater than zero.'
-  if (monthsPaid < 1 || monthsPaid > 6) fieldErrors.months_paid = 'Months paid must be 1 to 6.'
 
   const chosenDate = parseYmd(accessDateRaw)
   if (accessDecisionRaw === 'date_selected' && !chosenDate) {
@@ -341,7 +344,7 @@ export async function recordPayment(
   const db = tenantClient()
 
   const cols =
-    'id, first_name, last_name, balance, last_bill_date, mac_address, monthly_rate, cut_off_date' +
+    'id, first_name, last_name, last_bill_date, mac_address, monthly_rate, cut_off_date' +
     (caps.connectionTypes ? ', customer_type, pppoe_username' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
@@ -361,7 +364,6 @@ export async function recordPayment(
     id: number
     first_name: string | null
     last_name: string | null
-    balance: number | string | null
     last_bill_date: string | null
     mac_address: string | null
     monthly_rate: number | string | null
@@ -371,6 +373,7 @@ export async function recordPayment(
     expiry_mode?: string | null
     billing_type?: string | null
     carried_balance?: number | string | null
+    account_credit?: number | string | null
     bill_date?: number | null
   } | null
 
@@ -396,14 +399,32 @@ export async function recordPayment(
     }[]).reduce((sum, l) => sum + Number(l.additional_services?.monthly_price ?? 0), 0)
   }
 
-  const billingType = toBillingType(caps.billing ? customer.billing_type : 'prepaid')
-  const postpaid = billingType === 'postpaid'
-
+  // ONE BILLING MODEL — nothing branches on billing_type. The bill run charges
+  // carried_balance and this settles it. See lib/billing.ts.
+  //
+  // monthlyCharge is no longer part of what is OWED; it survives because the
+  // proportional-access maths is priced off a month, and because the receipt
+  // stamps it as the month's service charge.
   const monthlyCharge = Number(customer.monthly_rate ?? 0) + addonTotal
   const carriedBefore = caps.billing ? Number(customer.carried_balance ?? 0) : 0
-  const partial = isPartialPayment(billingType, monthlyCharge, carriedBefore, paidAmount)
-  const carriedAfter = carriedBalanceAfter(billingType, monthlyCharge, carriedBefore, paidAmount)
-  const outstanding = outstandingBalance(billingType, monthlyCharge, carriedBefore, paidAmount)
+  const partial = isPartialPayment(carriedBefore, paidAmount)
+  const carriedAfter = carriedBalanceAfter(carriedBefore, paidAmount)
+  const outstanding = outstandingBalance(carriedBefore, paidAmount)
+
+  // --- Prepayment ----------------------------------------------------------
+  //
+  // Anything handed over beyond the balance is money for months not yet billed.
+  // It is held as account_credit and drawn down by future bill runs before they
+  // add anything to carried_balance (app/actions/bulk.ts#billBatch), so a
+  // customer who paid three months up front never reads as owing during the
+  // months they have already paid for.
+  //
+  // monthsPaid comes from the MONEY, not from the form's dropdown — see
+  // lib/billing.ts#monthsCovered. The dropdown only seeds the amount field.
+  const creditBefore = caps.billing ? Number(customer.account_credit ?? 0) : 0
+  const creditAdded = caps.billing ? prepaymentCredit(carriedBefore, paidAmount) : 0
+  const creditAfter = round2(creditBefore + creditAdded)
+  const monthsPaid = monthsCovered(carriedBefore, monthlyCharge, paidAmount)
 
   // A decision only means something for a payment that is actually short. One
   // sent for a payment that covers the bill is dropped rather than stored.
@@ -411,16 +432,10 @@ export async function recordPayment(
     ? accessDecisionRaw === 'date_selected' ? 'date_selected' : 'full_period'
     : null
 
-  // Falls back to 'from_expiry' when migration 0004 has not been applied.
-  const mode = toExpiryMode(caps.expiryMode ? customer.expiry_mode : 'from_expiry')
-  const { nextBillDate } = renewal(
-    customer.last_bill_date, mode, monthsPaid, paymentDate
-  )
-
-  // The company grace period is what carries a postpaid customer past their
-  // bill day before they are cut off.
+  // The company grace period is what carries a customer past their cut-off day
+  // before they are actually taken off the network.
   let gracePeriodDays = 0
-  if (postpaid && caps.generalSettings) {
+  if (caps.generalSettings) {
     const { data: settingsRow } = await db
       .from('settings')
       .select('grace_period_days')
@@ -448,22 +463,22 @@ export async function recordPayment(
 
   const registryExpiry = registered?.expiry ?? null
 
-  // The date a full payment would have reached. Prepaid keeps its existing
-  // months-from-expiry calculation untouched; postpaid runs to its bill day
-  // plus the grace period. This is also the "Full Period" branch of a short
-  // payment, which is the whole point of offering it.
-  const fullPeriodExpiry = postpaid
-    ? postpaidExpiry({
-        // cut_off_date, not bill_date: the bill day says when the charge is
-        // raised, the cut-off day says when access ends. Anchored on the
-        // registry expiry so settling the bill rolls the customer PAST the
-        // cut-off that bill was due at rather than up to it.
-        cutOffDay: customer.cut_off_date ?? null,
-        gracePeriodDays,
-        currentExpiry: registryExpiry,
-        from: paymentDate,
-      })
-    : paymentExpiry(mode, registryExpiry, monthsPaid, paymentDate, customer.cut_off_date ?? null)
+  // The date a full payment would have reached, and the "Full Period" branch of
+  // a short one. One calculation for everybody now — the months-from-expiry
+  // walk went with the prepaid arm and its months-to-pay selector.
+  const fullPeriodExpiry = serviceExpiry({
+    // cut_off_date, not bill_date: the bill day says when the charge is raised,
+    // the cut-off day says when access ends. Anchored on the registry expiry so
+    // settling the bill rolls the customer PAST the cut-off that bill was due
+    // at rather than up to it.
+    cutOffDay: customer.cut_off_date ?? null,
+    gracePeriodDays,
+    currentExpiry: registryExpiry,
+    from: paymentDate,
+    // A prepayment moves the expiry the WHOLE distance now, not one month per
+    // bill run. The customer paid for the months today, so they hold them today.
+    months: monthsPaid,
+  })
 
   const newExpiry =
     decision === 'date_selected' && chosenDate ? chosenDate : fullPeriodExpiry
@@ -472,7 +487,6 @@ export async function recordPayment(
   // date even if the form sent a stale one.
   const proportional = partial
     ? proportionalDate({
-        billingType,
         amountPaid: paidAmount,
         monthlyCharge,
         currentExpiry: registryExpiry,
@@ -520,13 +534,11 @@ export async function recordPayment(
   }
 
   if (caps.billing) {
-    // Only postpaid bills for a period already used, so only postpaid stamps
-    // one. A prepaid payment buys months forward and has no such period.
-    if (postpaid) {
-      const period = billingPeriod(paymentDate, customer.bill_date ?? null)
-      insertRow.billing_period_start = period.start
-      insertRow.billing_period_end = period.end
-    }
+    // Every payment now settles a period already used, so every payment stamps
+    // one. Under the retired split only the postpaid arm did.
+    const period = billingPeriod(paymentDate, customer.bill_date ?? null)
+    insertRow.billing_period_start = period.start
+    insertRow.billing_period_end = period.end
     insertRow.access_granted_until = ymd(newExpiry)
     insertRow.carried_balance_before = carriedBefore
     insertRow.carried_balance_after = carriedAfter
@@ -610,9 +622,7 @@ export async function recordPayment(
             actor: profile.email,
             skipped: result.skipped,
             note:
-              billingType + ', ' +
-              (postpaid ? 'bill period' : monthsPaid + ' month(s) paid') +
-              ', mode=' + mode +
+              'bill period' +
               (decision ? ', partial=' + decision : ''),
           }),
         })
@@ -642,31 +652,32 @@ export async function recordPayment(
   //
   // cut_off_date is never touched here by either billing type — it is the
   // customer's standing agreement, not a consequence of one payment.
-  const patch: Record<string, unknown> = {}
+  // A PAYMENT WRITES carried_balance AND NOTHING ELSE.
+  //
+  // `balance` is NOT written. It is the retired split's column: nothing ever
+  // charged it, so decrementing it here only ever moved a figure that was
+  // already 0 and that no page reads any more. See lib/billing.ts.
+  //
+  // last_bill_date is left alone. It drove the retired prepaid renewal cycle,
+  // and there is no longer a months-forward cycle for a payment to advance.
+  //
+  // last_billed_date is left alone because IT IS THE BILL RUN'S COLUMN AND
+  // MEANS THE END OF THE PERIOD BILLED, not the date money changed hands.
+  // This used to stamp the payment date over it, and app/actions/bulk.ts
+  // #billedInPeriod reads that as "already billed for the month the payment
+  // fell in": every customer who paid during September was then skipped by
+  // the 1 October run and got a month of service with no bill raised.
+  //
+  // A payment SETTLES a bill; it does not raise one. Only billBatch writes
+  // this column. When a customer last paid is already recorded — payments
+  // .paid_on, stamped on the row inserted above — so nothing is lost here.
+  const patch: Record<string, unknown> = { carried_balance: carriedAfter }
 
-  if (postpaid) {
-    // A postpaid payment writes carried_balance AND NOTHING ELSE.
-    //
-    // last_bill_date is left alone because it drives the prepaid renewal cycle.
-    //
-    // last_billed_date is left alone because IT IS THE BILL RUN'S COLUMN AND
-    // MEANS THE END OF THE PERIOD BILLED, not the date money changed hands.
-    // This used to stamp the payment date over it, and app/actions/bulk.ts
-    // #billedInPeriod reads that as "already billed for the month the payment
-    // fell in": every customer who paid during September was then skipped by
-    // the 1 October run and got a month of service with no bill raised.
-    //
-    // A payment SETTLES a bill; it does not raise one. Only billBatch writes
-    // this column. When a customer last paid is already recorded — payments
-    // .paid_on, stamped on the row inserted above — so nothing is lost here.
-    patch.carried_balance = carriedAfter
-  } else {
-    // Prepaid keeps exactly the behaviour it had before postpaid existed: the
-    // payment clears what it covers and the bill cycle advances.
-    patch.balance = Math.max(0, Number(customer.balance ?? 0) - paidAmount)
-    patch.last_bill_date = ymd(nextBillDate)
-    if (caps.billing) patch.carried_balance = carriedAfter
-  }
+  // account_credit is written ONLY when 0011 is present, and only when this
+  // payment actually created credit — an ordinary payment that clears the
+  // balance exactly leaves the column untouched rather than rewriting it to
+  // the same number.
+  if (caps.billing && creditAdded > 0) patch.account_credit = creditAfter
 
   const { error: updateError } = await db
     .from('customers')
@@ -832,14 +843,23 @@ async function loadForMutation(
 }
 
 /**
- * Re-reads a customer's balance and writes an adjusted value.
+ * Re-reads a customer's carried balance and writes an adjusted value.
  *
- * Balance is the amount owed, so recording a payment subtracted from it and any
- * correction has to put the difference back. The balance is re-read here rather
+ * carried_balance is the amount owed, so recording a payment subtracted from it
+ * and any correction has to put the difference back. It is re-read here rather
  * than carried from the page, so a payment taken between page load and save is
  * not silently overwritten.
+ *
+ * MOVED OFF `balance` WITH THE REST OF THE SPLIT. This used to adjust `balance`,
+ * which no page reads and no bill run charges — so deleting a payment appeared
+ * to return the money while leaving the real debt cleared.
+ *
+ * Not a perfect inverse, and was not before either: a payment that cleared the
+ * bill saturated carried_balance at 0, so reversing it restores the payment
+ * amount rather than the pre-payment figure. Correcting an amount downward on a
+ * settled account is the case to watch.
  */
-async function adjustBalance(
+async function adjustCarriedBalance(
   db: ReturnType<typeof tenantClient>,
   companyId: number,
   customerId: number | null,
@@ -849,17 +869,19 @@ async function adjustBalance(
 
   const { data } = await db
     .from('customers')
-    .select('balance')
+    .select('carried_balance')
     .eq('company_id', companyId)
     .eq('id', customerId)
     .maybeSingle()
 
   if (!data) return
 
-  const current = Number((data as unknown as { balance: number | string | null }).balance ?? 0)
+  const current = Number(
+    (data as unknown as { carried_balance: number | string | null }).carried_balance ?? 0
+  )
   await db
     .from('customers')
-    .update({ balance: Math.max(0, current + delta) })
+    .update({ carried_balance: Math.max(0, current + delta) })
     .eq('company_id', companyId)
     .eq('id', customerId)
 }
@@ -867,11 +889,18 @@ async function adjustBalance(
 /**
  * Corrects a recorded payment.
  *
- * A correction to the amount is pushed back through the customer's balance, but
- * the billing cycle is deliberately NOT recomputed: `last_bill_date` has moved
- * on and any later payment has advanced it again, so rewinding it from here
- * would corrupt the cycle rather than repair it. Adjust the customer's dates
+ * A correction to the amount is pushed back through the customer's carried
+ * balance, but the billing cycle is deliberately NOT recomputed: `last_bill_date`
+ * has moved on and any later payment has advanced it again, so rewinding it from
+ * here would corrupt the cycle rather than repair it. Adjust the customer's dates
  * directly if a months-paid correction has to change their expiry.
+ *
+ * KNOWN GAP — account_credit IS NOT REVERSED. A payment that created credit
+ * (lib/billing.ts#prepaymentCredit) records no trace of how much on the payment
+ * row, so correcting or deleting it moves the carried balance back but leaves
+ * the credit standing. Correct the credit by hand until a `credit_applied`
+ * column exists on `payments` to reverse it from. Editing months_paid alone is
+ * unaffected: it changes no money and no credit.
  */
 export async function updatePayment(
   _prev: PaymentResult | null,
@@ -886,6 +915,9 @@ export async function updatePayment(
   const fieldErrors: Record<string, string> = {}
 
   const amount = num(formData, 'amount')
+  // Read from the form HERE, unlike recordPayment: this is a correction to the
+  // months_paid RECORDED on an existing row, not a decision about how much
+  // access to grant. See the note on updatePayment.
   const monthsPaid = num(formData, 'months_paid') ?? 1
   const paymentType = str(formData, 'payment_type') || 'cash'
   const paymentDateRaw = str(formData, 'payment_date')
@@ -935,7 +967,7 @@ export async function updatePayment(
   if (updateError) return { ok: false, error: 'Could not update payment: ' + updateError.message }
 
   // A larger payment leaves less owing, so the delta is old minus new.
-  await adjustBalance(db, company.id, payment.customer_id, previousAmount - (amount as number))
+  await adjustCarriedBalance(db, company.id, payment.customer_id, previousAmount - (amount as number))
 
   await logEvent({
     customerId: payment.customer_id,
@@ -984,7 +1016,7 @@ export async function deletePayment(formData: FormData): Promise<void> {
   }
 
   // The money is no longer recorded as received, so it is owed again.
-  await adjustBalance(db, company.id, payment.customer_id, amount)
+  await adjustCarriedBalance(db, company.id, payment.customer_id, amount)
 
   await logEvent({
     customerId: payment.customer_id,
