@@ -64,6 +64,17 @@ export type SchemaCapabilities = {
    * decide it.
    */
   firstPeriod: boolean
+  /**
+   * `payments.customer_misc_category_id` (0018). The customer’s segment as it
+   * was WHEN THEY PAID, so an income breakdown by owner cannot be rewritten
+   * retroactively by recategorising a customer.
+   *
+   * Absent, the breakdown resolves the segment through the customer’s current
+   * category instead — which is what it must do for rows written before this
+   * migration in any case, so the fallback is the same code path rather than a
+   * degraded one.
+   */
+  paymentSegment: boolean
 }
 
 /**
@@ -88,7 +99,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     typeRes, expiryRes, catalogRes, generalRes, rateRes, checkoffRes, recordsRes,
     billingCustomerRes, billingPaymentRes, billingSettingRes, thresholdRes,
     otherPaymentRes, paymentCategoryRes, creditReversalRes, logMetadataRes,
-    firstPeriodRes, amountDueRes,
+    firstPeriodRes, amountDueRes, paymentSegmentRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -125,8 +136,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
       .select('first_expiry_rule_enabled, prorata_first_payment_enabled')
       .limit(1),
     db.from('payments').select('amount_due, first_period_discount').limit(1),
+    db.from('payments').select('customer_misc_category_id').limit(1),
   ])
-  console.log('[perf]     schema probe: 17 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 18 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -157,6 +169,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   // was due would print a receipt it cannot restate.
   const missingFirstPeriod =
     firstPeriodRes.error?.code === '42703' || amountDueRes.error?.code === '42703'
+  // 0018 is a single ALTER, so the one column decides it.
+  const missingPaymentSegment = paymentSegmentRes.error?.code === '42703'
   const missingPaymentCategories =
     paymentCategoryRes.error?.code === 'PGRST205' || paymentCategoryRes.error?.code === '42P01'
 
@@ -236,6 +250,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     )
   }
 
+  if (paymentSegmentRes.error && !missingPaymentSegment) {
+    throw new Error(
+      'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
+    )
+  }
+
   return {
     connectionTypes: !missingType,
     expiryMode: !missingExpiry,
@@ -249,6 +269,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     creditReversal: !missingCreditReversal,
     logMetadata: !missingLogMetadata,
     firstPeriod: !missingFirstPeriod,
+    paymentSegment: !missingPaymentSegment,
   }
 })
 

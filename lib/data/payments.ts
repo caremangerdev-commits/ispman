@@ -24,6 +24,12 @@ export type PaymentListRow = {
   customerId: number | null
   customerName: string
   checkedOff: boolean
+  /**
+   * The customer segment this payment is attributed to: the value stamped on
+   * the payment (0018), falling back to the customer’s current misc category
+   * for rows written before that column existed. Null means Uncategorised.
+   */
+  segmentId: number | null
 }
 
 export type PaymentListResult = {
@@ -34,6 +40,30 @@ export type PaymentListResult = {
   /** Totals across the whole filtered set, not just the visible page. */
   totalCollected: number
   averagePayment: number
+  /**
+   * Income split by the customer segment (misc category) the payment belongs
+   * to. Empty when the company keeps no misc categories, which is most of them.
+   *
+   * Computed from the SAME filtered rows as totalCollected, so the split always
+   * sums back to it. A second query could not promise that: this page filters
+   * on the customer name in memory, and any separate aggregate would silently
+   * disagree the moment somebody typed in the search box.
+   */
+  categories: SegmentTotal[]
+}
+
+/** One row of the income breakdown. */
+export type SegmentTotal = {
+  /** misc_categories.id, or null for the Uncategorised row. */
+  id: number | null
+  label: string
+  /** Recurring service payments. */
+  service: number
+  /** Installations, router sales — one-off income, kept in its own column so
+   *  neither owner reads it as recurring. */
+  other: number
+  total: number
+  count: number
 }
 
 export type PaymentFilters = {
@@ -72,7 +102,10 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
 
   const cols =
     'id, amount, months_paid, payment_type, payment_date, agent, notes, customer_id, ' +
-    'customers(first_name, last_name)' +
+    'customers(first_name, last_name' + (caps.catalog ? ', misc_category_id' : '') + ')' +
+    // The stamped segment (0018) for rows written since it existed; the join
+    // above is the fallback for everything older. See segmentOf.
+    (caps.paymentSegment ? ', customer_misc_category_id' : '') +
     (caps.checkoff ? ', payment_method, checked_off' : '') +
     (caps.otherPayments ? ', paid_on, payment_kind, payment_categories(name)' : '')
 
@@ -125,7 +158,12 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
     agent: string | null
     notes: string | null
     customer_id: number | null
-    customers: { first_name: string | null; last_name: string | null } | null
+    customer_misc_category_id?: number | null
+    customers: {
+      first_name: string | null
+      last_name: string | null
+      misc_category_id?: number | null
+    } | null
   }
 
   const all: PaymentListRow[] = ((data ?? []) as unknown as Row[]).map((r) => ({
@@ -145,6 +183,16 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
       .filter(Boolean)
       .join(' ') || 'Unknown',
     checkedOff: Boolean(r.checked_off),
+    // STAMPED FIRST, JOIN SECOND. The stamp says which segment the customer was
+    // in when they paid; the join says which one they are in now. They differ
+    // exactly when somebody has been recategorised, and for a report two owners
+    // use to divide income the historical answer is the correct one.
+    //
+    // Rows written before migration 0018 have no stamp and fall through to the
+    // join, which is all that was ever knowable about them. Not backfilled: see
+    // the note in 0018.
+    segmentId:
+      r.customer_misc_category_id ?? r.customers?.misc_category_id ?? null,
   }))
 
   const needle = query.trim().toLowerCase()
@@ -153,6 +201,11 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
     : all
 
   const totalCollected = matched.reduce((sum, r) => sum + r.amount, 0)
+
+  // FROM `matched`, NOT FROM A SECOND QUERY. Same rows as totalCollected, so
+  // the breakdown sums back to it whatever combination of filters is applied,
+  // including the customer-name search that only exists in memory.
+  const categories = await summariseSegments(companyId, caps.catalog, matched)
   const pageCount = Math.max(1, Math.ceil(matched.length / perPage))
   const safePage = Math.min(Math.max(1, page), pageCount)
   const start = (safePage - 1) * perPage
@@ -164,9 +217,97 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
     pageCount,
     totalCollected,
     averagePayment: matched.length ? totalCollected / matched.length : 0,
+    categories,
   }
 }
 
+/**
+ * Income split by customer segment, for the payments page panel.
+ *
+ * WHY THIS TAKES ROWS RATHER THAN FILTERS. The figure it has to agree with —
+ * totalCollected — is computed over rows that have already been through an
+ * IN-MEMORY name filter, because the customer name lives on a joined row that
+ * PostgREST cannot filter a parent by. An aggregate built from its own query
+ * could not see that filter, so the panel and the headline total would disagree
+ * the moment anyone typed in the search box. Sharing the rows makes them agree
+ * by construction rather than by care.
+ *
+ * UNCATEGORISED IS A PERMANENT ROW. It is emitted whenever any payment has no
+ * segment, never folded into another row and never dropped. At the time of
+ * writing 154 of one company’s 978 customers have no category and account for
+ * 11.6% of everything they have collected; money that belongs to neither owner
+ * has to be visible, or the two totals quietly stop reconciling with the bank.
+ *
+ * A SEGMENT THAT NO LONGER RESOLVES is labelled as deleted rather than merged
+ * into Uncategorised. The payment was attributed when it was taken; the
+ * category being gone since is a different fact from never having had one, and
+ * 0018 keeps the id precisely so the two stay distinguishable.
+ *
+ * Returns an empty array when the company keeps no misc categories at all, so
+ * the page can leave the panel out entirely rather than render a table with one
+ * meaningless row.
+ */
+async function summariseSegments(
+  companyId: number,
+  hasCatalog: boolean,
+  rows: PaymentListRow[]
+): Promise<SegmentTotal[]> {
+  if (!hasCatalog) return []
+
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('misc_categories')
+    .select('id, name')
+    .eq('company_id', companyId)
+    .order('name')
+
+  if (error) {
+    // The list itself is fine without the panel, so this degrades rather than
+    // failing the page.
+    console.error('[payments] segment lookup failed:', error.message)
+    return []
+  }
+
+  const names = new Map(
+    ((data ?? []) as { id: number; name: string }[]).map((c) => [c.id, c.name])
+  )
+  if (names.size === 0) return []
+
+  const totals = new Map<number | null, SegmentTotal>()
+
+  // Every category is seeded, so an owner who collected nothing this month sees
+  // a zero rather than vanishing from the report — an absent row reads as a
+  // missing figure, not as none.
+  for (const [id, name] of names) {
+    totals.set(id, { id, label: name, service: 0, other: 0, total: 0, count: 0 })
+  }
+
+  for (const row of rows) {
+    const key = row.segmentId
+    let entry = totals.get(key)
+
+    if (!entry) {
+      entry =
+        key === null
+          ? { id: null, label: 'Uncategorised', service: 0, other: 0, total: 0, count: 0 }
+          : { id: key, label: 'Deleted category #' + key, service: 0, other: 0, total: 0, count: 0 }
+      totals.set(key, entry)
+    }
+
+    if (row.kind === 'other') entry.other += row.amount
+    else entry.service += row.amount
+    entry.total += row.amount
+    entry.count += 1
+  }
+
+  // Uncategorised last, then by size. An owner comparing two figures wants the
+  // bigger one first; the remainder belongs at the bottom where a total sits.
+  return [...totals.values()].sort((a, b) => {
+    if (a.id === null) return 1
+    if (b.id === null) return -1
+    return b.total - a.total
+  })
+}
 export type PaymentDetail = {
   id: number
   amount: number

@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 
+import { IncomeBySegment } from '@/components/payments/IncomeBySegment'
 import { PaymentFilters } from '@/components/payments/PaymentFilters'
 import { ReceiptButton } from '@/components/payments/ReceiptModal'
 import { listPayments } from '@/lib/data/payments'
@@ -96,6 +97,17 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
         <Summary label="Number of Payments" value={String(result.total)} />
         <Summary label="Average Payment" value={formatCurrency(result.averagePayment)} />
       </div>
+
+      {/* Income by owner, for a company that splits its base with misc
+          categories. Renders nothing when there are none, which is most
+          companies — see lib/data/payments.ts#summariseSegments. Sits above the
+          filter bar because it answers a question about the whole filtered set,
+          like the summary cards, rather than about the rows below it. */}
+      <IncomeBySegment
+        segments={result.categories}
+        totalCollected={result.totalCollected}
+        showOther={caps.otherPayments}
+      />
 
       <PaymentFilters
         from={from} to={to} type={type} query={query}

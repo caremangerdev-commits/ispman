@@ -164,7 +164,10 @@ async function recordOtherPayment(
   // billing, and nothing on it is written back.
   const { data: customerRow, error: loadError } = await db
     .from('customers')
-    .select('id, first_name, last_name')
+    // misc_category_id only once the catalogue exists (0005). An "other"
+    // payment is somebody's income too, so it carries the same segment stamp
+    // as a service payment — see the note on the insert below.
+    .select('id, first_name, last_name' + (caps.catalog ? ', misc_category_id' : ''))
     .eq('company_id', company.id)
     .eq('id', customerId)
     .maybeSingle()
@@ -175,6 +178,7 @@ async function recordOtherPayment(
     id: number
     first_name: string | null
     last_name: string | null
+    misc_category_id?: number | null
   } | null
 
   if (!customer) return { ok: false, error: 'That customer no longer exists.' }
@@ -218,6 +222,20 @@ async function recordOtherPayment(
     insertRow.user_id = profile.id
   }
 
+  // WHOSE INCOME THIS IS, AS IT WAS TODAY (migration 0018).
+  //
+  // Stamped rather than joined, because the join answers with the segment the
+  // customer is in NOW. Two owners splitting one customer base by misc category
+  // read that breakdown as "what I collected in August"; moving one customer
+  // between segments would rewrite August for both of them, with nothing
+  // recording that it happened — app/actions/customers.ts#updateCustomer writes
+  // no log row at all.
+  //
+  // Null when the customer has no segment. That money is not dropped: it lands
+  // in the breakdown’s permanent "Uncategorised" row.
+  if (caps.paymentSegment) {
+    insertRow.customer_misc_category_id = customer.misc_category_id ?? null
+  }
   const { data: inserted, error: insertError } = await db
     .from('payments')
     .insert(insertRow)
@@ -342,6 +360,7 @@ export async function recordPayment(
 
   const cols =
     'id, first_name, last_name, last_bill_date, mac_address, monthly_rate, cut_off_date' +
+    (caps.catalog ? ', misc_category_id' : '') +
     (caps.connectionTypes ? ', customer_type, pppoe_username' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
@@ -365,6 +384,7 @@ export async function recordPayment(
     mac_address: string | null
     monthly_rate: number | string | null
     cut_off_date: number | null
+    misc_category_id?: number | null
     customer_type?: string | null
     pppoe_username?: string | null
     expiry_mode?: string | null
@@ -595,6 +615,20 @@ export async function recordPayment(
     insertRow.access_decision = decision
   }
 
+  // WHOSE INCOME THIS IS, AS IT WAS TODAY (migration 0018).
+  //
+  // Stamped rather than joined, because the join answers with the segment the
+  // customer is in NOW. Two owners splitting one customer base by misc category
+  // read that breakdown as "what I collected in August"; moving one customer
+  // between segments would rewrite August for both of them, with nothing
+  // recording that it happened — app/actions/customers.ts#updateCustomer writes
+  // no log row at all.
+  //
+  // Null when the customer has no segment. That money is not dropped: it lands
+  // in the breakdown’s permanent "Uncategorised" row.
+  if (caps.paymentSegment) {
+    insertRow.customer_misc_category_id = customer.misc_category_id ?? null
+  }
   if (caps.firstPeriod) {
     // WHAT THE CUSTOMER WAS ASKED FOR, so the receipt can restate it rather
     // than reassembling it from parts. Equal to carried_balance_before for an

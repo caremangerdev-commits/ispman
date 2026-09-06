@@ -1,0 +1,88 @@
+-- ISPMan: stamp the customer's misc category on the payment.
+--
+-- RUN THIS IN THE SUPABASE SQL EDITOR.
+--
+-- NOT YET APPLIED. lib/schema.ts#paymentSegment probes for the column, and until
+-- it exists the income breakdown falls back to joining the customer's CURRENT
+-- category — which is what it has to do for existing rows anyway. Applying this
+-- changes nothing that is already on screen; it changes what tomorrow's rows can
+-- be asked about.
+--
+-- WHY THIS EXISTS
+-- Two owners of one company split their customer base between them and track
+-- the split with misc categories. They want to see their income separately.
+-- Without a stamp, "what did I collect in August" is answered by joining August's
+-- payments to each customer's category AS IT IS TODAY. Move one customer from
+-- one owner to the other and August's answer changes, retroactively, for both of
+-- them — and app/actions/customers.ts#updateCustomer writes NO log row of any
+-- kind, so nothing anywhere records that it happened or when.
+--
+-- For two people dividing money between themselves that is the difference
+-- between a report and an argument. This is the same rule the receipt fix
+-- settled on: restate what was stamped, do not recompute it from what is true
+-- now.
+
+-- ---------------------------------------------------------------------------
+-- payments.customer_misc_category_id — the customer's segment AT THE TIME.
+--
+-- NAMED FOR THE CUSTOMER, NOT THE PAYMENT. `payments.payment_category_id`
+-- already exists and means something completely different: the PURPOSE of an
+-- "other" payment (Installation, Router), from the payment_categories table.
+-- This is the customer SEGMENT (misc_categories: "FILE A", "School", "Hotel").
+-- Migration 0013 went out of its way to keep those two lists apart; a bare
+-- `misc_category_id` sitting next to `payment_category_id` would undo that at a
+-- glance.
+--
+-- DELIBERATELY NO FOREIGN KEY, which is a departure from
+-- customers.misc_category_id and is the whole point of the column:
+--
+--   ON DELETE SET NULL would let deleting a category erase the history this
+--   column exists to protect. app/actions/catalog.ts#deleteMiscCategory already
+--   nulls every customer's misc_category_id before removing the row; if it took
+--   the stamps with it, a year of one owner's income would silently move into
+--   Uncategorised. A stamp the database is free to rewrite is not a stamp.
+--
+--   ON DELETE RESTRICT would protect the history by breaking that admin action
+--   for any category that has ever been paid against, which is all of them.
+--
+-- So the id is recorded as a plain value that outlives the row it names. The
+-- report resolves the name by lookup and labels an id that no longer resolves as
+-- a deleted category, rather than pretending the money was never attributed.
+--
+-- GROUPED BY ID, NOT BY NAME, which is why the name is not stamped alongside it.
+-- Renaming "FILE A" to "Owner A" should move a year of history under the new
+-- name, not split it into two rows either side of the rename. Deletion is the
+-- only case where the name is genuinely gone, and that is the case handled
+-- above.
+--
+-- NULL MEANS TWO DIFFERENT THINGS, and the breakdown treats them the same on
+-- purpose:
+--   - the payment predates this migration (the ~360 existing rows), or
+--   - the customer had no category when they paid.
+-- Both land in the "Uncategorised" row, which is permanent, never folded into
+-- any owner's total and never hidden. At the time of writing 154 of Ezmze's 978
+-- customers have no category and account for 11.6% of everything collected, so
+-- this row is not an edge case to tuck away.
+--
+-- NOT BACKFILLED. Backfilling from the customer's current category would invent
+-- exactly the retroactive attribution this column exists to prevent, and would
+-- assert it as fact. Existing rows keep resolving through the join, which is
+-- honest about what is actually known — the same reasoning as payments
+-- .credit_applied in 0015.
+-- ---------------------------------------------------------------------------
+ALTER TABLE public.payments
+  ADD COLUMN IF NOT EXISTS customer_misc_category_id BIGINT;
+
+-- The breakdown groups a company's payments for a date range by this column.
+-- Company first because every read of this table is company scoped (RLS, 0001).
+CREATE INDEX IF NOT EXISTS payments_customer_segment_idx
+  ON public.payments (company_id, customer_misc_category_id);
+
+-- ---------------------------------------------------------------------------
+-- WHAT THIS MIGRATION IS NOT
+--
+-- It is not a step toward separating the two owners' access. They keep logging
+-- into the same company and keep seeing every customer. Nothing here creates a
+-- sub-tenant, a permission, or a row-level rule, and nothing should be added on
+-- top of it that does — that is a different job with different questions.
+-- ---------------------------------------------------------------------------
