@@ -127,6 +127,7 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
         agent={agent} checked={checked} category={category}
         agents={agentNames} categories={miscCategories}
         checkoffAvailable={caps.checkoff}
+        canExport={can(profile.role, 'view_revenue_reports')}
       />
 
       <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">

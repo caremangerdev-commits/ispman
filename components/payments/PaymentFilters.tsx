@@ -1,6 +1,6 @@
 'use client'
 
-import { Search, X } from 'lucide-react'
+import { Download, Search, X } from 'lucide-react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 
@@ -19,7 +19,7 @@ const control =
  */
 export function PaymentFilters({
   from, to, type, query, agent, checked, category, agents, categories,
-  checkoffAvailable,
+  checkoffAvailable, canExport,
 }: {
   from: string
   to: string
@@ -40,6 +40,11 @@ export function PaymentFilters({
   categories: { id: number; name: string }[]
   /** False until migration 0010 lands; hides the checkoff filter. */
   checkoffAvailable: boolean
+  /**
+   * Whether this user may export. Manager and above — see the route, which
+   * enforces it independently. Hiding the button is presentation, not access.
+   */
+  canExport: boolean
 }) {
   const router = useRouter()
   const pathname = usePathname()
@@ -198,6 +203,20 @@ export function PaymentFilters({
           <X className="h-3.5 w-3.5" aria-hidden />
           Clear
         </button>
+      ) : null}
+
+      {/* In the filter bar, because it exports what the filter bar produced.
+          A plain link carrying the CURRENT query string — the same params the
+          page read — so what downloads is what is on screen, and the browser
+          handles the download itself with no fetch and no blob. */}
+      {canExport ? (
+        <a
+          href={'/api/payments/export' + (params.toString() ? '?' + params.toString() : '')}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-gray-800 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:bg-gray-700"
+        >
+          <Download className="h-3.5 w-3.5" aria-hidden />
+          Export CSV
+        </a>
       ) : null}
     </div>
   )

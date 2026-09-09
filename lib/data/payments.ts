@@ -89,6 +89,15 @@ export type PaymentFilters = {
   category?: string
   page?: number
   perPage?: number
+  /**
+   * Return the whole filtered set as `rows` instead of one page of it.
+   *
+   * For the export, which promises what you see is what you get: it has to be
+   * the SAME rows the page counted, reached through the SAME filters, or the
+   * file and the screen would be two answers to one question. An export route
+   * that rebuilt the query itself is exactly how those drift apart.
+   */
+  all?: boolean
 }
 
 /** The `category` value that selects payments carrying no segment at all. */
@@ -109,7 +118,7 @@ export const PAYMENT_TYPES = ['cash', 'card', 'online'] as const
 export async function listPayments(opts: PaymentFilters): Promise<PaymentListResult> {
   const {
     companyId, from, to, type, query = '', agent = '', checked = '',
-    category = '', page = 1, perPage = 15,
+    category = '', page = 1, perPage = 15, all: everything = false,
   } = opts
 
   const caps = await getSchemaCapabilities()
@@ -262,12 +271,12 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
   // breakdown to that segment, which is why the page hides it in that case
   // rather than showing every other owner at zero.
   const categories = await summariseSegments(companyId, caps.catalog, matched)
-  const pageCount = Math.max(1, Math.ceil(matched.length / perPage))
-  const safePage = Math.min(Math.max(1, page), pageCount)
+  const pageCount = everything ? 1 : Math.max(1, Math.ceil(matched.length / perPage))
+  const safePage = everything ? 1 : Math.min(Math.max(1, page), pageCount)
   const start = (safePage - 1) * perPage
 
   return {
-    rows: matched.slice(start, start + perPage),
+    rows: everything ? matched : matched.slice(start, start + perPage),
     total: matched.length,
     page: safePage,
     pageCount,
