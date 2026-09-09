@@ -4,6 +4,7 @@ import { tenantClient } from '@/lib/supabase/tenant'
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { lastNetworkEvents } from '@/lib/data/network-events'
 import { localDateOnly } from '@/lib/format'
+import { matchesCustomer } from '@/lib/search'
 import {
   CUSTOMER_STATUSES, resolveStatus, STATUS_LABELS, type CustomerStatus,
 } from '@/lib/status'
@@ -188,19 +189,13 @@ export async function listCustomers(opts: {
   ].sort((a, b) => a.localeCompare(b))
 
   const wanted = address.trim()
-  const needle = query.trim().toLowerCase()
   const matched = all.filter((c) => {
     if (filter !== 'all' && c.radiusStatus !== filter) return false
     if (wanted && (c.address ?? '').trim() !== wanted) return false
-    if (!needle) return true
-    const haystack = [
-      c.first_name,
-      c.last_name,
-      [c.first_name, c.last_name].filter(Boolean).join(' '),
-      c.phone,
-      c.mac_address,
-    ]
-    return haystack.some((v) => (v ?? '').toLowerCase().includes(needle))
+    // Same rule /api/search applies in SQL — see lib/search.ts. The two used to
+    // be separate field lists and disagreed about what a customer is findable
+    // by; matching them here is the point of that module.
+    return matchesCustomer(c, query)
   })
 
   const pageCount = Math.max(1, Math.ceil(matched.length / perPage))

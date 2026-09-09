@@ -6,6 +6,7 @@ import { lastNetworkEvents } from '@/lib/data/network-events'
 import { resolveStatus, type CustomerStatus } from '@/lib/status'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
+import { searchClauses } from '@/lib/search'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { toBillingType, type BillingType } from '@/lib/billing'
@@ -16,6 +17,9 @@ export type SearchHit = {
   first_name: string | null
   last_name: string | null
   phone: string | null
+  /** Location name for imported rows. Shown on a hit so a cashier can see
+   *  WHY it matched when they searched by district. */
+  address: string | null
   mac_address: string | null
   /** Derived from the network registry — drives the status dot and badge. */
   status: CustomerStatus
@@ -69,11 +73,8 @@ export async function GET(request: NextRequest) {
   const caps = await getSchemaCapabilities()
   const db = tenantClient()
 
-  // Strip PostgREST's `or` filter delimiters so a stray comma or paren cannot
-  // change the shape of the filter expression.
-  const pattern = '%' + query.replace(/[%,()]/g, '') + '%'
   const columns =
-    'id, first_name, last_name, phone, mac_address, last_bill_date, monthly_rate, cut_off_date' +
+    'id, first_name, last_name, phone, address, mac_address, last_bill_date, monthly_rate, cut_off_date' +
     (caps.connectionTypes ? ', customer_type' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
@@ -83,19 +84,13 @@ export async function GET(request: NextRequest) {
       ? ', service_plans!customers_service_plan_id_fkey(name, speed_down_mbps, speed_up_mbps, monthly_price)'
       : '')
 
-  const { data, error } = await db
-    .from('customers')
-    .select(columns)
-    .eq('company_id', company.id)
-    .or(
-      [
-        'first_name.ilike.' + pattern,
-        'last_name.ilike.' + pattern,
-        'phone.ilike.' + pattern,
-        'mac_address.ilike.' + pattern,
-      ].join(',')
-    )
-    .limit(LIMIT)
+  // One .or() per word typed. PostgREST ANDs separate query parameters, so
+  // chaining them is "every word matches at least one field" — the rule the
+  // customer list applies in memory from the same module, lib/search.ts.
+  let lookup = db.from('customers').select(columns).eq('company_id', company.id)
+  for (const clause of searchClauses(query)) lookup = lookup.or(clause)
+
+  const { data, error } = await lookup.limit(LIMIT)
 
   if (error) {
     return NextResponse.json({ error: 'Search failed: ' + error.message }, { status: 500 })
@@ -106,6 +101,7 @@ export async function GET(request: NextRequest) {
     first_name: string | null
     last_name: string | null
     phone: string | null
+    address: string | null
     mac_address: string | null
     last_bill_date: string | null
     monthly_rate: number | string | null
@@ -194,6 +190,7 @@ export async function GET(request: NextRequest) {
       first_name: r.first_name,
       last_name: r.last_name,
       phone: r.phone,
+      address: r.address,
       mac_address: r.mac_address,
       // Straight from the registry, so the dot always agrees with the badge
       // on the customer list and detail page.

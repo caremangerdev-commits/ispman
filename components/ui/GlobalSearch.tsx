@@ -130,7 +130,7 @@ export function GlobalSearch() {
           onChange={(e) => onQueryChange(e.target.value)}
           onKeyDown={onKeyDown}
           onFocus={() => results.length > 0 && setOpen(true)}
-          placeholder="Search customers..."
+          placeholder="Search name, phone, address, MAC or #id..."
           className="w-full rounded-lg border border-gray-800 bg-gray-950 py-2 pl-9 pr-3 text-sm text-gray-200 placeholder:text-gray-600 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
         />
       </div>
@@ -168,8 +168,12 @@ export function GlobalSearch() {
                       <span className="block truncate text-sm font-semibold text-white">
                         {[r.first_name, r.last_name].filter(Boolean).join(' ') || 'Unnamed'}
                       </span>
+                      {/* Address sits beside the phone because the search now
+                          matches on it: a hit that came back for a district
+                          name has to show the district, or it reads as a
+                          result from nowhere. */}
                       <span className="block truncate text-xs text-gray-400">
-                        {r.phone ?? 'No phone'}
+                        {[r.phone, r.address].filter(Boolean).join(' · ') || 'No phone or address'}
                       </span>
                     </span>
                     <span className="shrink-0 font-mono text-xs text-gray-400">

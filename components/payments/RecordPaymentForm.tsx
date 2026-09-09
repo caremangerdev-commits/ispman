@@ -610,7 +610,7 @@ export function RecordPaymentForm({
             value={term}
             onChange={(e) => setTerm(e.target.value)}
             onFocus={() => visibleHits.length > 0 && setOpen(true)}
-            placeholder="Search by name, phone or MAC..."
+            placeholder="Search by name, phone, address, MAC or #id..."
             className="w-full rounded-lg border border-gray-700 bg-gray-800 py-3 pl-12 pr-3 text-base text-white placeholder:text-gray-500 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
           />
 
@@ -629,8 +629,12 @@ export function RecordPaymentForm({
                         <span className="block truncate text-sm font-semibold text-white">
                           {[r.first_name, r.last_name].filter(Boolean).join(' ')}
                         </span>
+                        {/* Address is shown because the search matches on it —
+                            a hit returned for a district name has to say which
+                            district, or the cashier cannot tell two customers
+                            of the same name apart. */}
                         <span className="block truncate text-xs text-gray-400">
-                          {r.phone ?? 'No phone'}
+                          {[r.phone, r.address].filter(Boolean).join(' · ') || 'No phone or address'}
                         </span>
                       </span>
                       <StatusBadge status={r.status} />

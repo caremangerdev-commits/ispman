@@ -54,7 +54,7 @@ export function CustomerSearch({ initial }: { initial: string }) {
         type="search"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        placeholder="Search name, phone or MAC..."
+        placeholder="Search name, phone, address, MAC or #id..."
         className="w-full rounded-lg border border-gray-800 bg-gray-950 py-2 pl-9 pr-8 text-sm text-gray-200 placeholder:text-gray-600 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
       />
       {value ? (
