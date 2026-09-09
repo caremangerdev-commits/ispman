@@ -18,7 +18,8 @@ const control =
  * refresh. The text search debounces; the selects apply immediately.
  */
 export function PaymentFilters({
-  from, to, type, query, agent, checked, agents, checkoffAvailable,
+  from, to, type, query, agent, checked, category, agents, categories,
+  checkoffAvailable,
 }: {
   from: string
   to: string
@@ -26,8 +27,17 @@ export function PaymentFilters({
   query: string
   agent: string
   checked: string
+  /** misc_categories id as a string, or 'none' for Uncategorised. */
+  category: string
   /** Distinct agent names present in this company's payments. */
   agents: string[]
+  /**
+   * The company's customer segments. EMPTY FOR MOST COMPANIES — only a company
+   * that splits its base between owners keeps these — and the whole control is
+   * left out when it is, rather than offering a dropdown with one meaningless
+   * option in it.
+   */
+  categories: { id: number; name: string }[]
   /** False until migration 0010 lands; hides the checkoff filter. */
   checkoffAvailable: boolean
 }) {
@@ -67,7 +77,7 @@ export function PaymentFilters({
     timerRef.current = setTimeout(() => push({ q: value }), 300)
   }
 
-  const hasFilters = Boolean(from || to || type || query || agent || checked)
+  const hasFilters = Boolean(from || to || type || query || agent || checked || category)
 
   return (
     <div className="flex flex-wrap items-end gap-3 rounded-xl border border-gray-800 bg-gray-900 p-4">
@@ -123,6 +133,29 @@ export function PaymentFilters({
         </select>
       </div>
 
+      {categories.length > 0 ? (
+        <div className="space-y-1.5">
+          <label htmlFor="category" className="block text-xs font-medium text-gray-400">
+            Category
+          </label>
+          <select
+            id="category"
+            value={category}
+            onChange={(e) => push({ category: e.target.value })}
+            className={control}
+          >
+            <option value="">All</option>
+            {categories.map((c) => (
+              <option key={c.id} value={String(c.id)}>{c.name}</option>
+            ))}
+            {/* A real selection, not a placeholder. Money attributed to nobody
+                is money two owners still have to account for, so it has to be
+                reachable — the same reason the breakdown never hides it. */}
+            <option value="none">Uncategorised</option>
+          </select>
+        </div>
+      ) : null}
+
       {checkoffAvailable ? (
         <div className="space-y-1.5">
           <label htmlFor="checked" className="block text-xs font-medium text-gray-400">
@@ -159,7 +192,7 @@ export function PaymentFilters({
       {hasFilters ? (
         <button
           type="button"
-          onClick={() => push({ from: '', to: '', type: '', q: '', agent: '', checked: '' })}
+          onClick={() => push({ from: '', to: '', type: '', q: '', agent: '', checked: '', category: '' })}
           className="inline-flex items-center gap-1 rounded-lg bg-gray-800 px-3 py-2 text-xs font-semibold text-gray-300 transition hover:bg-gray-700"
         >
           <X className="h-3.5 w-3.5" aria-hidden />

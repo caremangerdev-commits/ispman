@@ -78,24 +78,38 @@ export type PaymentFilters = {
   agent?: string
   /** 'yes' | 'no' — checkoff state, ignored otherwise. */
   checked?: string
+  /**
+   * Customer segment (misc category) to narrow to.
+   *
+   * A misc_categories id as a string, or the literal 'none' for the
+   * Uncategorised rows — which are a real answer, not the absence of one, and
+   * have to be selectable for the same reason the breakdown never hides them.
+   * Empty means every segment.
+   */
+  category?: string
   page?: number
   perPage?: number
 }
+
+/** The `category` value that selects payments carrying no segment at all. */
+export const UNCATEGORISED = 'none'
 
 export const PAYMENT_TYPES = ['cash', 'card', 'online'] as const
 
 /**
  * Payments for one company, filtered and paginated.
  *
- * Date and type filters run in SQL; the customer-name search is applied in
- * memory because the name lives on the joined `customers` row and PostgREST
- * cannot filter a parent table from an embedded select. The summary figures
- * are computed over the full filtered set, so they do not change as you page.
+ * Date and type filters run in SQL; the customer-name search and the segment
+ * filter are applied in memory. The name lives on the joined `customers` row,
+ * which PostgREST cannot filter a parent table by; the segment is in memory for
+ * a different and more important reason — see the filter itself below. The
+ * summary figures are computed over the full filtered set, so they do not
+ * change as you page.
  */
 export async function listPayments(opts: PaymentFilters): Promise<PaymentListResult> {
   const {
     companyId, from, to, type, query = '', agent = '', checked = '',
-    page = 1, perPage = 15,
+    category = '', page = 1, perPage = 15,
   } = opts
 
   const caps = await getSchemaCapabilities()
@@ -211,15 +225,42 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
   }))
 
   const needle = query.trim().toLowerCase()
-  const matched = needle
+  const byName = needle
     ? all.filter((r) => r.customerName.toLowerCase().includes(needle))
     : all
+
+  /**
+   * Segment filter, ON THE RESOLVED segmentId AND NOT IN SQL.
+   *
+   * `segmentId` is "the stamp (0018) if there is one, otherwise the customer's
+   * current category" — the rule the income breakdown has always used, decided
+   * per row a few lines above. A SQL `.eq('customer_misc_category_id', id)`
+   * would be a different rule: once 0018 is applied it would match only stamped
+   * rows and silently drop every payment taken before it, so the filter and the
+   * breakdown would give two different answers about the same money. Filtering
+   * here means there is exactly one definition of which segment a payment
+   * belongs to, and both readings of it agree by construction.
+   *
+   * It also means the filter needs no migration to work and needs no change
+   * when one arrives: apply 0018 and these same rows start resolving through
+   * their stamps, so a recategorised customer stops moving old payments,
+   * everywhere at once.
+   */
+  const wanted =
+    category === UNCATEGORISED ? null : category ? Number(category) : undefined
+  const matched =
+    wanted === undefined || (wanted !== null && !Number.isFinite(wanted))
+      ? byName
+      : byName.filter((r) => r.segmentId === wanted)
 
   const totalCollected = matched.reduce((sum, r) => sum + r.amount, 0)
 
   // FROM `matched`, NOT FROM A SECOND QUERY. Same rows as totalCollected, so
   // the breakdown sums back to it whatever combination of filters is applied,
-  // including the customer-name search that only exists in memory.
+  // including the two that only exist in memory — the customer-name search and
+  // the segment filter. Narrowing to one segment therefore collapses the
+  // breakdown to that segment, which is why the page hides it in that case
+  // rather than showing every other owner at zero.
   const categories = await summariseSegments(companyId, caps.catalog, matched)
   const pageCount = Math.max(1, Math.ceil(matched.length / perPage))
   const safePage = Math.min(Math.max(1, page), pageCount)

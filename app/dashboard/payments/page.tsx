@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 import { IncomeBySegment } from '@/components/payments/IncomeBySegment'
 import { PaymentFilters } from '@/components/payments/PaymentFilters'
 import { ReceiptButton } from '@/components/payments/ReceiptModal'
+import { listMiscCategories } from '@/lib/data/catalog'
 import { listPayments } from '@/lib/data/payments'
 import {
   PAYMENT_METHOD_LABELS, listAgents,
@@ -48,15 +49,17 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
   const query = one(sp.q) ?? ''
   const agent = one(sp.agent) ?? ''
   const checked = one(sp.checked) ?? ''
+  const category = one(sp.category) ?? ''
   const page = Math.max(1, Number(one(sp.page) ?? '1') || 1)
 
-  const [result, caps, agentList] = await Promise.all([
+  const [result, caps, agentList, miscCategories] = await Promise.all([
     listPayments({
       companyId: company.id,
-      from, to, type, query, agent, checked, page, perPage: PER_PAGE,
+      from, to, type, query, agent, checked, category, page, perPage: PER_PAGE,
     }),
     getSchemaCapabilities(),
     listAgents(company.id),
+    listMiscCategories(company.id),
   ])
 
   const agentNames = [...new Set(agentList.map((a) => a.name))].sort()
@@ -68,8 +71,9 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
   if (query) base.q = query
   if (agent) base.agent = agent
   if (checked) base.checked = checked
+  if (category) base.category = category
 
-  const filtered = Boolean(from || to || type || query || agent || checked)
+  const filtered = Boolean(from || to || type || query || agent || checked || category)
 
   return (
     <div className="space-y-4">
@@ -102,17 +106,27 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
           categories. Renders nothing when there are none, which is most
           companies — see lib/data/payments.ts#summariseSegments. Sits above the
           filter bar because it answers a question about the whole filtered set,
-          like the summary cards, rather than about the rows below it. */}
-      <IncomeBySegment
-        segments={result.categories}
-        totalCollected={result.totalCollected}
-        showOther={caps.otherPayments}
-      />
+          like the summary cards, rather than about the rows below it.
+
+          HIDDEN WHILE ONE CATEGORY IS SELECTED. The panel exists to show the
+          owners beside each other; with the list narrowed to one of them there
+          is nothing to compare, and because the breakdown is computed from the
+          same filtered rows as the headline total it would show the selected
+          owner against every other one at zero — which reads as "they collected
+          nothing", not as "you are looking at somebody else". */}
+      {category ? null : (
+        <IncomeBySegment
+          segments={result.categories}
+          totalCollected={result.totalCollected}
+          showOther={caps.otherPayments}
+        />
+      )}
 
       <PaymentFilters
         from={from} to={to} type={type} query={query}
-        agent={agent} checked={checked}
-        agents={agentNames} checkoffAvailable={caps.checkoff}
+        agent={agent} checked={checked} category={category}
+        agents={agentNames} categories={miscCategories}
+        checkoffAvailable={caps.checkoff}
       />
 
       <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
