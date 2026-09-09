@@ -3,6 +3,7 @@ import {
 } from '@/lib/data/checkoff'
 import { radiusIdentity } from '@/lib/radius/format'
 import { getSchemaCapabilities } from '@/lib/schema'
+import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 export type PaymentListRow = {
@@ -109,40 +110,54 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
     (caps.checkoff ? ', payment_method, checked_off' : '') +
     (caps.otherPayments ? ', paid_on, payment_kind, payment_categories(name)' : '')
 
-  let q = db
-    .from('payments')
-    .select(cols)
-    .eq('company_id', companyId)
-    .order('payment_date', { ascending: false })
+  // PAGED, so the whole filtered set is read rather than PostgREST's first
+  // 1000 rows. Everything below this line — the totals, the average, the
+  // segment breakdown and the export — is computed over these rows, so a
+  // truncated read would not shorten a list, it would understate money.
+  //
+  // The SQL filters are applied inside the page factory rather than to a
+  // builder held outside it: a Supabase builder is single-use, so each range
+  // needs its own.
+  const data = await fetchAllRows((offset, limit) => {
+    let q = db
+      .from('payments')
+      .select(cols)
+      .eq('company_id', companyId)
+      // payment_date is NOT UNIQUE, so it cannot be the only sort key for a
+      // paged read: two payments sharing a timestamp could come back in a
+      // different order between two requests and land in both pages or in
+      // neither. id breaks the tie and never repeats.
+      .order('payment_date', { ascending: false })
+      .order('id', { ascending: false })
 
-  // paid_on is the business date the cashier stated and is what a date range
-  // on this page means. payment_date is the timestamp the row was written with
-  // and only orders payments within a day. Before 0013 there is no paid_on, so
-  // the timestamp is filtered as it was.
-  if (caps.otherPayments) {
-    if (from) q = q.gte('paid_on', from)
-    // A DATE column needs no end-of-day boundary; the day itself is inclusive.
-    if (to) q = q.lte('paid_on', to)
-  } else {
-    if (from) q = q.gte('payment_date', from + 'T00:00:00')
-    // Inclusive of the whole end day.
-    if (to) q = q.lte('payment_date', to + 'T23:59:59')
-  }
-
-  if (type) {
-    if (caps.checkoff && (PAYMENT_METHODS as readonly string[]).includes(type)) {
-      q = q.eq('payment_method', type)
-    } else if ((PAYMENT_TYPES as readonly string[]).includes(type)) {
-      q = q.eq('payment_type', type)
+    // paid_on is the business date the cashier stated and is what a date range
+    // on this page means. payment_date is the timestamp the row was written
+    // with and only orders payments within a day. Before 0013 there is no
+    // paid_on, so the timestamp is filtered as it was.
+    if (caps.otherPayments) {
+      if (from) q = q.gte('paid_on', from)
+      // A DATE column needs no end-of-day boundary; the day itself is inclusive.
+      if (to) q = q.lte('paid_on', to)
+    } else {
+      if (from) q = q.gte('payment_date', from + 'T00:00:00')
+      // Inclusive of the whole end day.
+      if (to) q = q.lte('payment_date', to + 'T23:59:59')
     }
-  }
-  if (agent) q = q.eq('agent', agent)
-  if (caps.checkoff && (checked === 'yes' || checked === 'no')) {
-    q = q.eq('checked_off', checked === 'yes')
-  }
 
-  const { data, error } = await q
-  if (error) throw new Error('Failed to load payments: ' + error.message)
+    if (type) {
+      if (caps.checkoff && (PAYMENT_METHODS as readonly string[]).includes(type)) {
+        q = q.eq('payment_method', type)
+      } else if ((PAYMENT_TYPES as readonly string[]).includes(type)) {
+        q = q.eq('payment_type', type)
+      }
+    }
+    if (agent) q = q.eq('agent', agent)
+    if (caps.checkoff && (checked === 'yes' || checked === 'no')) {
+      q = q.eq('checked_off', checked === 'yes')
+    }
+
+    return q.range(offset, limit)
+  }, 'payments')
 
   type Row = {
     id: number
@@ -166,7 +181,7 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
     } | null
   }
 
-  const all: PaymentListRow[] = ((data ?? []) as unknown as Row[]).map((r) => ({
+  const all: PaymentListRow[] = (data as unknown as Row[]).map((r) => ({
     id: r.id,
     amount: Number(r.amount ?? 0),
     months_paid: r.months_paid,
