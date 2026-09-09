@@ -83,6 +83,7 @@ function HitList({ hits, showBalance }: { hits: CustomerHit[]; showBalance: bool
             <p className="truncate text-sm font-medium text-gray-200">{h.name}</p>
             <p className="truncate text-xs text-gray-500">
               {h.phone ?? '—'}
+              {h.address ? <span className="ml-2">{h.address}</span> : null}
               <span className="ml-2 font-mono">{h.mac_address ?? '—'}</span>
             </p>
           </div>
@@ -122,7 +123,7 @@ export function CsrDashboard({
         </Link>
       </div>
 
-      <SearchForm defaultValue={query} placeholder="Search customers by name, phone or MAC..." />
+      <SearchForm defaultValue={query} placeholder="Search name, phone, address, MAC or #id..." />
 
       {query ? (
         <Panel title="Search Results" subtitle={hits.length + ' found'} href={'/dashboard/customers?q=' + encodeURIComponent(query)} linkLabel="Open in full list">
@@ -171,7 +172,7 @@ export function CashierDashboard({
     <div className="space-y-5">
       <p className="text-sm text-gray-500">Collections desk</p>
 
-      <SearchForm defaultValue={query} placeholder="Search customer by name, phone or MAC..." />
+      <SearchForm defaultValue={query} placeholder="Search name, phone, address, MAC or #id..." />
 
       {query ? (
         <Panel title="Search Results" subtitle={hits.length + ' found'}>
@@ -241,7 +242,7 @@ export function TechnicianDashboard({
         {data.myTickets.length} assigned to you · {data.customersWithOpenTickets.length} customers with open issues
       </p>
 
-      <SearchForm defaultValue={query} placeholder="Search customer by name, phone or MAC..." />
+      <SearchForm defaultValue={query} placeholder="Search name, phone, address, MAC or #id..." />
 
       {query ? (
         <Panel title="Search Results" subtitle={hits.length + ' found'}>

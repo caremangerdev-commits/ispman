@@ -1,4 +1,5 @@
 import { withExpiry } from '@/lib/domain'
+import { searchClauses } from '@/lib/search'
 import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 import type { Customer, CustomerWithExpiry } from '@/lib/types'
@@ -46,6 +47,8 @@ export type CustomerHit = {
   id: number
   name: string
   phone: string | null
+  /** Shown on a hit, because the search matches on it. */
+  address: string | null
   mac_address: string | null
   /** carried_balance — the only column that carries real debt. */
   balance: number | string | null
@@ -57,32 +60,28 @@ export type CustomerHit = {
  * Cashier and technician both lack `view_customer_list`, so their dashboards
  * search inline instead of linking to /dashboard/customers. Returns only
  * identifying fields; callers decide whether to show the balance.
+ *
+ * Matches on the same fields as everywhere else — see lib/search.ts. This was
+ * a THIRD hand-rolled field list, and the one belonging to the role that needs
+ * it most: a cashier with no customer-list page has this box and nothing else,
+ * and it was the one search that could not find anybody by address.
  */
 export async function searchCustomersLite(
   companyId: number,
   query: string,
   limit = 8
 ): Promise<CustomerHit[]> {
-  const needle = query.trim()
-  if (!needle) return []
+  const clauses = searchClauses(query)
+  if (clauses.length === 0) return []
 
   const db = tenantClient()
-  const escaped = needle.replace(/[%,()]/g, '')
-  const pattern = '%' + escaped + '%'
-
-  const { data, error } = await db
+  let lookup = db
     .from('customers')
-    .select('id, first_name, last_name, phone, mac_address, carried_balance')
+    .select('id, first_name, last_name, phone, address, mac_address, carried_balance')
     .eq('company_id', companyId)
-    .or(
-      [
-        'first_name.ilike.' + pattern,
-        'last_name.ilike.' + pattern,
-        'phone.ilike.' + pattern,
-        'mac_address.ilike.' + pattern,
-      ].join(',')
-    )
-    .limit(limit)
+  for (const clause of clauses) lookup = lookup.or(clause)
+
+  const { data, error } = await lookup.limit(limit)
 
   if (error) throw new Error('Customer search failed: ' + error.message)
 
@@ -91,15 +90,16 @@ export async function searchCustomersLite(
     first_name: string | null
     last_name: string | null
     phone: string | null
+    address: string | null
     mac_address: string | null
     carried_balance: number | string | null
-    status: string | null
   }
 
   return ((data ?? []) as unknown as Row[]).map((r) => ({
     id: r.id,
     name: [r.first_name, r.last_name].filter(Boolean).join(' ') || 'Unknown',
     phone: r.phone,
+    address: r.address,
     mac_address: r.mac_address,
     // carried_balance, not balance: see lib/billing.ts. `balance` reads 0 for
     // everybody who actually owes, so a cashier looking a customer up at the
