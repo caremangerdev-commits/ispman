@@ -1,5 +1,6 @@
 import { withExpiry } from '@/lib/domain'
 import { getSchemaCapabilities } from '@/lib/schema'
+import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { lastNetworkEvents } from '@/lib/data/network-events'
@@ -135,17 +136,26 @@ export async function listCustomers(opts: {
 
   const db = tenantClient()
   const { sel } = await selectWithExtras()
-  const { data, error } = await db
-    .from('customers')
-    .select(sel)
-    .eq('company_id', companyId)
-    .order('id', { ascending: true })
 
-  if (error) throw new Error('Failed to load customers: ' + error.message)
+  // PAGED, NOT ONE SELECT. PostgREST caps an unranged read at 1000 rows and
+  // reports no error, so the company below would simply have stopped appearing
+  // in full — on the list, in the tab counts and in the search — with nothing
+  // to show for it. Ordered by id so the ranges are cut from a stable
+  // ordering; see lib/supabase/paging.ts.
+  const data = await fetchAllRows(
+    (from, to) =>
+      db
+        .from('customers')
+        .select(sel)
+        .eq('company_id', companyId)
+        .order('id', { ascending: true })
+        .range(from, to),
+    'customers'
+  )
 
   // withExpiry() spreads the row but its return type is fixed to Customer's
   // fields, so address is carried back on explicitly rather than cast in.
-  const all = ((data ?? []) as unknown as (Customer & { address: string | null })[])
+  const all = (data as unknown as (Customer & { address: string | null })[])
     .map((row) => withBillingDefaults(row) as Customer & { address: string | null })
     .map((row) => ({ ...withExpiry(row), address: row.address ?? null }))
 
