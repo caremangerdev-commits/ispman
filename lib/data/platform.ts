@@ -1,5 +1,6 @@
 import { bannedEmails } from '@/lib/data/users'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { fetchAllRows } from '@/lib/supabase/paging'
 
 /**
  * Platform-wide queries for the super admin section.
@@ -34,17 +35,31 @@ export async function getPlatformStats(): Promise<PlatformStats> {
     return new Date(n.getFullYear(), n.getMonth(), 1).toISOString()
   })()
 
-  const [companiesRes, customersRes, paymentsRes] = await Promise.all([
+  // These two are PLATFORM-WIDE — no company filter — so they cross the
+  // 1000-row ceiling sooner than anything scoped to one company, and they did.
+  // This page reported 682 customers for a company with 977 and 301 for one
+  // with 317: a 30% undercount rendered as a plain number with nothing to
+  // suggest it was short. See lib/supabase/paging.ts.
+  const [companiesRes, customers, payments] = await Promise.all([
     db.from('companies').select('id, name, plan, status, created_at').order('id'),
-    db.from('customers').select('id, company_id'),
-    db.from('payments').select('amount').gte('payment_date', startOfMonth),
+    fetchAllRows(
+      (from, to) =>
+        db.from('customers').select('id, company_id').order('id').range(from, to),
+      'customers'
+    ) as Promise<{ id: number; company_id: number }[]>,
+    fetchAllRows(
+      (from, to) =>
+        db
+          .from('payments')
+          .select('amount')
+          .gte('payment_date', startOfMonth)
+          .order('id')
+          .range(from, to),
+      'payments'
+    ) as Promise<{ amount: number | string }[]>,
   ])
 
   if (companiesRes.error) throw new Error('Failed to load companies: ' + companiesRes.error.message)
-  if (customersRes.error) throw new Error('Failed to load customers: ' + customersRes.error.message)
-  if (paymentsRes.error) throw new Error('Failed to load payments: ' + paymentsRes.error.message)
-
-  const customers = (customersRes.data ?? []) as unknown as { id: number; company_id: number }[]
 
   const perCompany = new Map<number, number>()
   for (const c of customers) {
@@ -64,7 +79,7 @@ export async function getPlatformStats(): Promise<PlatformStats> {
     customerCount: perCompany.get(c.id) ?? 0,
   }))
 
-  const revenueThisMonth = ((paymentsRes.data ?? []) as unknown as { amount: number | string }[])
+  const revenueThisMonth = payments
     .reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
 
   return {
@@ -140,7 +155,7 @@ export async function getCompanyDetail(companyId: number): Promise<CompanyDetail
     return new Date(n.getFullYear(), n.getMonth(), 1).toISOString()
   })()
 
-  const [companyRes, settingsRes, usersRes, customerRes, paymentRes] = await Promise.all([
+  const [companyRes, settingsRes, usersRes, customerRes, payments] = await Promise.all([
     db
       .from('companies')
       .select('id, name, email, phone, address, plan, status, created_at')
@@ -157,11 +172,21 @@ export async function getCompanyDetail(companyId: number): Promise<CompanyDetail
       .eq('company_id', companyId)
       .order('id', { ascending: true }),
     db.from('customers').select('id', { count: 'exact', head: true }).eq('company_id', companyId),
-    db
-      .from('payments')
-      .select('amount')
-      .eq('company_id', companyId)
-      .gte('payment_date', startOfMonth),
+    // Paged: this drives both paymentsThisMonth and revenueThisMonth, and a
+    // truncated read would understate the money a tenant took without saying
+    // so. The customer count above is a head request, which PostgREST answers
+    // with the real total and no rows, so the ceiling does not reach it.
+    fetchAllRows(
+      (from, to) =>
+        db
+          .from('payments')
+          .select('amount')
+          .eq('company_id', companyId)
+          .gte('payment_date', startOfMonth)
+          .order('id')
+          .range(from, to),
+      'payments'
+    ) as Promise<{ amount: number | string }[]>,
   ])
 
   if (companyRes.error) {
@@ -170,7 +195,6 @@ export async function getCompanyDetail(companyId: number): Promise<CompanyDetail
   if (!companyRes.data) return null
 
   if (usersRes.error) throw new Error('Failed to load users: ' + usersRes.error.message)
-  if (paymentRes.error) throw new Error('Failed to load payments: ' + paymentRes.error.message)
 
   // A missing settings row is a real state the page should surface, not an
   // error — step 2 of company creation can fail on its own.
@@ -178,8 +202,6 @@ export async function getCompanyDetail(companyId: number): Promise<CompanyDetail
 
   const rows = (usersRes.data ?? []) as unknown as Omit<CompanyDetailUser, 'active'>[]
   const banned = await bannedEmails()
-
-  const payments = (paymentRes.data ?? []) as unknown as { amount: number | string }[]
 
   return {
     company: companyRes.data as unknown as CompanyDetail['company'],

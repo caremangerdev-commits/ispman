@@ -1,4 +1,5 @@
 import { getSchemaCapabilities } from '@/lib/schema'
+import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 import type { AdditionalService, MiscCategory, ServicePlan } from '@/lib/types'
 
@@ -14,15 +15,24 @@ export type WithCount<T> = T & { customerCount: number }
 
 async function tallyCustomers(companyId: number, column: 'service_plan_id' | 'misc_category_id') {
   const db = tenantClient()
-  const { data, error } = await db
-    .from('customers')
-    .select(column)
-    .eq('company_id', companyId)
 
-  if (error) throw new Error('Failed to count customers: ' + error.message)
+  // Paged: this is a COUNT, shown beside each plan and category in settings,
+  // and a count is the worst thing to truncate — a short list looks short,
+  // whereas "412 customers" reads as authoritative whether or not the read
+  // stopped at 1000 rows. See lib/supabase/paging.ts.
+  const data = await fetchAllRows(
+    (from, to) =>
+      db
+        .from('customers')
+        .select(column)
+        .eq('company_id', companyId)
+        .order('id', { ascending: true })
+        .range(from, to),
+    'customers'
+  )
 
   const counts = new Map<number, number>()
-  for (const row of (data ?? []) as unknown as Record<string, number | null>[]) {
+  for (const row of data as Record<string, number | null>[]) {
     const id = row[column]
     if (id === null || id === undefined) continue
     counts.set(id, (counts.get(id) ?? 0) + 1)

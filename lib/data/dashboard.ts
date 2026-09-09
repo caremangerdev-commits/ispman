@@ -6,6 +6,7 @@ import {
   CUSTOMER_STATUSES, resolveStatus, STATUS_LABELS, type CustomerStatus,
 } from '@/lib/status'
 import { getSchemaCapabilities } from '@/lib/schema'
+import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { percentChange, withExpiry } from '@/lib/domain'
 import type {
@@ -112,30 +113,51 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
     String(d.getMonth() + 1).padStart(2, '0') + '-' +
     String(d.getDate()).padStart(2, '0')
 
-  const [customersRes, paymentsRes, recentPaymentsRes, ticketsRes, logRes] =
+  const [customerRows, paymentRows, recentPaymentsRes, ticketsRes, logRes] =
     await Promise.all([
       // The customer set for an ISP branch is small enough to read whole, and
       // expiry is a derived value Postgres has no column for — so bucketing
       // happens here rather than in SQL. Revisit with a view if this grows.
-      supabase
-        .from('customers')
-        .select(
-          'id, first_name, last_name, email, phone, mac_address, monthly_rate, balance, last_bill_date, date_added' +
-          // Only once 0011 exists: PostgREST rejects the whole query for one
-          // unknown column. Without them every row reads as prepaid below,
-          // which is how the app treated everybody before that migration.
-          (caps.billing ? ', billing_type, carried_balance, account_credit, bill_date, last_billed_date' : '')
-        )
-        .eq('company_id', companyId),
+      //
+      // PAGED. "Small enough to read whole" was true of the intent and not of
+      // the query: an unranged select stops at 1000 rows without an error, so
+      // every count below — the status donut, the recurring-revenue line —
+      // would have quietly described the first 1000 customers and called it
+      // the company. See lib/supabase/paging.ts.
+      fetchAllRows(
+        (from, to) =>
+          supabase
+            .from('customers')
+            .select(
+              'id, first_name, last_name, email, phone, mac_address, monthly_rate, balance, last_bill_date, date_added' +
+              // Only once 0011 exists: PostgREST rejects the whole query for one
+              // unknown column. Without them every row reads as prepaid below,
+              // which is how the app treated everybody before that migration.
+              (caps.billing ? ', billing_type, carried_balance, account_credit, bill_date, last_billed_date' : '')
+            )
+            .eq('company_id', companyId)
+            .order('id', { ascending: true })
+            .range(from, to),
+        'customers'
+      ),
 
-      supabase
-        .from('payments')
-        .select('amount, payment_date' + (caps.otherPayments ? ', paid_on' : ''))
-        .eq('company_id', companyId)
-        .gte(
-          caps.otherPayments ? 'paid_on' : 'payment_date',
-          caps.otherPayments ? asYmd(sixMonthsAgo) : sixMonthsAgo.toISOString()
-        ),
+      // Six months of payments, and the six-month revenue chart is summed from
+      // exactly these rows — so a truncated read would draw a revenue line
+      // that is simply too low, with no way to tell from the chart.
+      fetchAllRows(
+        (from, to) =>
+          supabase
+            .from('payments')
+            .select('amount, payment_date' + (caps.otherPayments ? ', paid_on' : ''))
+            .eq('company_id', companyId)
+            .gte(
+              caps.otherPayments ? 'paid_on' : 'payment_date',
+              caps.otherPayments ? asYmd(sixMonthsAgo) : sixMonthsAgo.toISOString()
+            )
+            .order('id', { ascending: true })
+            .range(from, to),
+        'payments'
+      ),
 
       supabase
         .from('payments')
@@ -159,9 +181,9 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
         .limit(8),
     ])
 
+  // The two paged reads above throw on failure from inside fetchAllRows, so
+  // only the bounded ones are checked here.
   for (const [name, res] of Object.entries({
-    customers: customersRes,
-    payments: paymentsRes,
     recentPayments: recentPaymentsRes,
     tickets: ticketsRes,
     log: logRes,
@@ -173,10 +195,10 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
   // the 0011 columns as always present, and before that migration the select
   // above does not fetch them at all. The cast used to assert five fields onto
   // rows that did not carry them.
-  const customers = ((customersRes.data ?? []) as unknown as Record<string, unknown>[])
+  const customers = (customerRows as Record<string, unknown>[])
     .map((row) => withBillingDefaults(row) as unknown as Customer)
     .map(withExpiry)
-  const payments = (paymentsRes.data ?? []) as unknown as {
+  const payments = paymentRows as {
     amount: number | string
     payment_date: string
     paid_on?: string | null

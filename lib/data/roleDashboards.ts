@@ -1,4 +1,5 @@
 import { withExpiry } from '@/lib/domain'
+import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 import type { Customer, CustomerWithExpiry } from '@/lib/types'
 
@@ -120,14 +121,24 @@ export async function getCsrDashboard(
   const db = tenantClient()
   const today = new Date().toISOString().slice(0, 10)
 
-  const [myTickets, addedRes, openRes] = await Promise.all([
+  const [myTickets, added, openRes] = await Promise.all([
     ticketsAssignedTo(companyId, userId),
-    db
-      .from('customers')
-      .select('id, first_name, last_name, email, phone, mac_address, monthly_rate, balance, last_bill_date, date_added')
-      .eq('company_id', companyId)
-      .eq('date_added', today)
-      .order('id', { ascending: false }),
+    // One day's signups, so this is nowhere near the 1000-row ceiling on an
+    // ordinary day. A bulk import is not an ordinary day: it stamps every row
+    // it creates with today's date, and this company has 977 customers — one
+    // import of the book would put the whole of it in here. Paged for that
+    // day rather than for the average one.
+    fetchAllRows(
+      (from, to) =>
+        db
+          .from('customers')
+          .select('id, first_name, last_name, email, phone, mac_address, monthly_rate, balance, last_bill_date, date_added')
+          .eq('company_id', companyId)
+          .eq('date_added', today)
+          .order('id', { ascending: false })
+          .range(from, to),
+      'new customers'
+    ),
     db
       .from('support_tickets')
       .select('id', { count: 'exact', head: true })
@@ -135,11 +146,9 @@ export async function getCsrDashboard(
       .in('status', OPEN_STATES),
   ])
 
-  if (addedRes.error) throw new Error('Failed to load new customers: ' + addedRes.error.message)
-
   return {
     myTickets,
-    addedToday: ((addedRes.data ?? []) as unknown as Customer[]).map(withExpiry),
+    addedToday: (added as Customer[]).map(withExpiry),
     openTicketCount: openRes.count ?? 0,
   }
 }
@@ -164,13 +173,22 @@ export async function getCashierDashboard(
   const db = tenantClient()
   const since = startOfTodayIso()
 
-  const [todayRes, recentRes] = await Promise.all([
-    db
-      .from('payments')
-      .select('amount')
-      .eq('company_id', companyId)
-      .eq('agent', agentName)
-      .gte('payment_date', since),
+  const [collected, recentRes] = await Promise.all([
+    // Both numbers on this card are read off these rows — what the cashier
+    // collected today and how many payments that was. Neither would look wrong
+    // if the read stopped short.
+    fetchAllRows(
+      (from, to) =>
+        db
+          .from('payments')
+          .select('amount')
+          .eq('company_id', companyId)
+          .eq('agent', agentName)
+          .gte('payment_date', since)
+          .order('id', { ascending: true })
+          .range(from, to),
+      'collections'
+    ),
     db
       .from('payments')
       .select('id, amount, payment_type, payment_date, customers(first_name, last_name)')
@@ -181,10 +199,9 @@ export async function getCashierDashboard(
       .limit(10),
   ])
 
-  if (todayRes.error) throw new Error('Failed to load collections: ' + todayRes.error.message)
   if (recentRes.error) throw new Error('Failed to load payments: ' + recentRes.error.message)
 
-  const rows = (todayRes.data ?? []) as { amount: number | string }[]
+  const rows = collected as { amount: number | string }[]
 
   return {
     collectedToday: rows.reduce((sum, r) => sum + Number(r.amount ?? 0), 0),
@@ -209,16 +226,22 @@ export async function getTechnicianDashboard(
 ): Promise<TechnicianDashboard> {
   const db = tenantClient()
 
-  const [myTickets, openRes] = await Promise.all([
+  const [myTickets, openTickets] = await Promise.all([
     ticketsAssignedTo(companyId, userId),
-    db
-      .from('support_tickets')
-      .select('customer_id, customers(id, first_name, last_name, mac_address)')
-      .eq('company_id', companyId)
-      .in('status', OPEN_STATES),
+    // Tallied per customer below, so this read decides an open-ticket count
+    // shown against each one — the same reason as everywhere else in this file.
+    fetchAllRows(
+      (from, to) =>
+        db
+          .from('support_tickets')
+          .select('customer_id, customers(id, first_name, last_name, mac_address)')
+          .eq('company_id', companyId)
+          .in('status', OPEN_STATES)
+          .order('id', { ascending: true })
+          .range(from, to),
+      'open tickets'
+    ),
   ])
-
-  if (openRes.error) throw new Error('Failed to load open tickets: ' + openRes.error.message)
 
   type Row = {
     customer_id: number | null
@@ -232,7 +255,7 @@ export async function getTechnicianDashboard(
 
   // Collapse many open tickets per customer into one row with a count.
   const byCustomer = new Map<number, TechnicianDashboard['customersWithOpenTickets'][number]>()
-  for (const row of (openRes.data ?? []) as unknown as Row[]) {
+  for (const row of openTickets as Row[]) {
     const c = row.customers
     if (!c) continue
     const existing = byCustomer.get(c.id)

@@ -1,4 +1,5 @@
 import { getSchemaCapabilities } from '@/lib/schema'
+import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { getProvisionedIdentities } from '@/lib/radius-db'
 import { usernameKey } from '@/lib/radius/format'
@@ -18,9 +19,13 @@ import { radiusIdentity } from '@/lib/radius/format'
  * For a "set ALL cut off dates" or "provision ALL" button that cap is not a
  * performance detail, it is a silent wrong answer: customer 1001 onwards would
  * be missing from the count the operator confirms and from the work that
- * follows. So every read here pages explicitly until it sees a short page.
+ * follows. So every read here pages.
+ *
+ * This module got that right on its own and used to page with its own loop.
+ * The loop now lives in lib/supabase/paging.ts, because the rest of the app
+ * did not get it right and needed the same thing — one implementation is one
+ * place to fix if the ceiling or the ordering rule ever changes.
  */
-const PAGE = 1000
 
 /** How many identities go into one `username IN (…)` list. */
 const RADCHECK_CHUNK = 500
@@ -47,34 +52,26 @@ async function readAllCustomers(companyId: number): Promise<BulkCustomer[]> {
     'id, first_name, last_name, mac_address, cut_off_date' +
     (caps.connectionTypes ? ', customer_type, pppoe_username' : '')
 
-  const out: BulkCustomer[] = []
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await db
-      .from('customers')
-      .select(columns)
-      .eq('company_id', companyId)
-      .order('id', { ascending: true })
-      .range(from, from + PAGE - 1)
+  const rows = await fetchAllRows(
+    (from, to) =>
+      db
+        .from('customers')
+        .select(columns)
+        .eq('company_id', companyId)
+        .order('id', { ascending: true })
+        .range(from, to),
+    'customers'
+  )
 
-    if (error) throw new Error('Failed to load customers: ' + error.message)
-
-    const rows = (data ?? []) as unknown as Record<string, unknown>[]
-    for (const row of rows) {
-      out.push({
-        id: row.id as number,
-        first_name: (row.first_name as string | null) ?? null,
-        last_name: (row.last_name as string | null) ?? null,
-        mac_address: (row.mac_address as string | null) ?? null,
-        customer_type: (row.customer_type as string | null) ?? null,
-        pppoe_username: (row.pppoe_username as string | null) ?? null,
-        cut_off_date: (row.cut_off_date as number | null) ?? null,
-      })
-    }
-
-    if (rows.length < PAGE) break
-  }
-
-  return out
+  return (rows as Record<string, unknown>[]).map((row) => ({
+    id: row.id as number,
+    first_name: (row.first_name as string | null) ?? null,
+    last_name: (row.last_name as string | null) ?? null,
+    mac_address: (row.mac_address as string | null) ?? null,
+    customer_type: (row.customer_type as string | null) ?? null,
+    pppoe_username: (row.pppoe_username as string | null) ?? null,
+    cut_off_date: (row.cut_off_date as number | null) ?? null,
+  }))
 }
 
 export function bulkCustomerName(customer: BulkCustomer): string {
@@ -182,24 +179,19 @@ export async function readBillableCustomers(companyId: number): Promise<Billable
 
   const db = tenantClient()
   const cols = await billableColumns()
-  const out: BillableCustomer[] = []
 
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await db
-      .from('customers')
-      .select(cols)
-      .eq('company_id', companyId)
-      .order('id', { ascending: true })
-      .range(from, from + PAGE - 1)
+  const rows = await fetchAllRows(
+    (from, to) =>
+      db
+        .from('customers')
+        .select(cols)
+        .eq('company_id', companyId)
+        .order('id', { ascending: true })
+        .range(from, to),
+    'billable customers'
+  )
 
-    if (error) throw new Error('Failed to load billable customers: ' + error.message)
-
-    const rows = (data ?? []) as unknown as Record<string, unknown>[]
-    for (const row of rows) out.push(toBillable(row))
-    if (rows.length < PAGE) break
-  }
-
-  return out
+  return (rows as Record<string, unknown>[]).map(toBillable)
 }
 
 /**
