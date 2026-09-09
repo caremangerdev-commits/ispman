@@ -201,7 +201,11 @@ export function CashierDashboard({
         </div>
       </div>
 
-      <Panel title="My Payments Today" subtitle={'Last ' + data.recentPayments.length} href="/dashboard/payments" linkLabel="View All Payments">
+      {/* No "View All Payments" link any more: a cashier does not hold
+          view_all_payments, so it led straight to an access-denied bounce.
+          Their full collections — running totals since checkoff, and the
+          payments behind them — are on the record-payment screen above. */}
+      <Panel title="My Payments Today" subtitle={'Last ' + data.recentPayments.length}>
         {data.recentPayments.length === 0 ? (
           <EmptyState message="You have not recorded any payments today." />
         ) : (

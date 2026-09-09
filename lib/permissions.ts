@@ -72,7 +72,26 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // may not decide what is owed.
   adjust_carried_balance: ['super_admin', 'company_admin', 'manager'],
   record_payment: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
-  view_all_payments: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
+  // The whole payments book — every payment the company has ever taken, by
+  // anyone. NARROWED FROM csr AND cashier, who used to hold this.
+  //
+  // Taking money and reviewing all of it are different jobs. A cashier cashes
+  // up against their OWN collections, which the record-payment screen shows
+  // them directly: running totals since their last checkoff and the list of
+  // payments behind them (components/payments/MyCollections.tsx). That is the
+  // figure they answer for, and it is a better one for the purpose than the
+  // company-wide list, which was never scoped to them or to the checkoff
+  // boundary.
+  //
+  // A CSR keeps the answer to "did this customer's payment go through" — the
+  // Payment History on the customer's own record, which
+  // view_customer_billing_history still grants them.
+  //
+  // The role list is currently IDENTICAL to view_revenue_reports and the two
+  // are deliberately not merged: this one means "may read the payments book",
+  // that one means "may see aggregate revenue". Handing a CSR the list back
+  // should not also hand them revenue reporting.
+  view_all_payments: ['super_admin', 'company_admin', 'manager'],
   // Correcting a recorded payment is a management action: a cashier may take a
   // payment but may not go back and restate one.
   edit_payment: ['super_admin', 'company_admin', 'manager'],

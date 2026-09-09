@@ -37,7 +37,9 @@ export default async function PaymentDetailPage({
   const paymentId = Number(id)
   if (!Number.isInteger(paymentId)) notFound()
 
-  // Same gate as the payments list: company_admin, manager, csr and cashier.
+  // Same gate as the payments list: manager and above. A payment's detail page
+  // is part of the payments book, so it moves with it — otherwise removing the
+  // list would leave every row still reachable by id.
   const { company, profile } = await requirePermission('view_all_payments')
 
   const payment = await getPayment(company.id, paymentId)

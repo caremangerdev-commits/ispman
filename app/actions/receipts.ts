@@ -16,6 +16,11 @@ import { getSession } from '@/lib/session'
  * Gated on being able to record a payment OR to view all payments: a cashier
  * must be able to reprint a receipt for the payment they just took, and a
  * manager must be able to reprint one they did not.
+ *
+ * THIS IS WHY A CASHIER KEEPS RECEIPTS after view_all_payments narrowed to
+ * manager and above: record_payment is held by every role, so the first half
+ * of the check still passes for them. Reprinting the receipt for a payment you
+ * took is part of taking it.
  */
 export async function loadReceipt(paymentId: number): Promise<Receipt | null> {
   // [perf] TEMPORARY instrumentation

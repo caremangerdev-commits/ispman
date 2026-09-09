@@ -36,8 +36,11 @@ function hrefWith(base: Record<string, string>, patch: Record<string, string | n
 }
 
 export default async function PaymentsPage({ searchParams }: PageProps<'/dashboard/payments'>) {
-  // company_admin, manager, csr and cashier hold view_all_payments; technician
-  // does not, so this guard matches the required access list exactly.
+  // MANAGER AND ABOVE. This is the enforcement, not the hidden nav item —
+  // requirePermission runs on the server for every request, so typing the URL
+  // fails exactly as following a link would. A csr or cashier who reaches here
+  // is bounced to their own home with ?denied=, so they are told why rather
+  // than silently redirected. See lib/permissions.ts#view_all_payments.
   const { company, profile } = await requirePermission('view_all_payments')
 
   const sp = await searchParams

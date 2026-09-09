@@ -20,12 +20,14 @@ import { getSession } from '@/lib/session'
  * built its own query would agree with the page until the day somebody changed
  * one of them.
  *
- * GATED ABOVE THE PAGE ITSELF. view_all_payments (which includes csr and
- * cashier) lets you read the book a page at a time; this hands over all of it
- * in a file, which is a different act. It sits on view_revenue_reports —
- * manager and above — the same line import_customers draws for bulk data
- * moving the other way. The button is hidden for everyone else AND this check
- * stands on its own, because a hidden button is not access control.
+ * GATED ON view_revenue_reports — manager and above, the same line
+ * import_customers draws for bulk data moving the other way. That is now the
+ * same set of roles view_all_payments grants, so nobody who can reach the page
+ * is refused the button; the two permissions are kept separate anyway because
+ * they mean different things and can diverge again. See lib/permissions.ts.
+ *
+ * The check stands on its own regardless of who sees the button, because a
+ * hidden button is not access control.
  */
 export async function GET(request: NextRequest) {
   const { company, profile } = await getSession()
