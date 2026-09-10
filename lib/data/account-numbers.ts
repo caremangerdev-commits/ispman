@@ -1,6 +1,6 @@
 import 'server-only'
 
-import { formatAccountNumber, normalisePrefix } from '@/lib/account-number'
+import { ACCOUNT_SEQ_BASE, formatAccountNumber, normalisePrefix } from '@/lib/account-number'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -10,6 +10,44 @@ import { tenantClient } from '@/lib/supabase/tenant'
  * The number itself is spelled by lib/account-number.ts; this decides WHICH
  * number, which is the part that has to be right under concurrency.
  */
+
+/**
+ * Gives a company its counter row, if it does not have one.
+ *
+ * MUST BE CALLED WHEN A COMPANY IS CREATED. Migration 0020 seeded a counter for
+ * every company that existed the day it ran, and nothing created one after —
+ * so the first tenant made afterwards had customers whose account_number came
+ * back null, silently, because allocateAccountNumber returns null when there is
+ * no counter to take from. That is exactly what happened to Vernon
+ * Communications: 1,276 customers, no account numbers.
+ *
+ * Idempotent by primary key, so calling it twice is free and calling it on a
+ * company that already has customers cannot renumber anybody.
+ */
+export async function ensureAccountCounter(companyId: number): Promise<boolean> {
+  const caps = await getSchemaCapabilities()
+  if (!caps.accountNumbers) return false
+
+  const db = tenantClient()
+  const { data: existing } = await db
+    .from('account_counters')
+    .select('company_id')
+    .eq('company_id', companyId)
+    .maybeSingle()
+
+  if (existing) return true
+
+  const { error } = await db
+    .from('account_counters')
+    .insert({ company_id: companyId, next_value: ACCOUNT_SEQ_BASE + 1 })
+
+  if (error) {
+    console.error('[account-numbers] could not seed a counter for company %d: %s',
+      companyId, error.message)
+    return false
+  }
+  return true
+}
 
 /**
  * The company's prefix, or null. Read separately from the rest of settings
@@ -43,6 +81,10 @@ async function prefixFor(companyId: number): Promise<string | null> {
 export async function allocateAccountNumber(companyId: number): Promise<string | null> {
   const caps = await getSchemaCapabilities()
   if (!caps.accountNumbers) return null
+
+  // Seeded on demand so a company created before this existed still issues
+  // numbers rather than silently handing out nulls.
+  await ensureAccountCounter(companyId)
 
   const issued = await bumpCounter(companyId)
   if (issued === null) return null

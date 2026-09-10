@@ -61,6 +61,13 @@ const PAYMENTS_SINCE = '2026-03-04'
  */
 const HISTORICAL_MONTHS_PAID = 1
 
+/**
+ * Mirrors lib/account-number.ts#ACCOUNT_SEQ_BASE. Duplicated rather than
+ * imported because this is a plain node script and that is a TypeScript module
+ * behind the @/ alias; if the app's base ever changes, change it here too.
+ */
+const ACCOUNT_SEQ_BASE = 10000
+
 const CUSTOMER_CHUNK = 100
 const PAYMENT_CHUNK = 200
 
@@ -689,6 +696,19 @@ async function main() {
         )
       }
       console.log('  created its settings row')
+
+      // Without this the company issues null account numbers, silently — the
+      // defect that left Vernon's 1,276 customers unnumbered on the first run.
+      const { error: ctrError } = await supabase
+        .from('account_counters')
+        .insert({ company_id: COMPANY_ID, next_value: ACCOUNT_SEQ_BASE + 1 })
+      if (ctrError) {
+        throw new Error(
+          'Company #' + COMPANY_ID + ' exists but its account-number counter failed: ' +
+          ctrError.message + '. Every customer below would get a null account number.'
+        )
+      }
+      console.log('  created its account-number counter (next ' + (ACCOUNT_SEQ_BASE + 1) + ')')
     }
   }
 

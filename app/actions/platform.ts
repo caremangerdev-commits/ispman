@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
+import { ensureAccountCounter } from '@/lib/data/account-numbers'
 import { CURRENCIES, TIMEZONES } from '@/lib/data/company'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -285,6 +286,23 @@ export async function createCompany(
       'Step 2 of 4 failed — settings: ' + settingsError.message + '.' + leftBehind +
       ' with no settings row, so it will fall back to app defaults. Add a settings' +
       ' row for company #' + companyId + ', or delete the company and start again.'
+    )
+  }
+
+  // The account-number counter. Migration 0020 seeded one for every company
+  // that existed the day it was applied and nothing created one afterwards, so
+  // every tenant made since has been handing out null account numbers without
+  // saying so — 1,276 of them in one case. A company is not fully created
+  // until it can issue a number.
+  //
+  // Not fatal if it fails: the company and its settings already exist and are
+  // usable, and allocateAccountNumber seeds the row on demand the first time
+  // somebody adds a customer. Reported so it is not a silent degradation.
+  if (!(await ensureAccountCounter(companyId))) {
+    console.warn(
+      '[platform] company #%d was created without an account-number counter; ' +
+      'the first customer added will seed one.',
+      companyId
     )
   }
 

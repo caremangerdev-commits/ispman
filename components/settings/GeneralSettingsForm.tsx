@@ -249,7 +249,7 @@ export function GeneralSettingsForm({
             <Field
               label="Account number prefix"
               htmlFor="account_number_prefix"
-              hint="Optional. Applies to new customers only; existing numbers keep the form they were issued in."
+              hint="Optional. Two or three letters, e.g. EZ or VCL. Applies to new customers only; existing numbers keep the form they were issued in."
             >
               <input
                 id="account_number_prefix"
