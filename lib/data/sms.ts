@@ -105,6 +105,15 @@ export type SmsDevice = {
   apiPassword: string | null
   simNumber: number | null
   lastSeenAt: string | null
+  /**
+   * Minutes since the relay last heard from the phone, or null if it never has.
+   *
+   * COMPUTED HERE, not in the page. Reading the clock inside a render — server
+   * component or client — makes what the page says depend on when React happens
+   * to run it, which is exactly what react-hooks/purity forbids. A data
+   * function is allowed to know what time it is; a render is not.
+   */
+  lastSeenMinutesAgo: number | null
 }
 
 export async function getSmsDevice(companyId: number): Promise<SmsDevice | null> {
@@ -139,6 +148,9 @@ export async function getSmsDevice(companyId: number): Promise<SmsDevice | null>
     apiPassword: d.api_password,
     simNumber: d.sim_number,
     lastSeenAt: d.last_seen_at,
+    lastSeenMinutesAgo: d.last_seen_at
+      ? Math.round((Date.now() - new Date(d.last_seen_at).getTime()) / 60000)
+      : null,
   }
 }
 

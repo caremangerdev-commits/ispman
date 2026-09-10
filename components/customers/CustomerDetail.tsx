@@ -22,6 +22,7 @@ import { GpsLink } from '@/components/ui/GpsLink'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
 import { daysUntilDateOnly, formatCurrency, formatDateOnly, timeAgo } from '@/lib/format'
 import { can, type Role } from '@/lib/permissions'
+import { SmsOptOut } from '@/components/customers/SmsOptOut'
 // From format.ts, not client.ts: this is a client component and client.ts
 // pulls in mysql2.
 import { formatBytes, type RadiusStatus } from '@/lib/radius/format'
@@ -59,6 +60,9 @@ export type DetailCustomer = {
   country: string | null
   /** migration 0020 */
   accountNumber: string | null
+  /** migration 0021 */
+  smsAvailable: boolean
+  smsOptedOut: boolean
   /** migration 0011 */
   billingAvailable: boolean
   billingType: BillingType
@@ -532,6 +536,18 @@ export function CustomerDetail({
           <Row label="Phone" value={c.phone ?? '—'} editing={editing} name="phone" defaultValue={c.phone ?? ''} />
           <Row label="Email" value={c.email ?? '—'} editing={editing} name="email" type="email" defaultValue={c.email ?? ''} />
           <Row label="Address" value={c.address ?? '—'} editing={editing} name="address" defaultValue={c.address ?? ''} />
+
+          {/* Outside the edit form on purpose: this is not a field staff fill
+              in, it is a request the customer made, and honouring it should be
+              one click while they are still on the phone. Hidden entirely until
+              migration 0021 is applied. */}
+          {c.smsAvailable ? (
+            <SmsOptOut
+              customerId={c.id}
+              optedOut={c.smsOptedOut}
+              canEdit={can(role, 'edit_customer')}
+            />
+          ) : null}
 
           {/* NOT EDITABLE. An account number is issued once and never reissued
               — it is on receipts already handed over and in customers' own

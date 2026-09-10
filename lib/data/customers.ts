@@ -280,6 +280,10 @@ export type CustomerDetail = CustomerWithExpiry & {
   taxId: string | null
   /** Migration 0020. */
   accountNumber: string | null
+  /** Migration 0021. False until it is applied — before that nobody could opt
+   *  out, so 'not opted out' is the truthful default rather than a guess. */
+  smsOptedOut: boolean
+  smsAvailable: boolean
   billingAvailable: boolean
   billingType: BillingType
   /** null when migration 0003 has not been applied. */
@@ -359,6 +363,10 @@ export async function getCustomer(
     accountNumber: caps.accountNumbers
       ? ((row as { account_number?: string | null }).account_number ?? null)
       : null,
+    smsOptedOut: caps.sms
+      ? Boolean((row as { sms_opted_out?: boolean }).sms_opted_out)
+      : false,
+    smsAvailable: caps.sms,
     billingAvailable: caps.billing,
     billingType: toBillingType(caps.billing ? row.billing_type : 'prepaid'),
     customerType: caps.connectionTypes ? toCustomerType(row.customer_type) : null,

@@ -1,7 +1,7 @@
 import { can, type Permission, type Role } from '@/lib/permissions'
 
 export type SettingsIcon =
-  | 'building' | 'gauge' | 'package' | 'tags' | 'users' | 'userCog'
+  | 'building' | 'gauge' | 'package' | 'tags' | 'users' | 'userCog' | 'messageSquare'
 
 export type SettingsSection = {
   key: string
@@ -12,6 +12,8 @@ export type SettingsSection = {
   permission: Permission
   /** Needs migration 0005. */
   needsCatalog?: boolean
+  /** Needs migration 0021. */
+  needsSms?: boolean
 }
 
 /**
@@ -53,6 +55,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: 'Classify customers as school, hotel, government and so on.',
     permission: 'manage_company_settings',
     needsCatalog: true,
+  },
+  {
+    key: 'sms',
+    label: 'SMS Notifications',
+    href: '/dashboard/settings/sms',
+    icon: 'messageSquare',
+    description: 'Pair a phone, choose which messages send, and edit their wording.',
+    permission: 'manage_company_settings',
+    needsSms: true,
   },
   {
     key: 'users',

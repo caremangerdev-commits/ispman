@@ -101,6 +101,8 @@ export default async function CustomerDetailPage({
           taxIdLabel: taxIdLabel(settings.taxIdLabel, settings.country),
           country: settings.country || null,
           accountNumber: customer.accountNumber,
+          smsAvailable: customer.smsAvailable,
+          smsOptedOut: customer.smsOptedOut,
           billingAvailable: customer.billingAvailable,
           billingType: customer.billingType,
           bill_date: customer.bill_date,

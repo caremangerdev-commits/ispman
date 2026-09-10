@@ -89,6 +89,26 @@ export function formatRelativeDate(input: string | Date | null | undefined): str
 }
 
 /**
+ * An INSTANT, rendered as a date and a time in the viewer's zone.
+ *
+ * For timestamptz columns only — never for a DATE. `formatDateOnly` exists for
+ * those, and the long comment below says why mixing the two moves the day.
+ *
+ * Used where the exact moment is part of a record rather than a convenience:
+ * when a batch of messages went out, when one of them was delivered. `timeAgo`
+ * is the right choice everywhere the reader only wants "recently".
+ */
+export function formatDateTime(input: string | Date | null | undefined): string {
+  if (!input) return '—'
+  const d = new Date(input)
+  if (!Number.isFinite(d.getTime())) return '—'
+  return d.toLocaleString(LOCALE, {
+    day: 'numeric', month: 'short', year: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  })
+}
+
+/**
  * The calendar date inside a date-only value, as plain numbers.
  *
  * A DATE column ("2026-09-15") is a CALENDAR DATE, not an instant. It has no

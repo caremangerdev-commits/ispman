@@ -54,6 +54,16 @@ const SECTIONS: NavSection[] = [
     ],
   },
   {
+    // Its own section rather than an item under Customers: this is the only
+    // place in the app that speaks to customers directly, and burying it under
+    // a list of them would make it easy to open by accident.
+    heading: 'Messaging',
+    requireAny: ['send_bulk_sms'],
+    items: [
+      { label: 'Send a Message', href: '/dashboard/messages', icon: 'messageSquare', permission: 'send_bulk_sms' },
+    ],
+  },
+  {
     heading: 'Support',
     requireAny: ['view_support_tickets', 'create_ticket'],
     items: [
