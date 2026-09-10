@@ -77,7 +77,36 @@ const opts = Object.fromEntries(
 const positional = argv.filter((a) => !a.startsWith('--'))
 
 const SCHEMA = positional[0]
-const COMPANY_ID = Number(positional[1])
+
+/**
+ * The ISPMan company to load into, or the literal `new` to have STEP -1 make
+ * one. `let` because creating it is what fills this in.
+ */
+let COMPANY_ID = Number(positional[1])
+const NEW_COMPANY = String(positional[1] ?? '').toLowerCase() === 'new'
+
+/**
+ * Actually create the company, rather than only printing what it would be.
+ *
+ * SEPARATE FROM `new` ON PURPOSE. `new` says which company to target; this says
+ * go ahead and make it. Without this flag the run prints the payload and stops
+ * before STEP 0, so the seven legacy-backed fields can be read before a tenant
+ * exists.
+ */
+const CREATE_COMPANY = flags.has('--create-company')
+
+/**
+ * Currency and timezone, which the legacy database DOES NOT HOLD.
+ *
+ * cld_users.companies has no column for either and no per-schema settings row
+ * supplies them, so there is nothing to migrate and any value the script picked
+ * would be its own invention. Required explicitly when creating rather than
+ * defaulted to JMD/America/Jamaica, because "every one of these is Jamaican so
+ * far" is a pattern, not a fact about the next one.
+ */
+const CURRENCY = opts.currency
+const TIMEZONE = opts.timezone
+
 const CSV_PATH = opts.csv
 const DRY_RUN = flags.has('--dry-run')
 /** Allows a run against a company that already holds customers. */
@@ -111,25 +140,45 @@ const CLD_COMPANY_ID = Number(opts.cld)
 const FROM_DB = flags.has('--from-db')
 
 if (
-  !SCHEMA || !Number.isInteger(COMPANY_ID) ||
+  !SCHEMA || (!Number.isInteger(COMPANY_ID) && !NEW_COMPANY) ||
   !Number.isInteger(CLD_COMPANY_ID) ||
   (!CSV_PATH && !FROM_DB) || (CSV_PATH && FROM_DB)
 ) {
   console.error(
-    'Usage: node scripts/migrate-legacy-company.mjs <schema> <company_id> \\\n' +
-    '         (--csv=<path> | --from-db) --cld=<cld_users company_id> [--dry-run] [--force]\n\n' +
-    '  --cld     the id in cld_users.companies, e.g. 1 = West Central,\n' +
-    '            3 = Vernon Communications, 7 = Smartcomm, 8 = Smartcomm Bogue.\n' +
-    '  --csv     a curated export whose notes carry "Legacy #<id>".\n' +
-    '  --from-db read customers straight from <schema>.customers.\n' +
-    '            Exactly one of --csv and --from-db.'
+    'Usage: node scripts/migrate-legacy-company.mjs <schema> (<company_id> | new) \\\n' +
+    '         (--csv=<path> | --from-db) --cld=<cld_users company_id> \\\n' +
+    '         [--create-company --currency=JMD --timezone=America/Jamaica] \\\n' +
+    '         [--dry-run] [--force]\n\n' +
+    '  --cld            the id in cld_users.companies: 1 West Central, 2 Kadian,\n' +
+    '                   3 Vernon, 6 Tkl, 7 Smartcomm, 8 Smartcomm Bogue, 14 NYC NICK MAR.\n' +
+    '  new              target a company STEP -1 will create.\n' +
+    '  --create-company actually create it. Without this the payload is printed\n' +
+    '                   and the run stops, so it can be checked first.\n' +
+    '  --currency       required with --create-company. The legacy database has\n' +
+    '  --timezone       no column for either, so neither can be migrated.\n' +
+    '  --csv            a curated export whose notes carry "Legacy #<id>".\n' +
+    '  --from-db        read customers straight from <schema>.customers.\n' +
+    '                   Exactly one of --csv and --from-db.'
+  )
+  process.exit(1)
+}
+
+if (CREATE_COMPANY && !NEW_COMPANY) {
+  console.error('--create-company only makes sense with `new` as the company id.')
+  process.exit(1)
+}
+
+if (CREATE_COMPANY && !DRY_RUN && (!CURRENCY || !TIMEZONE)) {
+  console.error(
+    'Creating a company needs --currency and --timezone. The legacy database\n' +
+    'holds neither, so there is nothing to migrate and nothing safe to assume.'
   )
   process.exit(1)
 }
 
 // Guards against `--dry-run` being typo'd into something that silently writes.
 for (const f of flags) {
-  if (f !== '--dry-run' && f !== '--force' && f !== '--from-db') {
+  if (!['--dry-run', '--force', '--from-db', '--create-company'].includes(f)) {
     console.error('Unknown flag ' + f + '. Refusing to run rather than guess.')
     process.exit(1)
   }
@@ -422,7 +471,7 @@ async function main() {
   )
   console.log('='.repeat(72))
   console.log('  legacy schema : ' + SCHEMA)
-  console.log('  target company: ' + COMPANY_ID)
+  console.log('  target company: ' + (NEW_COMPANY ? 'new (STEP -1)' : COMPANY_ID))
   console.log('  customer source: ' + (FROM_DB ? SCHEMA + '.customers (--from-db)' : CSV_PATH))
 
   // -------------------------------------------------------------------------
@@ -437,11 +486,138 @@ async function main() {
     throw new Error('Legacy schema ' + SCHEMA + ' has no payments table.')
   }
 
+  // -------------------------------------------------------------------------
+  // STEP -1 — the ISPMan company
+  //
+  // WHAT THE LEGACY SIDE ACTUALLY HOLDS is one row in cld_users.companies with
+  // eight columns, of which seven are usable: name, email, address, phone,
+  // cut_off_date, bill_due_date, bill. That is the whole of it. The per-schema
+  // `settings` tables are empty in six of the seven WISPs and the seventh holds
+  // a single row that CONTRADICTS the company row (West Central: company says
+  // cut-off 5, its settings row says 7).
+  //
+  // So the seven are filled and NOTHING ELSE IS INVENTED. Currency, timezone,
+  // date format, grace period, tax rate, expiry warning, expiry mode, billing
+  // type, the three policy thresholds, the first-period rules, DDNS and the
+  // RADIUS secret have no legacy source at all — they take ISPMan's own column
+  // defaults, exactly as a company created through the platform UI would.
+  // Guessing at them from a Jamaican address would be inventing billing policy.
+  // -------------------------------------------------------------------------
+
+  if (NEW_COMPANY) {
+    rule('STEP -1  company')
+
+    const [cldRows] = await my.query(
+      'SELECT * FROM cld_users.companies WHERE company_id = ?', [CLD_COMPANY_ID]
+    )
+    if (cldRows.length === 0) {
+      throw new Error('No cld_users.companies row with company_id ' + CLD_COMPANY_ID + '.')
+    }
+    const legacy = cldRows[0]
+
+    const companyPayload = {
+      name: String(legacy.company_name ?? '').trim(),
+      email: String(legacy.company_email ?? '').trim() || null,
+      phone: String(legacy.company_phone ?? '').trim() || null,
+      address: String(legacy.company_address ?? '').trim() || null,
+      // Same two the platform's own New Company flow sets. Not legacy-derived —
+      // the legacy database has no concept of either.
+      plan: 'starter',
+      status: 'active',
+    }
+
+    // Probed directly rather than through lib/schema.ts, which is a Next
+    // module this plain script cannot import. Same test: ask for the column and
+    // see whether PostgREST knows it (42703 = undefined column).
+    const probe = await supabase.from('settings').select('default_monthly_rate').limit(1)
+    const hasDefaultRate = probe.error?.code !== '42703'
+
+    const settingsPayload = {
+      cut_off_date: Number(legacy.cut_off_date),
+      bill_date: Number(legacy.bill_due_date),
+      ...(hasDefaultRate ? { default_monthly_rate: Number(legacy.bill) } : {}),
+      currency: CURRENCY ?? '(required: --currency)',
+      timezone: TIMEZONE ?? '(required: --timezone)',
+      sms_enabled: false,
+      email_enabled: false,
+    }
+
+    console.log('  from cld_users.companies #' + CLD_COMPANY_ID)
+    console.log('\n  companies row:')
+    for (const [k, v] of Object.entries(companyPayload)) {
+      console.log('    ' + k.padEnd(10) + JSON.stringify(v))
+    }
+    console.log('\n  settings row (everything else takes ISPMan column defaults):')
+    for (const [k, v] of Object.entries(settingsPayload)) {
+      console.log('    ' + k.padEnd(22) + JSON.stringify(v))
+    }
+
+    console.log('\n  NOT migrated — no legacy source, ISPMan defaults apply:')
+    console.log(
+      '    date_format, grace_period_days, tax_rate, expiry_warning_days,\n' +
+      '    default_expiry_mode, default_billing_type, late_credit_threshold,\n' +
+      '    min_payment_threshold, max_carried_balance, first_expiry_rule_enabled,\n' +
+      '    prorata_first_payment_enabled, ddns_hostname, radius_secret,\n' +
+      '    country, tax_id_label, account_number_prefix'
+    )
+
+    // The company cut-off is the default for NEW customers only; every migrated
+    // customer carries its own, which is just as well — they disagree.
+    const [spread] = await my.query(
+      'SELECT cut_off_date d, COUNT(*) n FROM `' + SCHEMA + '`.customers ' +
+      'GROUP BY cut_off_date ORDER BY n DESC LIMIT 5'
+    )
+    if (spread.length > 1) {
+      console.log(
+        '\n  !! the company cut-off (' + legacy.cut_off_date + ') is not what its ' +
+        'customers use: ' + spread.map((r) => r.d + '×' + r.n).join(', ') + '.\n' +
+        '     Each migrated customer keeps its own, so this setting only affects ' +
+        'customers added later.'
+      )
+    }
+
+    if (!CREATE_COMPANY) {
+      console.log(
+        '\n  --create-company was not given, so nothing further will run.\n' +
+        '  Check the two payloads above, then re-run with:\n' +
+        '    --create-company --currency=<code> --timezone=<zone>'
+      )
+      await my.end()
+      return
+    }
+
+    if (DRY_RUN) {
+      console.log('\n  would create this company and settings row (nothing written)')
+      // A real id is needed for the steps below to report anything meaningful.
+      // -1 is obviously not a company and cannot be mistaken for one in output.
+      COMPANY_ID = -1
+    } else {
+      const { data: made, error: makeError } = await supabase
+        .from('companies').insert(companyPayload).select('id').single()
+      if (makeError) throw new Error('Could not create the company: ' + makeError.message)
+      COMPANY_ID = made.id
+      console.log('\n  created company #' + COMPANY_ID)
+
+      const { error: setError } = await supabase
+        .from('settings').insert({ company_id: COMPANY_ID, ...settingsPayload })
+      if (setError) {
+        throw new Error(
+          'Company #' + COMPANY_ID + ' was created but its settings row failed: ' +
+          setError.message + '. Add one before running the rest, or the company ' +
+          'falls back to app defaults for cut-off and bill date.'
+        )
+      }
+      console.log('  created its settings row')
+    }
+  }
+
   const { data: company, error: companyError } = await supabase
     .from('companies').select('id, name').eq('id', COMPANY_ID).maybeSingle()
   if (companyError) throw new Error('Could not read company: ' + companyError.message)
-  if (!company) throw new Error('No company with id ' + COMPANY_ID + ' in ISPMan.')
-  console.log('  company name  : ' + company.name)
+  if (!company && !(DRY_RUN && NEW_COMPANY)) {
+    throw new Error('No company with id ' + COMPANY_ID + ' in ISPMan.')
+  }
+  console.log('  company name  : ' + (company?.name ?? '(would be created by STEP -1)'))
 
   const { count: existingCount, error: existingError } = await supabase
     .from('customers').select('id', { count: 'exact', head: true }).eq('company_id', COMPANY_ID)
@@ -1151,7 +1327,10 @@ async function main() {
 
   console.log('  mode                       : ' + (DRY_RUN ? 'DRY RUN (nothing written)' : 'LIVE'))
   console.log('  legacy schema              : ' + SCHEMA)
-  console.log('  target company             : ' + COMPANY_ID + ' (' + company.name + ')')
+  console.log(
+    '  target company             : ' +
+    (company ? COMPANY_ID + ' (' + company.name + ')' : 'would be created by STEP -1')
+  )
   console.log('')
   console.log('  CSV rows read              : ' + parsed.data.length)
   console.log('  customers inserted         : ' + inserted + (DRY_RUN ? ' (would be)' : ''))
