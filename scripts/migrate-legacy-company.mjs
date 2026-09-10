@@ -32,6 +32,7 @@
  *     Both are written — see toPaymentDates().
  */
 
+import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import process from 'node:process'
 
@@ -82,17 +83,53 @@ const DRY_RUN = flags.has('--dry-run')
 /** Allows a run against a company that already holds customers. */
 const FORCE = flags.has('--force')
 
-if (!SCHEMA || !Number.isInteger(COMPANY_ID) || !CSV_PATH) {
+/**
+ * The tenant's id in cld_users.companies — NOT the ISPMan company id and NOT
+ * derivable from the schema name.
+ *
+ * Required, and deliberately not guessed. cld_users.users.company_id is the
+ * only thing that says which staff belong to this WISP, and picking the wrong
+ * one would create another company's people as this one's operators with live
+ * logins. There is no safe default for that.
+ */
+const CLD_COMPANY_ID = Number(opts.cld)
+
+/**
+ * Read customers from the legacy `customers` table instead of an export CSV.
+ *
+ * West Central was migrated from a curated CSV that carried "Legacy #<id>" in
+ * a notes column to link each row back. The remaining WISPs each keep a
+ * `customers` table in their own schema whose primary key IS that legacy id,
+ * with the same fields the CSV was built from — so for those there is no
+ * export step to get wrong, no header to map by guesswork, and no chance of
+ * running against a stale file.
+ *
+ * OPT-IN, not the default. --csv still behaves exactly as it did, because the
+ * CSV path is what West Central was actually migrated with and changing it now
+ * would invalidate the one run that has already happened.
+ */
+const FROM_DB = flags.has('--from-db')
+
+if (
+  !SCHEMA || !Number.isInteger(COMPANY_ID) ||
+  !Number.isInteger(CLD_COMPANY_ID) ||
+  (!CSV_PATH && !FROM_DB) || (CSV_PATH && FROM_DB)
+) {
   console.error(
-    'Usage: node scripts/migrate-legacy-company.mjs <schema> <company_id> ' +
-    '--csv=<path> [--dry-run] [--force]'
+    'Usage: node scripts/migrate-legacy-company.mjs <schema> <company_id> \\\n' +
+    '         (--csv=<path> | --from-db) --cld=<cld_users company_id> [--dry-run] [--force]\n\n' +
+    '  --cld     the id in cld_users.companies, e.g. 1 = West Central,\n' +
+    '            3 = Vernon Communications, 7 = Smartcomm, 8 = Smartcomm Bogue.\n' +
+    '  --csv     a curated export whose notes carry "Legacy #<id>".\n' +
+    '  --from-db read customers straight from <schema>.customers.\n' +
+    '            Exactly one of --csv and --from-db.'
   )
   process.exit(1)
 }
 
 // Guards against `--dry-run` being typo'd into something that silently writes.
 for (const f of flags) {
-  if (f !== '--dry-run' && f !== '--force') {
+  if (f !== '--dry-run' && f !== '--force' && f !== '--from-db') {
     console.error('Unknown flag ' + f + '. Refusing to run rather than guess.')
     process.exit(1)
   }
@@ -302,6 +339,49 @@ function toPaymentDates(legacyDate) {
 }
 
 // ---------------------------------------------------------------------------
+// Users
+// ---------------------------------------------------------------------------
+
+/**
+ * cld_users.users.role -> ISPMan role.
+ *
+ * Billing -> cashier is the one worth stating: in the legacy app "Billing" is
+ * the person at the counter taking money, which is exactly what ISPMan calls a
+ * cashier. It is NOT an accounting role and must not become a manager, or the
+ * migration would hand the payments book and the CSV export to every teller.
+ *
+ * An unrecognised role is NOT defaulted. Guessing would either over-grant (a
+ * technician who can delete payments) or under-grant silently; the run reports
+ * it and skips the account so a human decides.
+ */
+const ROLE_BY_LEGACY = {
+  admin: 'company_admin',
+  manager: 'manager',
+  billing: 'cashier',
+  'technical support': 'technician',
+  'customer support': 'csr',
+}
+
+/** Same shape the app's own createUser enforces. */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+/**
+ * A temporary password for a migrated account.
+ *
+ * THE LEGACY BCRYPT HASH CANNOT COME ACROSS. Supabase's admin createUser takes
+ * a plaintext password, not a hash, so there is no supported way to carry the
+ * old credential over — and carrying it would import whatever password policy
+ * the legacy app had, which is unknown, along with any weak passwords in it.
+ *
+ * So every migrated account gets a fresh random one, printed ONCE by the run
+ * that creates it and stored nowhere. 18 random bytes in base64url is well past
+ * anything guessable and still short enough to read down a phone.
+ */
+function tempPassword() {
+  return randomBytes(18).toString('base64url')
+}
+
+// ---------------------------------------------------------------------------
 // Report collection
 // ---------------------------------------------------------------------------
 
@@ -343,7 +423,7 @@ async function main() {
   console.log('='.repeat(72))
   console.log('  legacy schema : ' + SCHEMA)
   console.log('  target company: ' + COMPANY_ID)
-  console.log('  csv           : ' + CSV_PATH)
+  console.log('  customer source: ' + (FROM_DB ? SCHEMA + '.customers (--from-db)' : CSV_PATH))
 
   // -------------------------------------------------------------------------
   // Preflight
@@ -380,13 +460,176 @@ async function main() {
   }
 
   // -------------------------------------------------------------------------
+  // STEP 0 — users
+  //
+  // FIRST, because payments resolve their agent through the map this builds. A
+  // payment migrated before its collector exists can only ever be attributed
+  // by name, and re-attributing it afterwards means rewriting rows nobody
+  // should be rewriting.
+  // -------------------------------------------------------------------------
+
+  rule('STEP 0  users  (cld_users company ' + CLD_COMPANY_ID + ')')
+
+  const [legacyUsers] = await my.query(
+    'SELECT id, first_name, last_name, email, role, phone FROM cld_users.users ' +
+    'WHERE company_id = ? ORDER BY id',
+    [CLD_COMPANY_ID]
+  )
+  console.log('  legacy staff rows: ' + legacyUsers.length)
+
+  /** legacy cld_users.id -> { ispmanId, name, role } once created. */
+  const userMap = new Map()
+  const userPlan = []
+
+  // Emails already in ISPMan, so a re-run or an overlapping tenant does not
+  // try to create an auth account that exists.
+  const { data: existingUsers } = await supabase
+    .from('users').select('id, email').eq('company_id', COMPANY_ID)
+  const existingByEmail = new Map(
+    (existingUsers ?? []).map((u) => [String(u.email).toLowerCase(), u.id])
+  )
+
+  for (const u of legacyUsers) {
+    const name = [u.first_name, u.last_name].filter(Boolean).join(' ').trim()
+    const email = String(u.email ?? '').trim().toLowerCase()
+    const role = ROLE_BY_LEGACY[String(u.role ?? '').trim().toLowerCase()]
+
+    if (!role) {
+      skip('user', '#' + u.id + ' ' + name, 'unmapped legacy role "' + u.role + '"')
+      continue
+    }
+
+    // #51's address is "renardosmith364@gmail.com1" — a real row with a typo
+    // that no validator will accept and that nobody could receive mail at. It
+    // is reported and skipped rather than repaired: inventing an address for
+    // somebody creates a login they cannot recover, and the fix is one edit in
+    // the legacy row by whoever knows the real address.
+    if (!EMAIL_RE.test(email)) {
+      skip('user', '#' + u.id + ' ' + name, 'malformed email "' + u.email + '"')
+      continue
+    }
+
+    if (existingByEmail.has(email)) {
+      userMap.set(Number(u.id), {
+        ispmanId: existingByEmail.get(email), name, role, reused: true,
+      })
+      skip('user', '#' + u.id + ' ' + name, 'already in ISPMan as ' + email + ' — reused, not recreated')
+      continue
+    }
+
+    userPlan.push({ legacyId: Number(u.id), name, email, role, phone: u.phone ?? null })
+  }
+
+  for (const p of userPlan) {
+    console.log(
+      '    #' + String(p.legacyId).padEnd(5) + p.name.padEnd(24) +
+      p.role.padEnd(15) + p.email
+    )
+  }
+
+  let usersCreated = 0
+  const issuedPasswords = []
+
+  if (DRY_RUN) {
+    // SEEDED, exactly as STEP 1 seeds idMap for the same reason. Without this
+    // the map stays empty, every agent lookup in STEP 3 misses, and the dry
+    // run reports "Agent #65, name only" for collectors that a live run would
+    // link to a real account — the opposite of what would actually happen,
+    // which is the one thing a dry run must never do. The id is null because
+    // no row exists yet; the live run fills it.
+    for (const p of userPlan) {
+      userMap.set(p.legacyId, { ispmanId: null, name: p.name, role: p.role, planned: true })
+    }
+    console.log('\n  would create ' + userPlan.length + ' ISPMan accounts (nothing written)')
+  } else {
+    for (const p of userPlan) {
+      const password = tempPassword()
+
+      // Auth first, then the profile — the same order and the same reasoning as
+      // app/actions/users.ts#createUser: an auth account with no profile fails
+      // closed at login, a profile with no auth account cannot be signed into
+      // at all and is invisible until someone tries.
+      const { error: authError } = await supabase.auth.admin.createUser({
+        email: p.email,
+        password,
+        email_confirm: true,
+      })
+      if (authError) {
+        skip('user', p.name, 'auth account failed: ' + authError.message)
+        continue
+      }
+
+      const { data: row, error: rowError } = await supabase
+        .from('users')
+        .insert({
+          company_id: COMPANY_ID,
+          first_name: p.name.split(' ')[0] ?? p.name,
+          last_name: p.name.split(' ').slice(1).join(' ') || '',
+          email: p.email,
+          role: p.role,
+          is_super_admin: false,
+        })
+        .select('id')
+        .maybeSingle()
+
+      if (rowError || !row) {
+        skip('user', p.name, 'profile failed: ' + (rowError?.message ?? 'no row returned') +
+          ' — remove the auth user in Supabase before re-running')
+        continue
+      }
+
+      userMap.set(p.legacyId, { ispmanId: row.id, name: p.name, role: p.role })
+      issuedPasswords.push({ name: p.name, email: p.email, password })
+      usersCreated += 1
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // STEP 1 — customers, from the export CSV
   // -------------------------------------------------------------------------
 
-  rule('STEP 1  customers')
+  rule('STEP 1  customers' + (FROM_DB ? '  (from ' + SCHEMA + '.customers)' : ''))
 
-  const csvText = readFileSync(CSV_PATH, 'utf8').replace(/^﻿/, '')
-  const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true })
+  // The legacy table already has the shape the CSV was exported into, so it is
+  // turned into the same rows Papa would have produced and everything below
+  // this point is identical for both sources. `id` becomes the "Legacy #<id>"
+  // the CSV path parses out of a notes column — here it is the primary key,
+  // so it cannot be missing or duplicated.
+  let parsed
+  if (FROM_DB) {
+    const [dbRows] = await my.query(
+      'SELECT id, name, location, phone, mac, bill, gps, username, ' +
+      'date_added, cut_off_date, bill_due_date FROM `' + SCHEMA + '`.customers ORDER BY id'
+    )
+    parsed = {
+      errors: [],
+      meta: {
+        fields: [
+          'name', 'location', 'phone', 'mac', 'bill', 'gps', 'username',
+          'date_added', 'cut_off_date', 'bill_due_date', 'notes',
+        ],
+      },
+      data: dbRows.map((r) => ({
+        name: r.name,
+        location: r.location,
+        phone: r.phone,
+        mac: r.mac,
+        bill: r.bill,
+        // '1' is this table's default for "no location recorded" and is not a
+        // coordinate. Passed through as blank so parseGps never sees it.
+        gps: String(r.gps ?? '').trim() === '1' ? '' : r.gps,
+        username: r.username,
+        date_added: r.date_added,
+        cut_off_date: r.cut_off_date,
+        bill_due_date: r.bill_due_date,
+        notes: 'Legacy #' + r.id,
+      })),
+    }
+  } else {
+    const csvText = readFileSync(CSV_PATH, 'utf8').replace(/^﻿/, '')
+    parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true })
+  }
+
   for (const e of parsed.errors.slice(0, 5)) {
     console.log('  csv parse warning row ' + e.row + ': ' + e.message)
   }
@@ -642,26 +885,41 @@ async function main() {
 
   rule('STEP 3  payments since ' + PAYMENTS_SINCE)
 
-  // cld_users resolves the numeric agent ids. Older rows already hold a name.
-  const agentNames = new Map()
-  try {
-    const [users] = await my.query('SELECT id, first_name, last_name FROM cld_users.users')
-    for (const u of users) {
-      agentNames.set(Number(u.id), [u.first_name, u.last_name].filter(Boolean).join(' ').trim())
-    }
-  } catch (err) {
-    console.log(
-      '  !! could not read cld_users.users (' + err.message + '); ' +
-      'numeric agents will be written as "Legacy agent #<id>"'
-    )
-  }
-
+  /**
+   * Who took this payment, resolved through STEP 0's map — BY ID ONLY.
+   *
+   * Never by name. cld_users holds five accounts called some case-variant of
+   * "haydn samuels" across four companies, and seven names are duplicated
+   * across the platform in total; matching on a name would attribute one
+   * company's takings to another company's operator. The legacy `agent` column
+   * holds the id for every row in the six-month window of every WISP, so the
+   * id is both the safe key and the available one.
+   *
+   * A HIT sets user_id and the person's real name. A MISS sets
+   * "Agent #<id>" with user_id null — the shape ISPMan already handles
+   * everywhere, because 425 of its existing payments name former staff who
+   * have no account (see getAgentCollections and loadReceipt, which both fall
+   * back to the name). Five such ids exist across the remaining WISPs and NONE
+   * of them is nameable: they appear nowhere in this database except as an
+   * integer in this column, so there is no person to create an account for.
+   */
   const resolveAgent = (raw) => {
     const s = (raw ?? '').toString().trim()
-    if (!s) return 'Legacy import'
-    if (!/^\d+$/.test(s)) return s
-    return agentNames.get(Number(s)) || 'Legacy agent #' + s
+    if (!s) return { agent: 'Legacy import', userId: null }
+
+    if (!/^\d+$/.test(s)) {
+      // Pre-2023 rows carry a bare name, and some of those names are shops
+      // ("Reggae Blend", "Max Variety") rather than staff. Kept verbatim.
+      return { agent: s, userId: null }
+    }
+
+    const hit = userMap.get(Number(s))
+    return hit
+      ? { agent: hit.name, userId: hit.ispmanId }
+      : { agent: 'Agent #' + s, userId: null }
   }
+
+  const agentTally = new Map()
 
   const [legacyPayments] = await my.query(
     'SELECT id, customer, amount, type, date, agent FROM `' + SCHEMA + '`.payments ' +
@@ -724,13 +982,20 @@ async function main() {
       payment_kind: 'service',
       payment_category_id: null,
 
-      // Never collected at an ISPMan till, so it belongs to no checkoff and to
-      // no ISPMan user. Marking it checked off would assert a count that never
-      // happened.
+      // NEVER checked off. These were not counted at an ISPMan till, and
+      // marking them so would assert a reconciliation that never happened —
+      // see STEP 3b, which imports the legacy handovers as history precisely
+      // because they cannot be tied back to these rows.
       checked_off: false,
-      user_id: null,
 
-      agent: resolveAgent(p.agent),
+      // user_id is set when the legacy agent id resolves to an account created
+      // in STEP 0, and left null when it does not. Both are correct answers.
+      ...(() => {
+        const who = resolveAgent(p.agent)
+        agentTally.set(who.agent, (agentTally.get(who.agent) ?? 0) + 1)
+        return { user_id: who.userId, agent: who.agent }
+      })(),
+
       notes: 'Migrated from legacy payment #' + p.id,
 
       // billing_period_*, access_granted_until, carried_balance_before/after,
@@ -771,6 +1036,114 @@ async function main() {
   }
 
   // -------------------------------------------------------------------------
+  // STEP 3b — checkoff handovers, AS HISTORY ONLY
+  //
+  // The legacy checkoff table is id, amount, date, agent. There is NO payment
+  // reference of any kind — it records that a sum changed hands, not which
+  // payments made it up. So these rows come across as a standalone record and
+  // NOTHING is inferred: no payment is marked checked_off, and no attempt is
+  // made to find a set of payments by that agent that happens to sum to the
+  // amount. That arithmetic would produce a reconciliation nobody performed,
+  // presented with the authority of one that was.
+  //
+  // Only West Central has any: 498 rows there, 0 in every other WISP.
+  // -------------------------------------------------------------------------
+
+  rule('STEP 3b  checkoff handovers (history only)')
+
+  const [checkoffTable] = await my.query(
+    'SELECT COUNT(*) n FROM information_schema.tables WHERE table_schema = ? AND table_name = ?',
+    [SCHEMA, 'checkoff']
+  )
+
+  const checkoffRows = []
+  let checkoffUnreadable = 0
+
+  if (Number(checkoffTable[0].n) === 0) {
+    console.log('  no checkoff table in this schema — nothing to import')
+  } else {
+    const [legacyCheckoffs] = await my.query(
+      'SELECT id, amount, date, agent FROM `' + SCHEMA + '`.checkoff ' +
+      'WHERE date >= ? ORDER BY date ASC, id ASC',
+      [PAYMENTS_SINCE]
+    )
+    console.log('  legacy handovers in window: ' + legacyCheckoffs.length)
+
+    for (const c of legacyCheckoffs) {
+      // checkoff.date is NOT clean the way payments.date is: 19 of West
+      // Central's 498 rows are either empty or use a 'T' separator. Payments
+      // can be string-compared safely; these cannot, so each one is parsed and
+      // an unreadable date drops the row rather than inventing a moment.
+      const dates = toPaymentDates(c.date)
+      if (!dates) {
+        checkoffUnreadable += 1
+        skip('checkoff', 'legacy checkoff #' + c.id, 'unreadable date "' + c.date + '"')
+        continue
+      }
+
+      const who = resolveAgent(c.agent)
+      const amount = Number(c.amount)
+      if (!Number.isFinite(amount)) {
+        skip('checkoff', 'legacy checkoff #' + c.id, 'unreadable amount "' + c.amount + '"')
+        continue
+      }
+
+      checkoffRows.push({
+        company_id: COMPANY_ID,
+        agent_id: who.userId,
+        agent_name: who.agent,
+        // Nobody in ISPMan performed this count, so there is no user to name as
+        // having done it. Null says that; naming the importer would not.
+        checked_off_by: null,
+
+        // amount_received is what the agent handed over — the one figure the
+        // legacy row actually holds. system_total is what the till said was
+        // due, which this table never recorded, and discrepancy is the
+        // difference between them. Both are left at 0/null rather than
+        // back-filled from the handover, which would assert that the count
+        // balanced exactly when nothing here knows whether it did.
+        system_total: 0,
+        amount_received: amount,
+        discrepancy: null,
+        customers_count: 0,
+        is_all_agents: false,
+
+        notes:
+          'Migrated from legacy checkoff #' + c.id + ' (' + c.date + '). ' +
+          'History only: the legacy table records the handover but not which ' +
+          'payments made it up, so no payment is linked or marked checked off.',
+        created_at: dates.paymentDate,
+      })
+    }
+  }
+
+  console.log('  handovers to insert       : ' + checkoffRows.length)
+  if (checkoffUnreadable) {
+    console.log('  dropped for unreadable date: ' + checkoffUnreadable)
+  }
+
+  let checkoffsInserted = 0
+  if (DRY_RUN) {
+    if (checkoffRows.length > 0) {
+      console.log('\n  sample handover row (not written):')
+      console.log('    ' + JSON.stringify(checkoffRows[0], null, 2).replace(/\n/g, '\n    '))
+    }
+  } else {
+    for (const batch of chunk(checkoffRows, PAYMENT_CHUNK)) {
+      const { error } = await supabase.from('checkoff_records').insert(batch)
+      if (error) {
+        for (const row of batch) {
+          const { error: rowError } = await supabase.from('checkoff_records').insert(row)
+          if (rowError) skip('checkoff', row.notes, rowError.message)
+          else checkoffsInserted += 1
+        }
+        continue
+      }
+      checkoffsInserted += batch.length
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // STEP 4 — report
   // -------------------------------------------------------------------------
 
@@ -790,8 +1163,44 @@ async function main() {
     (DRY_RUN ? paymentRows.length + ' (would be)' : paymentsInserted)
   )
   console.log('  payments outside migration : ' + unmappedCustomer)
+  console.log(
+    '  users created              : ' +
+    (DRY_RUN ? userPlan.length + ' (would be)' : usersCreated)
+  )
+  console.log(
+    '  checkoff handovers         : ' +
+    (DRY_RUN ? checkoffRows.length + ' (would be)' : checkoffsInserted) + ' (history only)'
+  )
   console.log('')
   console.log('  radcheck                   : NOT TOUCHED')
+
+  // Who the migrated payments end up attributed to, and how many of them
+  // reach a real account rather than a name.
+  if (agentTally.size > 0) {
+    console.log('\n  payments by collector:')
+    const linked = new Set([...userMap.values()].map((u) => u.name))
+    for (const [name, n] of [...agentTally.entries()].sort((a, b) => b[1] - a[1])) {
+      console.log(
+        '    ' + String(n).padStart(6) + '  ' + name.padEnd(28) +
+        (linked.has(name)
+          ? (DRY_RUN ? 'would link to the account STEP 0 creates' : 'linked to an ISPMan account')
+          : 'name only, user_id null — nobody to link to')
+      )
+    }
+  }
+
+  // Printed ONCE, by the run that created them, and stored nowhere. The legacy
+  // bcrypt hash cannot be carried into Supabase auth, so these are new
+  // credentials that have to reach their owners out of band.
+  if (issuedPasswords.length > 0) {
+    console.log('\n  ' + '!'.repeat(66))
+    console.log('  TEMPORARY PASSWORDS — shown once, not stored, not recoverable.')
+    console.log('  Give each person theirs and have them change it at first sign-in.')
+    console.log('  ' + '!'.repeat(66))
+    for (const p of issuedPasswords) {
+      console.log('    ' + p.name.padEnd(24) + p.email.padEnd(34) + p.password)
+    }
+  }
 
   if (skipped.length === 0) {
     console.log('\n  skipped: nothing')
