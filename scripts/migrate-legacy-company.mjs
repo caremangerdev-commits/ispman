@@ -1104,6 +1104,45 @@ async function main() {
   const idMap = new Map()
   let inserted = 0
 
+  // ---------------------------------------------------------------------------
+  // ACCOUNT NUMBERS, assigned here rather than left to the app.
+  //
+  // These customers are inserted as plain rows, so nothing calls the allocator
+  // and every one of them would arrive with a null account number — which is
+  // exactly what happened to Vernon, Bogue and Networking on their first runs.
+  // Creating the counter was necessary and was not sufficient.
+  //
+  // Numbered by position in the same id order the rows are inserted in, from
+  // the counter's current value, and the counter is moved past them afterwards
+  // so the next customer added through the app continues the run rather than
+  // colliding with it.
+  // ---------------------------------------------------------------------------
+  const accountPrefix = await (async () => {
+    const { data } = await supabase
+      .from('settings').select('account_number_prefix').eq('company_id', COMPANY_ID).maybeSingle()
+    const raw = String(data?.account_number_prefix ?? '').toUpperCase().replace(/[^A-Z]/g, '')
+    return raw.length >= 2 ? raw.slice(0, 3) : null
+  })().catch(() => null)
+
+  const accountBase = await (async () => {
+    const { data } = await supabase
+      .from('account_counters').select('next_value').eq('company_id', COMPANY_ID).maybeSingle()
+    return Number(data?.next_value ?? ACCOUNT_SEQ_BASE + 1)
+  })().catch(() => ACCOUNT_SEQ_BASE + 1)
+
+  candidates.forEach((c, i) => {
+    const digits = String(Math.max(ACCOUNT_SEQ_BASE + 1, accountBase + i))
+    c.account_number = accountPrefix ? accountPrefix + '-' + digits : digits
+  })
+
+  console.log(
+    '  account numbers  : ' +
+    (candidates.length
+      ? candidates[0].account_number + ' .. ' + candidates[candidates.length - 1].account_number
+      : 'none') +
+    (accountPrefix ? '  (prefix ' + accountPrefix + ')' : '')
+  )
+
   const buildPayload = (c) => ({
     company_id: COMPANY_ID,
     first_name: c.first_name,
@@ -1122,6 +1161,10 @@ async function main() {
     // Do not collapse these into a conditional spread.
     mac_address: c.mac_address,
     date_added: c.date_added,
+
+    // Assigned above, never left to the column default (there is none) or to
+    // the app (nothing calls the allocator on this path).
+    account_number: c.account_number,
 
     monthly_rate: c.monthly_rate,
     balance: 0,
@@ -1185,6 +1228,28 @@ async function main() {
   }
 
   console.log('\n  customers inserted: ' + inserted)
+
+  // The counter has to move past the block just issued, or the next customer
+  // added through the app takes 10001 again and the unique index rejects them
+  // in front of an operator.
+  if (!DRY_RUN && candidates.length > 0) {
+    const nextValue = accountBase + candidates.length
+    const { error: bumpError } = await supabase
+      .from('account_counters')
+      .update({ next_value: nextValue, updated_at: new Date().toISOString() })
+      .eq('company_id', COMPANY_ID)
+
+    if (bumpError) {
+      console.log(
+        '  !! could not move the account counter past the migrated block: ' +
+        bumpError.message + '\n' +
+        '     Set account_counters.next_value for company ' + COMPANY_ID +
+        ' to ' + nextValue + ' before anyone adds a customer.'
+      )
+    } else {
+      console.log('  account counter   : next ' + nextValue)
+    }
+  }
 
   // -------------------------------------------------------------------------
   // STEP 3 — payment history
