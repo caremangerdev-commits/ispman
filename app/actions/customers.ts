@@ -6,7 +6,8 @@ import { redirect } from 'next/navigation'
 import { logEvent } from '@/lib/audit'
 import { BALANCE_ADJUSTED } from '@/lib/data/balance-adjustments'
 import {
-  CUSTOMER_UPDATED, encodeChanges, FIELD_LABELS, REDACTED, safeValue, sameValue,
+  CUSTOMER_DELETED, CUSTOMER_UPDATED, encodeChanges, FIELD_LABELS, REDACTED,
+  safeValue, sameValue,
   type FieldChange,
 } from '@/lib/customer-changes'
 import { formatCurrency } from '@/lib/format'
@@ -1141,12 +1142,29 @@ export async function adjustCarriedBalance(formData: FormData) {
   )
 }
 
+/**
+ * Deletes a customer and everything that referenced them.
+ *
+ * THE MOST DESTRUCTIVE ACTION IN THE APP. It removes every payment the
+ * customer ever made, their tickets, and their entire audit trail — including
+ * the balance_adjusted and payment_deleted rows that are the record of money
+ * already corrected. None of it is recoverable.
+ *
+ * So it is measured before it runs and reported afterwards, and the report is
+ * built to outlive its own subject — see logDeletion.
+ */
 export async function deleteCustomer(formData: FormData) {
-  const { company } = await authorize('manage_company_settings')
+  const { company, profile } = await authorize('delete_customer')
   const id = numOrNull(formData, 'id')
   if (id === null) return
 
   const db = tenantClient()
+
+  // COUNTED BEFORE THE DELETE, because afterwards there is nothing left to
+  // count. "11 payments worth 49,000 were destroyed" is the fact somebody will
+  // need, and this is the only moment it can be established.
+  const doomed = await measureDeletion(company.id, id)
+
   // payments/tickets/log reference the customer, so clear dependents first.
   await db.from('log').delete().eq('company_id', company.id).eq('customer_id', id)
   await db.from('notifications_queue').delete().eq('company_id', company.id).eq('customer_id', id)
@@ -1154,7 +1172,100 @@ export async function deleteCustomer(formData: FormData) {
   await db.from('payments').delete().eq('company_id', company.id).eq('customer_id', id)
   await db.from('customers').delete().eq('company_id', company.id).eq('id', id)
 
+  await logDeletion(id, doomed, profile.email)
+
   revalidatePath('/dashboard/customers')
   revalidatePath('/dashboard')
   redirect('/dashboard/customers')
+}
+
+/** What a delete is about to destroy, read while it still exists. */
+type Doomed = {
+  name: string
+  identity: string | null
+  payments: number
+  paymentsValue: number
+  tickets: number
+  logRows: number
+}
+
+async function measureDeletion(companyId: number, id: number): Promise<Doomed> {
+  const db = tenantClient()
+  const [customerRes, paymentRes, ticketRes, logRes] = await Promise.all([
+    db
+      .from('customers')
+      .select('first_name, last_name, mac_address')
+      .eq('company_id', companyId)
+      .eq('id', id)
+      .maybeSingle(),
+    // The amounts themselves, not a count: the value destroyed is the number
+    // that matters and it cannot be recovered from a count afterwards.
+    db.from('payments').select('amount').eq('company_id', companyId).eq('customer_id', id),
+    db
+      .from('support_tickets')
+      .select('id', { count: 'exact', head: true })
+      .eq('company_id', companyId)
+      .eq('customer_id', id),
+    db
+      .from('log')
+      .select('id', { count: 'exact', head: true })
+      .eq('company_id', companyId)
+      .eq('customer_id', id),
+  ])
+
+  const row = customerRes.data as unknown as {
+    first_name: string | null
+    last_name: string | null
+    mac_address: string | null
+  } | null
+
+  const amounts = (paymentRes.data ?? []) as unknown as { amount: number | string }[]
+
+  return {
+    name: [row?.first_name, row?.last_name].filter(Boolean).join(' ') || 'Customer #' + id,
+    identity: row?.mac_address ?? null,
+    payments: amounts.length,
+    paymentsValue: amounts.reduce((sum, p) => sum + Number(p.amount ?? 0), 0),
+    tickets: ticketRes.count ?? 0,
+    logRows: logRes.count ?? 0,
+  }
+}
+
+/**
+ * Records the deletion, in a row the deletion cannot take with it.
+ *
+ * customer_id IS DELIBERATELY NULL, and that is the entire design of this
+ * function. The sweep above is `log.delete().eq('customer_id', id)`, so ANY
+ * row carrying that id dies with the customer — including one written to
+ * record the death. Writing it afterwards would survive only by accident of
+ * ordering; a second sweep, or a re-run, or someone reordering these lines
+ * would silently take it. A row that names no customer cannot be swept by
+ * customer id at all, whatever order anything runs in.
+ *
+ * The cost is that the row is not attached to the customer's record — which is
+ * correct, because there is no longer a record to attach it to. Everything
+ * needed to identify them is therefore written into the text: name, id and the
+ * MAC they authenticated under.
+ *
+ * `amount` goes in the 0016 column as well as the prose, so "what did we
+ * destroy last quarter" is a SUM rather than a regex over sentences — which is
+ * exactly what that migration's own note asks callers to do.
+ */
+async function logDeletion(id: number, doomed: Doomed, actor: string): Promise<void> {
+  await logEvent({
+    // NOT doomed's id. See above — this is the whole point.
+    customerId: null,
+    type: CUSTOMER_DELETED,
+    tag: '[customers]',
+    amount: doomed.paymentsValue,
+    details:
+      'Customer DELETED: ' + safeValue(doomed.name) +
+      ' | customer=#' + id +
+      (doomed.identity ? ' | identity=' + safeValue(doomed.identity) : '') +
+      ' | payments_deleted=' + doomed.payments +
+      ' | payments_value=' + doomed.paymentsValue +
+      ' | tickets_deleted=' + doomed.tickets +
+      ' | log_rows_deleted=' + doomed.logRows +
+      ' | by=' + actor,
+  })
 }

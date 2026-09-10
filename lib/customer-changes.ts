@@ -159,3 +159,15 @@ export function sameValue(a: unknown, b: unknown): boolean {
   }
   return String(a) === String(b)
 }
+
+/**
+ * The log `type` for a customer deletion.
+ *
+ * Lives here beside CUSTOMER_UPDATED because the two are the pair that records
+ * what happened to a customer record. They are written very differently
+ * though: an update files its row against the customer, and a DELETION CANNOT
+ * — the delete sweeps `log` by customer_id, so a row naming the customer would
+ * be destroyed by the very act it exists to record. See
+ * app/actions/customers.ts#logDeletion.
+ */
+export const CUSTOMER_DELETED = 'customer_deleted'

@@ -209,6 +209,8 @@ export function CustomerDetail({
   miscCategories,
   selectedAddonIds,
   balanceAdjustment,
+  paymentCount,
+  paymentsValue,
 }: {
   customer: DetailCustomer
   radius: RadiusStatus
@@ -219,6 +221,11 @@ export function CustomerDetail({
   selectedAddonIds: number[]
   /** The last hand-adjustment of the carried balance, or null if never. */
   balanceAdjustment?: BalanceAdjustment | null
+  /** What a delete would destroy, so the confirmation can name it rather than
+   *  describe it. Payments only: they are the irreplaceable part and the only
+   *  count this page holds in full. */
+  paymentCount: number
+  paymentsValue: number
 }) {
   const c = customer
 
@@ -264,7 +271,9 @@ export function CustomerDetail({
   const showExtend = mayNetwork && canExtendAccess(status)
   const showDisconnect = mayNetwork && canDisconnect(status)
 
-  const mayDelete = can(role, 'manage_company_settings')
+  // Its own permission, at the same level as delete_payment: this destroys
+  // every payment the customer ever made. The server action re-checks it.
+  const mayDelete = can(role, 'delete_customer')
   const maySeeTech = can(role, 'view_customer_tech_info')
 
   // The two manager corrections. Both are narrower than the actions they undo:
@@ -431,9 +440,22 @@ export function CustomerDetail({
                   type="submit"
                   formAction={deleteCustomer}
                   onClick={(e) => {
+                    // NAMES THE DAMAGE. "This also removes their payments" is
+                    // true and tells you nothing; the number and the money are
+                    // what make someone stop. Payments are stated exactly
+                    // because this page holds them in full — tickets and log
+                    // rows are described, because it does not.
+                    const toll =
+                      paymentCount > 0
+                        ? paymentCount + (paymentCount === 1 ? ' payment' : ' payments') +
+                          ' worth ' + formatCurrency(paymentsValue) +
+                          ', along with their tickets and their entire history'
+                        : 'their tickets and their entire history'
+
                     if (
                       !confirm(
-                        'Delete ' + name + '? This also removes their payments, tickets and log entries. This cannot be undone.'
+                        'Delete ' + name + '?\n\n' +
+                        'This permanently destroys ' + toll + '. It cannot be undone.'
                       )
                     ) {
                       e.preventDefault()

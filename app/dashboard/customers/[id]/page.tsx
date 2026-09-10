@@ -116,6 +116,8 @@ export default async function CustomerDetailPage({
         radius={radius}
         role={profile.role}
         balanceAdjustment={balanceAdjustment}
+        paymentCount={payments.length}
+        paymentsValue={totalPaid}
         servicePlans={plans}
         additionalServices={addons}
         miscCategories={miscCats}

@@ -23,6 +23,7 @@ export type Permission =
   | 'view_all_payments'
   | 'edit_payment'
   | 'delete_payment'
+  | 'delete_customer'
   | 'view_checkoff'
   | 'view_revenue_reports'
   | 'view_support_tickets'
@@ -97,6 +98,18 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   edit_payment: ['super_admin', 'company_admin', 'manager'],
   // Destroying the record of money received is the narrowest right in the app.
   delete_payment: ['super_admin', 'company_admin'],
+  // ON THE SAME LINE AS delete_payment, AND FOR THE SAME REASON. Deleting a
+  // customer deletes every payment they ever made — plus their tickets and
+  // their audit trail — so it is that right exercised in bulk and cannot sit
+  // below it. The largest single delete available today would destroy 11
+  // payments worth J$80,000.
+  //
+  // Its own permission rather than a narrowing of manage_company_settings,
+  // which used to gate it. That one also carries the whole Settings section —
+  // company profile, service plans, add-ons, misc categories, the NAS test —
+  // and taking those from a manager to move one button would be a large price
+  // for a small fix. Managers keep Settings and lose only this.
+  delete_customer: ['super_admin', 'company_admin'],
   view_checkoff: ['super_admin', 'company_admin', 'manager'],
   view_revenue_reports: ['super_admin', 'company_admin', 'manager'],
   // Cashier included deliberately: they already see tickets on a customer
