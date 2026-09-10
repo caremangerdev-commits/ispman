@@ -391,18 +391,68 @@ function legacyPaymentType(method) {
  * The clock time it displays is not the time the customer paid, and was never
  * recoverable as a real instant anyway — the legacy column stored no zone.
  */
-function toPaymentDates(legacyDate) {
+/**
+ * The instant a legacy wall-clock time actually names.
+ *
+ * THIS USED TO PACK RATHER THAN CONVERT, and it produced times that were
+ * technically ordered and visibly wrong. The old fold was
+ *
+ *   date + 'T12:' + hour + ':' + minute + 'Z'
+ *
+ * which put the legacy HOUR in the minutes field and the legacy MINUTE in the
+ * seconds field. Ordering within a day survived, and nothing was lost — the
+ * digits were all still there — but the app renders h:mm and does not show
+ * seconds, so every payment taken in the same legacy hour displayed as the
+ * same minute. It read as "rounded to the hour". Worse, 18:31 was stored as
+ * 12:18Z and displayed as 7:18 AM.
+ *
+ * A legacy timestamp is wall-clock in the company's own zone, so the honest
+ * conversion is that zone's offset at that moment. Jamaica has no DST, but the
+ * offset is computed rather than assumed so the next market does not inherit a
+ * hidden -5.
+ */
+function toPaymentDates(legacyDate, timeZone) {
   const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/.exec((legacyDate ?? '').toString().trim())
   if (!m) return null
 
-  const minutesOfDay = Number(m[2]) * 60 + Number(m[3])
-  if (!Number.isFinite(minutesOfDay) || minutesOfDay > 1439) return null
+  const hour = Number(m[2])
+  const minute = Number(m[3])
+  if (hour > 23 || minute > 59) return null
 
-  return {
-    paidOn: m[1],
-    paymentDate:
-      m[1] + 'T12:' + pad2(Math.floor(minutesOfDay / 60)) + ':' + pad2(minutesOfDay % 60) + 'Z',
+  const [y, mo, d] = m[1].split('-').map(Number)
+  const utc = zonedWallClockToUtc(y, mo, d, hour, minute, timeZone)
+  if (!utc) return null
+
+  return { paidOn: m[1], paymentDate: utc.toISOString() }
+}
+
+/**
+ * Reads a wall-clock time in a named zone as the UTC instant it means.
+ *
+ * Two steps, because JavaScript has no "make a Date in this zone" constructor:
+ * take the fields as if they were UTC, ask what wall-clock that instant shows
+ * in the target zone, and shift by the difference. Applied twice so a boundary
+ * lands correctly where the offset differs either side of it — a no-op in
+ * Jamaica, which does not observe DST, and correct anywhere that does.
+ */
+function zonedWallClockToUtc(y, mo, d, h, mi, timeZone) {
+  const wanted = Date.UTC(y, mo - 1, d, h, mi, 0)
+
+  const offsetAt = (instant) => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(new Date(instant))
+    const f = (t) => Number(parts.find((p) => p.type === t)?.value ?? 0)
+    const shown = Date.UTC(f('year'), f('month') - 1, f('day'), f('hour') % 24, f('minute'), f('second'))
+    return shown - instant
   }
+
+  let guess = wanted - offsetAt(wanted)
+  guess = wanted - offsetAt(guess)
+  const out = new Date(guess)
+  return Number.isFinite(out.getTime()) ? out : null
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +794,16 @@ async function main() {
   // by name, and re-attributing it afterwards means rewriting rows nobody
   // should be rewriting.
   // -------------------------------------------------------------------------
+
+  // The zone every legacy wall-clock time is read in. Read from the company's
+  // own settings rather than assumed: a legacy '20:14' means 20:14 where the
+  // WISP is, and that is the only thing that makes it an instant.
+  const companyTimeZone = await (async () => {
+    const { data } = await supabase
+      .from('settings').select('timezone').eq('company_id', COMPANY_ID).maybeSingle()
+    return data?.timezone || TIMEZONE || 'America/Jamaica'
+  })().catch(() => TIMEZONE || 'America/Jamaica')
+  console.log('  legacy times read in : ' + companyTimeZone)
 
   rule('STEP 0  users  (cld_users company ' + CLD_COMPANY_ID + ')')
 
@@ -1320,7 +1380,7 @@ async function main() {
       continue
     }
 
-    const dates = toPaymentDates(p.date)
+    const dates = toPaymentDates(p.date, companyTimeZone)
     if (!dates) {
       skip('payment', 'legacy payment #' + p.id, 'unreadable date "' + p.date + '"')
       continue
@@ -1452,7 +1512,7 @@ async function main() {
       // Central's 498 rows are either empty or use a 'T' separator. Payments
       // can be string-compared safely; these cannot, so each one is parsed and
       // an unreadable date drops the row rather than inventing a moment.
-      const dates = toPaymentDates(c.date)
+      const dates = toPaymentDates(c.date, companyTimeZone)
       if (!dates) {
         checkoffUnreadable += 1
         skip('checkoff', 'legacy checkoff #' + c.id, 'unreadable date "' + c.date + '"')
