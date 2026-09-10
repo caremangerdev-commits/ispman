@@ -1,4 +1,10 @@
+import { decodeChanges } from '@/lib/customer-changes'
+
 /** Shared display formatting. Keep every user-facing number/date going through here. */
+
+/** How many changed fields a single activity-feed line names before it counts
+ *  the rest. Three fits the panel; the customer's Change History card shows all. */
+const EDIT_SUMMARY_MAX = 3
 
 const LOCALE = 'en-US'
 
@@ -265,6 +271,31 @@ export function humaniseLogDetail(details: string | null | undefined): string {
       'Payment #' + id + ' ' + action +
       (subject ? ' — ' + subject : '') +
       (runsTo ? '; service still runs to ' + runsTo : '') +
+      (by ? ', by ' + by : '')
+    )
+  }
+
+  // A customer edit carries one entry per field that moved, which is exact but
+  // reads as machine output. Summarised to the labels and their values, capped
+  // at three, because the activity panel is a feed and the customer's own
+  // Change History card renders the whole list properly.
+  const edit = /^(.+?) updated \| changes=([^|]*)/.exec(body.trim())
+  if (edit) {
+    const [, subject, encoded] = edit
+    const by = field('by')
+    const changes = decodeChanges(encoded)
+
+    if (changes.length === 0) return attribute(body)
+
+    const shown = changes
+      .slice(0, EDIT_SUMMARY_MAX)
+      .map((c) => (c.from && c.to ? c.label + ' ' + c.from + ' → ' + c.to : c.label + ' ' + c.to))
+      .join(', ')
+
+    const more = changes.length - EDIT_SUMMARY_MAX
+    return attribute(
+      subject.trim() + ': ' + shown +
+      (more > 0 ? ' and ' + more + ' more' : '') +
       (by ? ', by ' + by : '')
     )
   }

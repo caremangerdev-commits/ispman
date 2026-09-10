@@ -5,6 +5,10 @@ import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
 import { BALANCE_ADJUSTED } from '@/lib/data/balance-adjustments'
+import {
+  CUSTOMER_UPDATED, encodeChanges, FIELD_LABELS, REDACTED, safeValue, sameValue,
+  type FieldChange,
+} from '@/lib/customer-changes'
 import { formatCurrency } from '@/lib/format'
 import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
@@ -262,8 +266,10 @@ export async function createCustomer(
   // Attach any add-ons ticked on the form. A failure here is reported but the
   // customer is already created, so it must not roll the whole thing back.
   if (caps.catalog && newId) {
-    const addonError = await syncAddons(company.id, newId, formData)
-    if (addonError) return addonError
+    const addons = await syncAddons(company.id, newId, formData)
+    // The change it reports is ignored here: a new customer's add-ons are part
+    // of creating them, and customer_added already says the customer exists.
+    if (!addons.ok) return addons.error
   }
 
   await logEvent({
@@ -382,6 +388,21 @@ export async function updateCustomer(
   }
 
   const db = tenantClient()
+
+  // READ BEFORE WRITE, so the log can say what the value WAS. This select
+  // exists only for the audit row: nothing else here needs the old customer,
+  // and without it an edit can only ever record its own result, which is the
+  // half of the story already visible on the record itself.
+  //
+  // Only the columns being patched are read, so a schema without 0003 or 0005
+  // is not asked for columns it does not have.
+  const { data: beforeRow } = await db
+    .from('customers')
+    .select(Object.keys(patch).join(', '))
+    .eq('company_id', company.id)
+    .eq('id', id)
+    .maybeSingle()
+
   const { error } = await db
     .from('customers')
     .update(patch)
@@ -390,10 +411,24 @@ export async function updateCustomer(
 
   if (error) return { ok: false, error: 'Could not save changes: ' + error.message }
 
+  let addonChange: FieldChange | null = null
   if (caps.catalog) {
     const result = await syncAddons(company.id, id, formData)
-    if (result) return result
+    if (!result.ok) return result.error
+    addonChange = result.change
   }
+
+  // AFTER the write and after the add-ons, like every other audit row here: the
+  // edit is what the operator asked for and a failed log write must not undo
+  // it. logEvent never throws (lib/audit.ts).
+  await logCustomerUpdate({
+    companyId: company.id,
+    customerId: id,
+    before: (beforeRow ?? null) as Record<string, unknown> | null,
+    patch,
+    addonChange,
+    actor: profile.email,
+  })
 
   revalidatePath('/dashboard/customers/' + id)
   revalidatePath('/dashboard/customers')
@@ -401,16 +436,147 @@ export async function updateCustomer(
 }
 
 /**
+ * Writes the `customer_updated` row: who, when, and every field that moved.
+ *
+ * ONE ROW PER EDIT, not one per field. The activity log was deliberately
+ * quietened (see the payment_recorded removal); a rate change and a phone
+ * correction saved together are one operator action and read as one line.
+ * The fields are still individually legible — lib/customer-changes.ts encodes
+ * them and humaniseLogDetail renders them back.
+ *
+ * WRITES NOTHING WHEN NOTHING CHANGED. Opening the form and pressing Save is
+ * not an event, and a log full of empty edits is a log people stop reading.
+ */
+async function logCustomerUpdate(input: {
+  companyId: number
+  customerId: number
+  before: Record<string, unknown> | null
+  patch: Record<string, unknown>
+  addonChange: FieldChange | null
+  actor: string
+}): Promise<void> {
+  const { companyId, customerId, before, patch, addonChange, actor } = input
+
+  // Without the before-row there is nothing to diff. Recording "something was
+  // edited, contents unknown" is still worth more than silence, which is what
+  // this used to do.
+  if (!before) {
+    await logEvent({
+      customerId,
+      type: CUSTOMER_UPDATED,
+      tag: '[customers]',
+      details:
+        'Customer #' + customerId + ' updated' +
+        ' | changes=(previous values could not be read)' +
+        ' | by=' + actor,
+    })
+    return
+  }
+
+  const changes: FieldChange[] = []
+
+  for (const [field, next] of Object.entries(patch)) {
+    if (sameValue(before[field], next)) continue
+
+    // The one field whose value is never recorded — see REDACTED.
+    if (field === 'pppoe_password') {
+      changes.push({
+        field, label: FIELD_LABELS[field] ?? field, from: '', to: REDACTED,
+      })
+      continue
+    }
+
+    changes.push({
+      field,
+      label: FIELD_LABELS[field] ?? field,
+      from: safeValue(before[field]),
+      to: safeValue(next),
+    })
+  }
+
+  if (addonChange) changes.push(addonChange)
+  if (changes.length === 0) return
+
+  // Ids are resolved to names for the two fields where the id means nothing to
+  // a reader. "Segment: 57 → 58" is the fact that migration 0018 exists
+  // because of — an owner's income moving between them — and it has to be
+  // readable as "FILE A → FILE B" a year later.
+  await resolveNames(companyId, changes)
+
+  const name = [patch.first_name, patch.last_name].filter(Boolean).join(' ').trim()
+
+  await logEvent({
+    customerId,
+    type: CUSTOMER_UPDATED,
+    tag: '[customers]',
+    details:
+      (name || 'Customer #' + customerId) + ' updated' +
+      ' | changes=' + encodeChanges(changes) +
+      ' | by=' + actor,
+  })
+}
+
+/**
+ * Replaces catalogue ids with their names, in place.
+ *
+ * One query per table, and only when that field actually changed — an edit
+ * that leaves the segment alone costs nothing. A name that no longer resolves
+ * keeps its id rather than becoming "(none)": the row named something real at
+ * the time, and 0018 makes the same distinction for a deleted segment.
+ */
+async function resolveNames(companyId: number, changes: FieldChange[]): Promise<void> {
+  const db = tenantClient()
+
+  const tables: Record<string, string> = {
+    misc_category_id: 'misc_categories',
+    service_plan_id: 'service_plans',
+  }
+
+  for (const [field, table] of Object.entries(tables)) {
+    const change = changes.find((c) => c.field === field)
+    if (!change) continue
+
+    const ids = [change.from, change.to]
+      .map((v) => Number(v))
+      .filter((n) => Number.isFinite(n) && n > 0)
+    if (ids.length === 0) continue
+
+    const { data } = await db
+      .from(table)
+      .select('id, name')
+      .eq('company_id', companyId)
+      .in('id', ids)
+
+    const names = new Map(
+      ((data ?? []) as unknown as { id: number; name: string }[]).map((r) => [
+        String(r.id),
+        safeValue(r.name),
+      ])
+    )
+
+    change.from = names.get(change.from) ?? change.from
+    change.to = names.get(change.to) ?? change.to
+  }
+}
+
+/**
  * Reconciles the customer_additional_services rows against the submitted
  * checkboxes: delete what was unticked, insert what is new.
  *
- * Returns an ActionResult only on failure so the caller can surface it.
+ * Reports what it changed so the edit's audit row can name the add-ons that
+ * moved. They are a real part of what a customer is billed — each one adds to
+ * the monthly total — so an edit that only touches add-ons still changed the
+ * money and must not read as an edit that changed nothing.
  */
+type AddonSync =
+  | { ok: false; error: ActionResult }
+  | { ok: true; change: FieldChange | null }
+
 async function syncAddons(
   companyId: number,
   customerId: number,
   formData: FormData
-): Promise<ActionResult | null> {
+): Promise<AddonSync> {
   const wanted = new Set(
     formData
       .getAll('addon_ids')
@@ -426,7 +592,7 @@ async function syncAddons(
     .eq('customer_id', customerId)
 
   if (readError) {
-    return { ok: false, error: 'Saved, but add-ons could not be read: ' + readError.message }
+    return { ok: false, error: { ok: false, error: 'Saved, but add-ons could not be read: ' + readError.message } }
   }
 
   const existing = (data ?? []) as unknown as { id: number; additional_service_id: number }[]
@@ -437,7 +603,7 @@ async function syncAddons(
 
   if (toRemove.length) {
     const { error } = await db.from('customer_additional_services').delete().in('id', toRemove)
-    if (error) return { ok: false, error: 'Saved, but removing add-ons failed: ' + error.message }
+    if (error) return { ok: false, error: { ok: false, error: 'Saved, but removing add-ons failed: ' + error.message } }
   }
 
   if (toAdd.length) {
@@ -455,11 +621,58 @@ async function syncAddons(
         error.code === '23503'
           ? ' Run supabase/migrations/0006_fix_addon_fk.sql — the junction table has a bad foreign key.'
           : ''
-      return { ok: false, error: 'Saved, but adding add-ons failed: ' + error.message + hint }
+      return {
+        ok: false,
+        error: { ok: false, error: 'Saved, but adding add-ons failed: ' + error.message + hint },
+      }
     }
   }
 
-  return null
+  if (toRemove.length === 0 && toAdd.length === 0) return { ok: true, change: null }
+
+  // Named, not counted. "Add-ons: 2 → 3" says nothing about which service was
+  // added or what it costs; the names are the reason anyone reads the row.
+  const names = await addonNames(companyId, [
+    ...existing.filter((r) => toRemove.includes(r.id)).map((r) => r.additional_service_id),
+    ...toAdd,
+  ])
+  const label = (serviceId: number) => names.get(serviceId) ?? '#' + serviceId
+
+  const added = toAdd.map((serviceId) => '+' + label(serviceId))
+  const removed = existing
+    .filter((r) => toRemove.includes(r.id))
+    .map((r) => '−' + label(r.additional_service_id))
+
+  return {
+    ok: true,
+    change: {
+      field: 'addons',
+      label: FIELD_LABELS.addons,
+      from: '',
+      to: safeValue([...added, ...removed].join(', ')),
+    },
+  }
+}
+
+/** Names for a set of additional services, in one query. */
+async function addonNames(
+  companyId: number,
+  ids: number[]
+): Promise<Map<number, string>> {
+  if (ids.length === 0) return new Map()
+
+  const { data } = await tenantClient()
+    .from('additional_services')
+    .select('id, name')
+    .eq('company_id', companyId)
+    .in('id', [...new Set(ids)])
+
+  return new Map(
+    ((data ?? []) as unknown as { id: number; name: string | null }[]).map((r) => [
+      r.id,
+      r.name ?? '#' + r.id,
+    ])
+  )
 }
 
 // ---------------------------------------------------------------------------

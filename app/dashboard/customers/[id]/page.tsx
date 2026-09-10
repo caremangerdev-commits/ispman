@@ -4,9 +4,11 @@ import { notFound } from 'next/navigation'
 import { ArrowLeft, Plus } from 'lucide-react'
 
 import { CustomerDetail } from '@/components/customers/CustomerDetail'
+import { ChangeHistory } from '@/components/customers/ChangeHistory'
 import { NetworkHistory } from '@/components/customers/NetworkHistory'
 import { TicketPriorityBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges'
 import { lastBalanceAdjustment } from '@/lib/data/balance-adjustments'
+import { listCustomerChanges } from '@/lib/data/customer-changes'
 import { listNetworkHistory } from '@/lib/data/network-events'
 import {
   getCustomerAddonIds, listAdditionalServices, listMiscCategories, listServicePlans,
@@ -35,7 +37,7 @@ export default async function CustomerDetailPage({
 
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
-    balanceAdjustment,
+    balanceAdjustment, changeHistory,
   ] = await Promise.all([
       getCustomerPayments(company.id, customerId),
       getCustomerTickets(company.id, customerId),
@@ -58,6 +60,9 @@ export default async function CustomerDetailPage({
       // Marks a carried balance that was set by hand rather than by the bill
       // run. Log-derived, so there is no column and no migration behind it.
       lastBalanceAdjustment(company.id, customerId),
+      // The edit trail for this record. Log-derived like the two above, so
+      // there is no column and no migration behind it either.
+      listCustomerChanges(company.id, customerId, 10),
     ])
 
   const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
@@ -118,6 +123,11 @@ export default async function CustomerDetailPage({
       />
 
       <NetworkHistory entries={networkHistory} />
+
+      {/* Sits beside Network History because they answer the same kind of
+          question — what has been done to this record, by whom, and when —
+          from the two halves of the log that record it. */}
+      <ChangeHistory entries={changeHistory} />
 
       {/* Payment history */}
       <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
