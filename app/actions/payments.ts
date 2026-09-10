@@ -22,6 +22,7 @@ import {
 } from '@/lib/radius/operations'
 import { getSchemaCapabilities, type SchemaCapabilities } from '@/lib/schema'
 import { logEvent } from '@/lib/audit'
+import { notifyPaymentReceipt } from '@/lib/sms/notify'
 import { displayName, getSession, type Session } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -243,6 +244,18 @@ async function recordOtherPayment(
     .single()
 
   if (insertError) return { ok: false, error: 'Could not record payment: ' + insertError.message }
+
+  // The receipt text. Queued, not sent — the dispatcher owns delivery — and it
+  // cannot fail this action: the money is taken and the row is written, so a
+  // text that could not be queued must not turn a completed payment into an
+  // error in front of a cashier.
+  await notifyPaymentReceipt({
+    companyId: company.id,
+    companyName: company.name,
+    customerId: customer.id,
+    paymentId: (inserted as unknown as { id: number }).id,
+    amount: paidAmount,
+  })
 
   revalidatePath('/dashboard/customers/' + customer.id)
   revalidatePath('/dashboard/payments')
@@ -835,6 +848,16 @@ export async function recordPayment(
         updateError.message,
     }
   }
+
+  // Same as the "other" path above: queued after the money is recorded, and
+  // never able to fail the payment.
+  await notifyPaymentReceipt({
+    companyId: company.id,
+    companyName: company.name,
+    customerId: customer.id,
+    paymentId,
+    amount: paidAmount,
+  })
 
   revalidatePath('/dashboard/customers/' + customer.id)
   revalidatePath('/dashboard/customers')

@@ -7,6 +7,7 @@ import { logEvent } from '@/lib/audit'
 import { allocateAccountNumber } from '@/lib/data/account-numbers'
 import { BALANCE_ADJUSTED } from '@/lib/data/balance-adjustments'
 import { isEmail } from '@/lib/email'
+import { notifyDisconnection } from '@/lib/sms/notify'
 import {
   CUSTOMER_DELETED, CUSTOMER_UPDATED, encodeChanges, FIELD_LABELS, REDACTED,
   safeValue, sameValue,
@@ -902,6 +903,25 @@ async function runNetworkAction(opts: {
   // Billing dates are deliberately untouched. Status and expiry live in the
   // registry now, and last_bill_date is record-keeping that must never feed an
   // expiry calculation (lib/billing.ts#serviceExpiry).
+
+  // --- 3. tell the customer, if this tenant has that switched on -----------
+  //
+  // AFTER the registry write and the event row, and it cannot fail this action:
+  // the customer is already off the network, and refusing to complete a
+  // disconnection because a text could not be queued would leave the operator
+  // with a half-done job to explain. Silent for every tenant that has not
+  // turned SMS on, which is all of them until they do.
+  if (action === 'disconnect') {
+    const { data: setting } = await tenantClient()
+      .from('settings').select('timezone').eq('company_id', company.id).maybeSingle()
+
+    await notifyDisconnection({
+      companyId: company.id,
+      companyName: company.name,
+      customerId: id,
+      timezone: (setting as { timezone?: string } | null)?.timezone ?? 'America/Jamaica',
+    })
+  }
 
   revalidatePath('/dashboard/customers')
   revalidatePath('/dashboard/customers/' + id)
