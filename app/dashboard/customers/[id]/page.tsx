@@ -1,3 +1,6 @@
+import { getGeneralSettings } from '@/lib/data/company'
+import { getSchemaCapabilities } from '@/lib/schema'
+import { taxIdLabel } from '@/lib/tax-id'
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
@@ -37,7 +40,7 @@ export default async function CustomerDetailPage({
 
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
-    balanceAdjustment, changeHistory,
+    balanceAdjustment, changeHistory, settings, caps,
   ] = await Promise.all([
       getCustomerPayments(company.id, customerId),
       getCustomerTickets(company.id, customerId),
@@ -63,6 +66,9 @@ export default async function CustomerDetailPage({
       // The edit trail for this record. Log-derived like the two above, so
       // there is no column and no migration behind it either.
       listCustomerChanges(company.id, customerId, 10),
+      // The company's own word for the tax id, and whether the columns exist.
+      getGeneralSettings(company.id),
+      getSchemaCapabilities(),
     ])
 
   const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
@@ -90,6 +96,11 @@ export default async function CustomerDetailPage({
           monthly_rate: customer.monthly_rate,
           balance: customer.balance,
           cut_off_date: customer.cut_off_date,
+          taxId: customer.taxId,
+          taxIdAvailable: caps.taxId,
+          taxIdLabel: taxIdLabel(settings.taxIdLabel, settings.country),
+          country: settings.country || null,
+          accountNumber: customer.accountNumber,
           billingAvailable: customer.billingAvailable,
           billingType: customer.billingType,
           bill_date: customer.bill_date,

@@ -24,6 +24,8 @@ export type PaymentListRow = {
   notes: string | null
   customerId: number | null
   customerName: string
+  /** The customer's account number (0020). Null until it is applied. */
+  accountNumber: string | null
   checkedOff: boolean
   /**
    * The customer segment this payment is attributed to: the value stamped on
@@ -126,7 +128,9 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
 
   const cols =
     'id, amount, months_paid, payment_type, payment_date, agent, notes, customer_id, ' +
-    'customers(first_name, last_name' + (caps.catalog ? ', misc_category_id' : '') + ')' +
+    'customers(first_name, last_name' +
+    (caps.catalog ? ', misc_category_id' : '') +
+    (caps.accountNumbers ? ', account_number' : '') + ')' +
     // The stamped segment (0018) for rows written since it existed; the join
     // above is the fallback for everything older. See segmentOf.
     (caps.paymentSegment ? ', customer_misc_category_id' : '') +
@@ -201,6 +205,7 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
       first_name: string | null
       last_name: string | null
       misc_category_id?: number | null
+      account_number?: string | null
     } | null
   }
 
@@ -220,6 +225,7 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
     customerName: [r.customers?.first_name, r.customers?.last_name]
       .filter(Boolean)
       .join(' ') || 'Unknown',
+    accountNumber: r.customers?.account_number ?? null,
     checkedOff: Boolean(r.checked_off),
     // STAMPED FIRST, JOIN SECOND. The stamp says which segment the customer was
     // in when they paid; the join says which one they are in now. They differ

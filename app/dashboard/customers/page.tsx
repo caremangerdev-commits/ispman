@@ -164,6 +164,16 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
                     >
                       {fullName(c)}
                     </Link>
+                    {/* Under the name, because that is where the eye already is
+                        when two customers share one — which is the whole reason
+                        account numbers exist here. Rendered only once 0020 is
+                        applied; before that there is nothing to show and no
+                        empty line appears. */}
+                    {c.account_number ? (
+                      <span className="mt-0.5 block font-mono text-[11px] text-gray-500">
+                        {c.account_number}
+                      </span>
+                    ) : null}
                   </td>
                   {/* Truncated, not wrapped: a long address must not make one
                       row twice the height of its neighbours. The title carries

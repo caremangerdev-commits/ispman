@@ -1,5 +1,6 @@
 'use server'
 
+import { accountNumbersInUse, allocateAccountNumber } from '@/lib/data/account-numbers'
 import { revalidatePath } from 'next/cache'
 
 import { logEvent } from '@/lib/audit'
@@ -349,6 +350,55 @@ export async function importCustomerBatch(batch: ImportBatch): Promise<BatchResu
   }
 
   if (prepared.length === 0) return { inserted: 0, failures }
+
+  // --- account numbers ------------------------------------------------------
+  //
+  // SUPPLIED WINS, OTHERWISE ISSUED. A company migrating in keeps the numbers
+  // its customers already know; everyone else gets one from the counter.
+  //
+  // A supplied number that is already taken is REFUSED FOR THAT ROW rather
+  // than quietly renumbered — a duplicate account number is exactly the
+  // ambiguity this feature exists to remove, and silently issuing a different
+  // one would leave the customer holding a number that no longer finds them.
+  // The row is reported and the rest of the batch proceeds.
+  if (caps.accountNumbers) {
+    const supplied = prepared
+      .map((p) => p.row.accountNumber)
+      .filter(Boolean)
+
+    // Collisions with rows already in the database, and within this batch.
+    const taken = await accountNumbersInUse(company.id, supplied)
+    const seen = new Set<string>()
+
+    const survivors: typeof prepared = []
+    for (const item of prepared) {
+      const wanted = item.row.accountNumber
+
+      if (wanted) {
+        if (taken.has(wanted) || seen.has(wanted)) {
+          failures.push({
+            rowNumber: item.row.rowNumber,
+            name: displayNameOf(item.row),
+            error: 'Account number ' + wanted + ' is already in use.',
+          })
+          continue
+        }
+        seen.add(wanted)
+        item.payload.account_number = wanted
+      } else {
+        // Issued one at a time, because the counter is the only thing that
+        // knows what is next and each take has to be its own compare-and-swap.
+        const issued = await allocateAccountNumber(company.id)
+        if (issued) item.payload.account_number = issued
+      }
+
+      survivors.push(item)
+    }
+
+    prepared.length = 0
+    prepared.push(...survivors)
+    if (prepared.length === 0) return { inserted: 0, failures }
+  }
 
   const db = tenantClient()
   const { error } = await db.from('customers').insert(prepared.map((p) => p.payload))

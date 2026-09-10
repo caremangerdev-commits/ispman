@@ -41,6 +41,8 @@ async function selectWithExtras(join = false) {
   let sel = SELECT
   if (caps.connectionTypes) sel += ', customer_type, pppoe_username, access_point'
   if (caps.expiryMode) sel += ', expiry_mode'
+  if (caps.taxId) sel += ', tax_id'
+  if (caps.accountNumbers) sel += ', account_number'
   if (caps.billing) {
     sel += ', billing_type, carried_balance, account_credit, bill_date, last_billed_date'
   }
@@ -84,6 +86,9 @@ export function withBillingDefaults<T extends Record<string, unknown>>(row: T) {
 }
 
 export type CustomerListRow = CustomerWithExpiry & {
+  /** Migration 0020. Null before it is applied, and for any row that somehow
+   *  arrived without one. */
+  account_number?: string | null
   /**
    * For imported customers this holds the location name — ENDEAVOUR, MT ZION,
    * BROWN'S TOWN — which is what the list column and the address filter show.
@@ -157,7 +162,11 @@ export async function listCustomers(opts: {
   // fields, so address is carried back on explicitly rather than cast in.
   const all = (data as unknown as (Customer & { address: string | null })[])
     .map((row) => withBillingDefaults(row) as Customer & { address: string | null })
-    .map((row) => ({ ...withExpiry(row), address: row.address ?? null }))
+    .map((row) => ({
+      ...withExpiry(row),
+      address: row.address ?? null,
+      account_number: (row as { account_number?: string | null }).account_number ?? null,
+    }))
 
   // One registry lookup for the whole company. A failure leaves every row
   // 'unknown' rather than falsely reporting them all unregistered.
@@ -228,6 +237,10 @@ export type CustomerDetail = CustomerWithExpiry & {
   cut_off_date: number | null
   /** Migration 0011. `billingAvailable` is false until it is applied, and the
    *  detail page hides the postpaid rows rather than showing empty ones. */
+  /** Migration 0019. Null when absent; the LABEL comes from settings. */
+  taxId: string | null
+  /** Migration 0020. */
+  accountNumber: string | null
   billingAvailable: boolean
   billingType: BillingType
   /** null when migration 0003 has not been applied. */
@@ -303,6 +316,10 @@ export async function getCustomer(
     address: row.address,
     gps: row.gps,
     cut_off_date: row.cut_off_date,
+    taxId: caps.taxId ? ((row as { tax_id?: string | null }).tax_id ?? null) : null,
+    accountNumber: caps.accountNumbers
+      ? ((row as { account_number?: string | null }).account_number ?? null)
+      : null,
     billingAvailable: caps.billing,
     billingType: toBillingType(caps.billing ? row.billing_type : 'prepaid'),
     customerType: caps.connectionTypes ? toCustomerType(row.customer_type) : null,

@@ -50,6 +50,15 @@ export type DetailCustomer = {
   balance: number | string | null
   cut_off_date: number | null
   last_bill_date: string | null
+  /** migration 0019. The value; the LABEL comes from taxIdLabel below. */
+  taxId: string | null
+  taxIdAvailable: boolean
+  /** What this company calls it — TRN, EIN/SSN, or just Tax ID. */
+  taxIdLabel: string
+  /** The ISO country, so the field can validate only when it is known. */
+  country: string | null
+  /** migration 0020 */
+  accountNumber: string | null
   /** migration 0011 */
   billingAvailable: boolean
   billingType: BillingType
@@ -523,6 +532,28 @@ export function CustomerDetail({
           <Row label="Phone" value={c.phone ?? '—'} editing={editing} name="phone" defaultValue={c.phone ?? ''} />
           <Row label="Email" value={c.email ?? '—'} editing={editing} name="email" type="email" defaultValue={c.email ?? ''} />
           <Row label="Address" value={c.address ?? '—'} editing={editing} name="address" defaultValue={c.address ?? ''} />
+
+          {/* NOT EDITABLE. An account number is issued once and never reissued
+              — it is on receipts already handed over and in customers' own
+              notes — so it is shown and not offered as a field. Absent before
+              0020, and absent for any row that somehow arrived without one. */}
+          {c.accountNumber ? (
+            <Row label="Account #" value={c.accountNumber} mono />
+          ) : null}
+
+          {/* Named by the company: TRN in Jamaica, EIN/SSN in the US, plain
+              "Tax ID" where nobody has said. See lib/tax-id.ts. Hidden entirely
+              until 0019 is applied rather than rendering an unnamed box. */}
+          {c.taxIdAvailable ? (
+            <Row
+              label={c.taxIdLabel}
+              value={c.taxId ?? '—'}
+              editing={editing}
+              name="tax_id"
+              defaultValue={c.taxId ?? ''}
+              mono
+            />
+          ) : null}
           {/* Not a plain Row: the edit control carries the capture button, and
               the read-only value is a link onto a map rather than bare text. */}
           <ControlRow

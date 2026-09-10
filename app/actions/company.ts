@@ -1,5 +1,6 @@
 'use server'
 
+import { normalisePrefix } from '@/lib/account-number'
 import { revalidatePath } from 'next/cache'
 
 import { CURRENCIES, DATE_FORMATS, TIMEZONES } from '@/lib/data/company'
@@ -180,6 +181,21 @@ export async function saveCompanyProfile(
   if (caps.firstPeriod) {
     patch.first_expiry_rule_enabled = bool(formData, 'first_expiry_rule_enabled')
     patch.prorata_first_payment_enabled = bool(formData, 'prorata_first_payment_enabled')
+  }
+
+  if (caps.taxId) {
+    // Uppercased and length-checked here rather than trusted from the select:
+    // a server action is a public POST endpoint and the CHECK constraint in
+    // 0019 would otherwise reject the whole save with a raw database error.
+    const country = str(formData, 'country').toUpperCase()
+    patch.country = /^[A-Z]{2}$/.test(country) ? country : null
+    patch.tax_id_label = str(formData, 'tax_id_label').slice(0, 40) || null
+  }
+
+  if (caps.accountNumbers) {
+    // Normalised to what can be read aloud — see normalisePrefix. Changing it
+    // renames nothing already issued; it applies to numbers taken from here on.
+    patch.account_number_prefix = normalisePrefix(str(formData, 'account_number_prefix'))
   }
 
   // 0007 guarantees a settings row per company, but this page must still work

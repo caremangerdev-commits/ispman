@@ -31,13 +31,14 @@ export type FieldTarget =
   | 'mac_address'
   | 'pppoe_username'
   | 'notes'
+  | 'account_number'
   | 'ignore'
 
 /** Dropdown order in step 2. `ignore` sits last as the opt-out. */
 export const FIELD_TARGETS: FieldTarget[] = [
   'full_name', 'first_name', 'last_name', 'phone', 'address', 'service_plan',
   'monthly_rate', 'cut_off_day', 'date_added', 'mac_address', 'pppoe_username',
-  'notes', 'ignore',
+  'notes', 'account_number', 'ignore',
 ]
 
 export const FIELD_LABELS: Record<FieldTarget, string> = {
@@ -53,6 +54,7 @@ export const FIELD_LABELS: Record<FieldTarget, string> = {
   mac_address: 'MAC address',
   pppoe_username: 'PPPoE username',
   notes: 'Notes',
+  account_number: 'Account number',
   ignore: 'Ignore',
 }
 
@@ -65,7 +67,7 @@ export const FIELD_LABELS: Record<FieldTarget, string> = {
  */
 export type ImportField =
   'name' | 'first' | 'last' | 'phone' | 'address' | 'plan' | 'rate' | 'cutOff'
-  | 'dateAdded' | 'mac' | 'pppoe' | 'notes'
+  | 'dateAdded' | 'mac' | 'pppoe' | 'notes' | 'accountNumber'
 
 const TARGET_FIELD: Record<Exclude<FieldTarget, 'ignore'>, ImportField> = {
   full_name: 'name',
@@ -80,6 +82,7 @@ const TARGET_FIELD: Record<Exclude<FieldTarget, 'ignore'>, ImportField> = {
   mac_address: 'mac',
   pppoe_username: 'pppoe',
   notes: 'notes',
+  account_number: 'accountNumber',
 }
 
 /** One spreadsheet row reduced to the fields the operator mapped. */
@@ -469,6 +472,16 @@ export type ResolvedRow = {
   plan: string
   pppoe: string
   notes: string
+  /**
+   * An account number the company brought with it, or '' to have one issued.
+   *
+   * ACCEPTED RATHER THAN ALWAYS GENERATED, because a company migrating from
+   * another system has numbers its customers already know — printed on their
+   * last bill, written in a notebook. Renumbering everybody on import would
+   * break every reference they hold. See app/actions/import.ts for what happens
+   * when it collides with one already in use.
+   */
+  accountNumber: string
   /** Uppercase colon form, or null for "no MAC" — never the placeholder. */
   mac: string | null
   rate: number | null
@@ -563,6 +576,7 @@ export function resolveRow(
     plan: (raw.plan ?? '').trim(),
     pppoe: (raw.pppoe ?? '').trim(),
     notes: (raw.notes ?? '').trim(),
+    accountNumber: (raw.accountNumber ?? '').trim().slice(0, 32),
     mac,
     rate,
     cutOffDay,

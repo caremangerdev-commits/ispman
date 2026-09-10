@@ -30,6 +30,7 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
 
   const cols =
     'id, first_name, last_name, phone, address, mac_address, last_bill_date, monthly_rate, cut_off_date' +
+    (caps.accountNumbers ? ', account_number' : '') +
     (caps.connectionTypes ? ', customer_type' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
@@ -54,6 +55,7 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
     last_name: string | null
     phone: string | null
     address: string | null
+    account_number?: string | null
     mac_address: string | null
     last_bill_date: string | null
     monthly_rate: number | string | null
@@ -100,6 +102,7 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
     last_name: r.last_name,
     phone: r.phone,
     address: r.address,
+    account_number: r.account_number ?? null,
     mac_address: r.mac_address,
     ...(await (async () => {
       const [net, lastEvent] = await Promise.all([

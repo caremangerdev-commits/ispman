@@ -34,6 +34,13 @@ export type GeneralSettings = {
   timezone: string
   currency: string
   dateFormat: string
+  /** Migration 0019. ISO 3166-1 alpha-2, or '' for "not stated" — which is a
+   *  permanent answer, not a gap: it is what keeps tax-id validation off. */
+  country: string
+  /** Migration 0019. Empty means derive from country — see lib/tax-id.ts. */
+  taxIdLabel: string
+  /** Migration 0020. Empty means account numbers stand alone. */
+  accountNumberPrefix: string
   // settings — billing
   cutOffDate: number | null
   billDate: number | null
@@ -75,6 +82,8 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
     cols += ', date_format, grace_period_days, tax_rate, expiry_warning_days, ddns_hostname, radius_secret'
   }
   if (caps.defaultMonthlyRate) cols += ', default_monthly_rate'
+  if (caps.taxId) cols += ', country, tax_id_label'
+  if (caps.accountNumbers) cols += ', account_number_prefix'
   if (caps.billing) cols += ', default_billing_type'
   if (caps.billingThresholds) {
     cols += ', late_credit_threshold, min_payment_threshold, max_carried_balance'
@@ -134,6 +143,10 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
     timezone: s?.timezone ?? 'America/Jamaica',
     currency: s?.currency ?? 'JMD',
     dateFormat: s?.date_format ?? 'DD/MM/YYYY',
+    country: (s as { country?: string | null })?.country ?? '',
+    taxIdLabel: (s as { tax_id_label?: string | null })?.tax_id_label ?? '',
+    accountNumberPrefix:
+      (s as { account_number_prefix?: string | null })?.account_number_prefix ?? '',
     cutOffDate: s?.cut_off_date ?? null,
     billDate: s?.bill_date ?? null,
     defaultExpiryMode: toExpiryMode(caps.expiryMode ? s?.default_expiry_mode : 'from_expiry'),

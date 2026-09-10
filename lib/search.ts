@@ -78,7 +78,17 @@ function asId(token: string): string | null {
  * Returns an empty array for a blank query, meaning "no filter", not
  * "match nothing".
  */
-export function searchClauses(query: string): string[] {
+export function searchClauses(
+  query: string,
+  /**
+   * Whether migration 0020 has been applied.
+   *
+   * MUST BE PASSED HONESTLY. PostgREST rejects the WHOLE query for one unknown
+   * column, so naming account_number before the migration exists does not
+   * degrade the search — it breaks it outright, everywhere it is used.
+   */
+  opts: { accountNumbers?: boolean } = {}
+): string[] {
   return searchTokens(query).map((token) => {
     const p = pattern(token)
     const parts = [
@@ -88,12 +98,11 @@ export function searchClauses(query: string): string[] {
       'address.ilike.' + p,
       'mac_address.ilike.' + p,
     ]
-    // `customers` HAS NO ACCOUNT NUMBER COLUMN — see lib/data/receipts.ts,
-    // which omits the receipt's Account line for the same reason. The row id is
-    // the only account-shaped identifier the system has, and it is what the
-    // customer's own URL ends in, so a digits-only word is matched against it
-    // as well as against the phone. The day a real account number column
-    // exists, add it here and to matchesCustomer and nothing else changes.
+    if (opts.accountNumbers) parts.push('account_number.ilike.' + p)
+    // The row id, still matched now that account numbers exist alongside it.
+    // It is what the customer's own URL ends in and what an operator reads off
+    // the address bar, so a digits-only word is checked against it as well as
+    // against the phone and the account number.
     const id = asId(token)
     if (id) parts.push('id.eq.' + id)
     return parts.join(',')
@@ -108,6 +117,8 @@ export type SearchableCustomer = {
   phone: string | null
   address: string | null
   mac_address: string | null
+  /** Migration 0020. Undefined on callers that predate it. */
+  account_number?: string | null
 }
 
 /**
@@ -128,6 +139,7 @@ export function matchesCustomer(row: SearchableCustomer, query: string): boolean
     row.phone,
     row.address,
     row.mac_address,
+    row.account_number ?? null,
   ]
     .map((v) => (v ?? '').toLowerCase())
     .filter(Boolean)

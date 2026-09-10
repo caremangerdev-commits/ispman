@@ -66,8 +66,12 @@ export async function GET(request: NextRequest) {
   const segmentName = (id: number | null) =>
     id === null ? 'Uncategorised' : names.get(id) ?? 'Deleted category #' + id
 
+  // NO TAX ID COLUMN, DELIBERATELY. This export exists so an owner can check
+  // figures; a downloadable file of national identifiers is a different risk
+  // class and nothing here needs one. See supabase/migrations/0019_tax_id.sql.
   const header = [
     'Receipt No',
+    ...(caps.accountNumbers ? ['Account No'] : []),
     'Date',
     'Recorded At',
     'Customer',
@@ -90,6 +94,7 @@ export async function GET(request: NextRequest) {
     rows.push(
       csvRow([
         receiptNumber(p.id),
+        ...(caps.accountNumbers ? [p.accountNumber ?? ''] : []),
         // paid_on is the business date the cashier stated, and it is what the
         // date filter above means — so it is what "Date" has to be here too.
         // Rows written before 0013 have none and fall back to the timestamp's

@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
+import { allocateAccountNumber } from '@/lib/data/account-numbers'
 import { BALANCE_ADJUSTED } from '@/lib/data/balance-adjustments'
 import {
   CUSTOMER_DELETED, CUSTOMER_UPDATED, encodeChanges, FIELD_LABELS, REDACTED,
@@ -194,6 +195,11 @@ export async function createCustomer(
     }
   }
 
+  // Issued before the insert so the number lands with the row. Null when 0020
+  // is not applied, or when the counter could not be taken — the column is
+  // nullable exactly so a signup never fails for want of a number.
+  const account_number = await allocateAccountNumber(company.id)
+
   const last_bill_date = todayYmd()
 
   const row: Record<string, unknown> = {
@@ -256,6 +262,9 @@ export async function createCustomer(
       (settings as { default_expiry_mode?: string | null } | null)?.default_expiry_mode
     )
   }
+
+  if (caps.taxId) row.tax_id = str(formData, 'tax_id') || null
+  if (caps.accountNumbers && account_number) row.account_number = account_number
 
   const { data, error } = await db.from('customers').insert(row).select('id').maybeSingle()
 
@@ -373,6 +382,8 @@ export async function updateCustomer(
     patch.access_point = str(formData, 'access_point') || null
   }
 
+  if (caps.taxId) patch.tax_id = str(formData, 'tax_id') || null
+
   if (caps.catalog) {
     patch.connection_type = toConnectionType(str(formData, 'connection_type'))
     patch.customer_category = toCustomerCategory(str(formData, 'customer_category'))
@@ -479,8 +490,14 @@ async function logCustomerUpdate(input: {
   for (const [field, next] of Object.entries(patch)) {
     if (sameValue(before[field], next)) continue
 
-    // The one field whose value is never recorded — see REDACTED.
-    if (field === 'pppoe_password') {
+    // THE TWO FIELDS WHOSE VALUES ARE NEVER RECORDED — see REDACTED.
+    //
+    // tax_id joins pppoe_password here because of what it holds: in the US
+    // this column carries an EIN or an SSN, and writing those into a log table
+    // every manager can read would turn the audit trail into the most
+    // convenient place in the system to harvest national identifiers. That it
+    // changed, when, and by whom is the auditable fact; the number is not.
+    if (field === 'pppoe_password' || field === 'tax_id') {
       changes.push({
         field, label: FIELD_LABELS[field] ?? field, from: '', to: REDACTED,
       })

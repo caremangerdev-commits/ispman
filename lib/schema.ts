@@ -75,6 +75,21 @@ export type SchemaCapabilities = {
    * degraded one.
    */
   paymentSegment: boolean
+  /**
+   * Migration 0019: `customers.tax_id` plus `settings.country` and
+   * `settings.tax_id_label`, which decide what to CALL it. All three together —
+   * a tax id field with no label to put on it renders as an unnamed box, and
+   * the country is what makes validating a format safe to add later.
+   */
+  taxId: boolean
+  /**
+   * Migration 0020: `customers.account_number`, the `account_counters` table
+   * that issues them, and `settings.account_number_prefix`. Required together:
+   * the column without the counter has no way to allocate the next number, and
+   * allocating without the unique index that ships alongside it would issue
+   * duplicates silently.
+   */
+  accountNumbers: boolean
 }
 
 /**
@@ -100,6 +115,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     billingCustomerRes, billingPaymentRes, billingSettingRes, thresholdRes,
     otherPaymentRes, paymentCategoryRes, creditReversalRes, logMetadataRes,
     firstPeriodRes, amountDueRes, paymentSegmentRes,
+    taxIdCustomerRes, taxIdSettingRes, accountNumberRes, accountCounterRes,
+    accountPrefixRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -137,8 +154,13 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
       .limit(1),
     db.from('payments').select('amount_due, first_period_discount').limit(1),
     db.from('payments').select('customer_misc_category_id').limit(1),
+    db.from('customers').select('tax_id').limit(1),
+    db.from('settings').select('country, tax_id_label').limit(1),
+    db.from('customers').select('account_number').limit(1),
+    db.from('account_counters').select('company_id').limit(1),
+    db.from('settings').select('account_number_prefix').limit(1),
   ])
-  console.log('[perf]     schema probe: 18 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 23 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -171,6 +193,15 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     firstPeriodRes.error?.code === '42703' || amountDueRes.error?.code === '42703'
   // 0018 is a single ALTER, so the one column decides it.
   const missingPaymentSegment = paymentSegmentRes.error?.code === '42703'
+  // 0019 spans two tables, so either half missing disables the field.
+  const missingTaxId =
+    taxIdCustomerRes.error?.code === '42703' || taxIdSettingRes.error?.code === '42703'
+  // 0020 likewise, and it also adds a table.
+  const missingAccountNumbers =
+    accountNumberRes.error?.code === '42703' ||
+    accountPrefixRes.error?.code === '42703' ||
+    accountCounterRes.error?.code === 'PGRST205' ||
+    accountCounterRes.error?.code === '42P01'
   const missingPaymentCategories =
     paymentCategoryRes.error?.code === 'PGRST205' || paymentCategoryRes.error?.code === '42P01'
 
@@ -250,6 +281,24 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     )
   }
 
+  for (const [what, res] of Object.entries({
+    'customers.tax_id': taxIdCustomerRes,
+    'settings tax id columns': taxIdSettingRes,
+    'customers.account_number': accountNumberRes,
+    'settings.account_number_prefix': accountPrefixRes,
+  })) {
+    if (res.error && res.error.code !== '42703') {
+      throw new Error('Schema probe failed for ' + what + ': ' + res.error.message)
+    }
+  }
+  if (
+    accountCounterRes.error &&
+    accountCounterRes.error.code !== 'PGRST205' &&
+    accountCounterRes.error.code !== '42P01'
+  ) {
+    throw new Error('Schema probe failed for account_counters: ' + accountCounterRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -270,6 +319,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     logMetadata: !missingLogMetadata,
     firstPeriod: !missingFirstPeriod,
     paymentSegment: !missingPaymentSegment,
+    taxId: !missingTaxId,
+    accountNumbers: !missingAccountNumbers,
   }
 })
 

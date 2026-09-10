@@ -40,7 +40,8 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
       ? ', payment_kind, paid_on, service_charge, service_active_until, ' +
         'payment_categories(name)'
       : '') +
-    ', customers(id, first_name, last_name)'
+    ', customers(id, first_name, last_name' +
+    (caps.accountNumbers ? ', account_number' : '') + ')'
 
   const tPay = Date.now()
   const { data, error } = await db
@@ -73,7 +74,13 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     service_charge?: number | string | null
     service_active_until?: string | null
     payment_categories?: { name: string } | null
-    customers: { id: number; first_name: string | null; last_name: string | null } | null
+    customers: {
+      id: number
+      first_name: string | null
+      last_name: string | null
+      /** Migration 0020; absent from the select until it is applied. */
+      account_number?: string | null
+    } | null
   }
 
   // Company identity and timezone for the header. Read live and not stamped on
@@ -213,11 +220,12 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     cashier: r.agent ?? '',
     customerName:
       [r.customers?.first_name, r.customers?.last_name].filter(Boolean).join(' ') || 'Customer',
-    // `customers` has no account number column — there is nowhere for one to
-    // come from, so the line is omitted, which is the behaviour the brief
-    // specifies for a customer without one. Populate this the day such a column
-    // exists and the line appears with no other change.
-    accountNumber: null,
+    // Migration 0020 gave customers a real account number, and this line has
+    // been waiting for it — it used to read null with a note saying to populate
+    // it the day such a column existed. Null stays the answer before 0020 and
+    // for any row without one, and the receipt omits the line entirely rather
+    // than printing an empty field.
+    accountNumber: r.customers?.account_number ?? null,
     lines,
     totalDue,
     paidLabel: 'Paid (' + PAYMENT_METHOD_LABELS[method] + ')',

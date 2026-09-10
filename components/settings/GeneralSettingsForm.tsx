@@ -1,5 +1,7 @@
 'use client'
 
+import { ACCOUNT_PREFIX_MAX } from '@/lib/account-number'
+import { COUNTRIES, TAX_ID_MAX, taxIdLabel } from '@/lib/tax-id'
 import { Eye, EyeOff } from 'lucide-react'
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
@@ -99,6 +101,8 @@ export function GeneralSettingsForm({
   thresholdsAvailable,
   firstPeriodAvailable,
   currencySymbol,
+  taxIdAvailable,
+  accountNumbersAvailable,
 }: {
   settings: GeneralSettings
   currencies: readonly string[]
@@ -113,6 +117,10 @@ export function GeneralSettingsForm({
   /** migration 0017 — the two first-period rules. */
   firstPeriodAvailable: boolean
   currencySymbol: string
+  /** Migration 0019 — hides the country and label fields until applied. */
+  taxIdAvailable: boolean
+  /** Migration 0020 — hides the prefix field until applied. */
+  accountNumbersAvailable: boolean
 }) {
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveCompanyProfile, null)
 
@@ -124,6 +132,11 @@ export function GeneralSettingsForm({
   const [sms, setSms] = useState(settings.smsEnabled)
   const [emailOn, setEmailOn] = useState(settings.emailEnabled)
   const [showSecret, setShowSecret] = useState(false)
+
+  // What the tax id field is called right now, shown as the placeholder and in
+  // the hint so the operator can see what leaving the override blank gives.
+  const [country, setCountry] = useState(settings.country)
+  const resolvedTaxLabel = taxIdLabel(settings.taxIdLabel, country)
 
   const lockedHint = generalAvailable ? undefined : 'Needs migration 0007.'
   const thresholdHint = thresholdsAvailable ? undefined : 'Needs migration 0012.'
@@ -187,6 +200,67 @@ export function GeneralSettingsForm({
               ))}
             </select>
           </Field>
+
+          {/* Country, and what it implies. Setting it names the tax id field
+              correctly and is the ONLY thing that lets its format be checked —
+              until a country is stated the field accepts anything, deliberately
+              and permanently. See lib/tax-id.ts. */}
+          {taxIdAvailable ? (
+            <>
+              <Field
+                label="Country"
+                htmlFor="country"
+                hint="Names the tax ID field. Leave blank to accept any format."
+              >
+                <select
+                  id="country"
+                  name="country"
+                  defaultValue={settings.country}
+                  onChange={(e) => setCountry(e.target.value)}
+                  className={settingsInput}
+                >
+                  <option value="">Not stated</option>
+                  {COUNTRIES.map((c) => (
+                    <option key={c.code} value={c.code}>{c.name}</option>
+                  ))}
+                </select>
+              </Field>
+
+              <Field
+                label="Tax ID label"
+                htmlFor="tax_id_label"
+                hint={'Blank uses your country’s: currently ' + resolvedTaxLabel + '.'}
+              >
+                <input
+                  id="tax_id_label"
+                  name="tax_id_label"
+                  maxLength={TAX_ID_MAX}
+                  defaultValue={settings.taxIdLabel}
+                  placeholder={resolvedTaxLabel}
+                  className={settingsInput}
+                />
+              </Field>
+            </>
+          ) : null}
+
+          {/* Applies to numbers issued from here on. Existing account numbers
+              are stored whole and are never renamed — see migration 0020. */}
+          {accountNumbersAvailable ? (
+            <Field
+              label="Account number prefix"
+              htmlFor="account_number_prefix"
+              hint="Optional. Applies to new customers only; existing numbers keep the form they were issued in."
+            >
+              <input
+                id="account_number_prefix"
+                name="account_number_prefix"
+                maxLength={ACCOUNT_PREFIX_MAX}
+                defaultValue={settings.accountNumberPrefix}
+                placeholder="none"
+                className={settingsInput}
+              />
+            </Field>
+          ) : null}
 
           <Field label="Date Format" htmlFor="date_format" hint={lockedHint}>
             <select

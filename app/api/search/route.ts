@@ -20,6 +20,8 @@ export type SearchHit = {
   /** Location name for imported rows. Shown on a hit so a cashier can see
    *  WHY it matched when they searched by district. */
   address: string | null
+  /** Migration 0020. Null until it is applied. */
+  account_number: string | null
   mac_address: string | null
   /** Derived from the network registry — drives the status dot and badge. */
   status: CustomerStatus
@@ -75,6 +77,7 @@ export async function GET(request: NextRequest) {
 
   const columns =
     'id, first_name, last_name, phone, address, mac_address, last_bill_date, monthly_rate, cut_off_date' +
+    (caps.accountNumbers ? ', account_number' : '') +
     (caps.connectionTypes ? ', customer_type' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
@@ -88,7 +91,9 @@ export async function GET(request: NextRequest) {
   // chaining them is "every word matches at least one field" — the rule the
   // customer list applies in memory from the same module, lib/search.ts.
   let lookup = db.from('customers').select(columns).eq('company_id', company.id)
-  for (const clause of searchClauses(query)) lookup = lookup.or(clause)
+  for (const clause of searchClauses(query, { accountNumbers: caps.accountNumbers })) {
+    lookup = lookup.or(clause)
+  }
 
   const { data, error } = await lookup.limit(LIMIT)
 
@@ -102,6 +107,7 @@ export async function GET(request: NextRequest) {
     last_name: string | null
     phone: string | null
     address: string | null
+    account_number?: string | null
     mac_address: string | null
     last_bill_date: string | null
     monthly_rate: number | string | null
@@ -191,6 +197,7 @@ export async function GET(request: NextRequest) {
       last_name: r.last_name,
       phone: r.phone,
       address: r.address,
+      account_number: r.account_number ?? null,
       mac_address: r.mac_address,
       // Straight from the registry, so the dot always agrees with the badge
       // on the customer list and detail page.
