@@ -22,7 +22,14 @@ function parse(details: string | null) {
   const platform = body !== (details ?? '')
 
   const field = (name: string) => {
-    const m = new RegExp('\| ' + name + '=([^|]+)').exec(body)
+    // THE PIPE MUST STAY ESCAPED. Written as '\| ' — a single backslash — this
+    // is not an escaped pipe at all: JavaScript drops the unknown escape, the
+    // pattern becomes the alternation `| name=(...)`, and its empty left branch
+    // matches at position 0 of EVERY string. `m` is then always truthy while
+    // `m[1]` is undefined, so `m[1].trim()` threw on every log row that does
+    // not carry this field — which is every row written before this card
+    // existed. That is the 500 on the customer page.
+    const m = new RegExp('\\| ' + name + '=([^|]+)').exec(body)
     return m ? m[1].trim() : null
   }
 

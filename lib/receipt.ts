@@ -175,7 +175,11 @@ function field(label: string, value: string): string[] {
  * function exists to prevent.
  */
 function wrap(text: string, room: number): string[] {
-  const words = text.trim().split(/\s+/).filter(Boolean)
+  // Coerced rather than trusted. Every Receipt field is TYPED as a string, but
+  // each one is built from a database row and a column that came back null
+  // arrives here as undefined however the type reads. A receipt that prints a
+  // blank line is a receipt; one that throws is a 500 on the till.
+  const words = String(text ?? '').trim().split(/\s+/).filter(Boolean)
   if (words.length === 0) return []
 
   const lines: string[] = []
