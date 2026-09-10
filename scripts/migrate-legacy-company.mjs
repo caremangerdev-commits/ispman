@@ -446,6 +446,42 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
  */
 const PLATFORM_OPERATOR_LEGACY_IDS = new Set([40, 61, 67, 73, 74])
 
+/** ISPMan's companies.phone is varchar(25). The legacy column is varchar(40). */
+const COMPANY_PHONE_MAX = 25
+
+/**
+ * Fits a legacy phone field into the ISPMan column WITHOUT EVER CUTTING A
+ * NUMBER IN HALF.
+ *
+ * The legacy field is free text and some companies list several numbers:
+ * Vernon's is "18764149477/8765492791/18767975876", 34 characters against a
+ * 25-character column, which is what stopped the first live run.
+ *
+ * A plain slice would have produced "18764149477/876549279" — a number that
+ * looks dialable and is not. So the field is split on its separators and whole
+ * numbers are kept while they fit; anything that does not fit is dropped and
+ * REPORTED, so the operator knows a contact number did not come across rather
+ * than finding out when they try to use it.
+ */
+function fitCompanyPhone(raw) {
+  const text = String(raw ?? '').trim()
+  if (!text) return { value: null, dropped: [] }
+  if (text.length <= COMPANY_PHONE_MAX) return { value: text, dropped: [] }
+
+  const parts = text.split(/[/,;]+/).map((s) => s.trim()).filter(Boolean)
+  const kept = []
+  const dropped = []
+  for (const p of parts) {
+    const candidate = kept.length ? kept.join('/') + '/' + p : p
+    if (candidate.length <= COMPANY_PHONE_MAX) kept.push(p)
+    else dropped.push(p)
+  }
+
+  // A single number longer than the column has no honest reduction: half a
+  // phone number is worse than none, so it is dropped whole.
+  return { value: kept.length ? kept.join('/') : null, dropped }
+}
+
 /**
  * A temporary password for a migrated account.
  *
@@ -547,10 +583,12 @@ async function main() {
     }
     const legacy = cldRows[0]
 
+    const phone = fitCompanyPhone(legacy.company_phone)
+
     const companyPayload = {
       name: String(legacy.company_name ?? '').trim(),
       email: String(legacy.company_email ?? '').trim() || null,
-      phone: String(legacy.company_phone ?? '').trim() || null,
+      phone: phone.value,
       address: String(legacy.company_address ?? '').trim() || null,
       // Same two the platform's own New Company flow sets. Not legacy-derived —
       // the legacy database has no concept of either.
@@ -575,6 +613,17 @@ async function main() {
     }
 
     console.log('  from cld_users.companies #' + CLD_COMPANY_ID)
+
+    if (phone.dropped.length > 0) {
+      console.log(
+        '\n  !! phone does not fit ISPMan\'s ' + COMPANY_PHONE_MAX + '-character column.\n' +
+        '     legacy : ' + JSON.stringify(String(legacy.company_phone).trim()) + '\n' +
+        '     keeping: ' + JSON.stringify(phone.value) + '\n' +
+        '     DROPPED: ' + phone.dropped.join(', ') + '\n' +
+        '     Whole numbers only — a truncated one would look dialable and not be.'
+      )
+    }
+
     console.log('\n  companies row:')
     for (const [k, v] of Object.entries(companyPayload)) {
       console.log('    ' + k.padEnd(10) + JSON.stringify(v))
