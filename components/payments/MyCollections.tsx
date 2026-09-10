@@ -4,6 +4,7 @@ import { Search } from 'lucide-react'
 import Link from 'next/link'
 import { useMemo, useState } from 'react'
 
+import { ReceiptButton } from '@/components/payments/ReceiptModal'
 import {
   PAYMENT_METHOD_LABELS, type CollectionSummary, type PaymentMethod,
 } from '@/lib/data/checkoff'
@@ -141,6 +142,9 @@ export function CollectionsList({
                 <th scope="col" className="px-5 py-2 font-semibold">Method</th>
                 <th scope="col" className="px-5 py-2 font-semibold">Time</th>
                 <th scope="col" className="px-5 py-2 text-right font-semibold">Amount</th>
+                <th scope="col" className="px-5 py-2 text-right font-semibold">
+                  <span className="sr-only">Receipt</span>
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
@@ -171,6 +175,16 @@ export function CollectionsList({
                   <td className="px-5 py-2.5 text-gray-500">{stamp(p.payment_date)}</td>
                   <td className="px-5 py-2.5 text-right font-semibold tabular-nums text-white">
                     {money(symbol, p.amount)}
+                  </td>
+                  {/* THE ONLY WAY A CASHIER CAN REPRINT. They no longer hold
+                      view_all_payments, so the payments list and its Print
+                      action are closed to them; this is the same ReceiptButton
+                      that sits on those rows, opening the same modal that
+                      appeared when the payment was taken. Reachable because
+                      loadReceipt gates on record_payment OR view_all_payments
+                      (app/actions/receipts.ts) and every role holds the first. */}
+                  <td className="px-5 py-2.5 text-right">
+                    <ReceiptButton paymentId={p.id} />
                   </td>
                 </tr>
               ))}
