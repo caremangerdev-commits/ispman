@@ -132,9 +132,71 @@ function columns(label: string, value: string): string {
   return left + ' '.repeat(RECEIPT_WIDTH - left.length - value.length) + value
 }
 
-/** A header field: fixed-width label column, value left-aligned after it. */
-function field(label: string, value: string): string {
-  return label.padEnd(LABEL_WIDTH) + value
+/**
+ * A header field: fixed-width label column, value left-aligned after it, WRAPPED
+ * ONTO AS MANY LINES AS IT NEEDS.
+ *
+ * THIS USED TO RETURN ONE LINE OF ANY LENGTH, and that was the bug that got a
+ * receipt clipped. `centre()` and `columns()` both clamp to RECEIPT_WIDTH; this
+ * one padded the label and then appended the value whatever its length. A
+ * customer called "GIBRALTAR ALL AGE AND INFANT box 1" produced a 45-column
+ * line on a 32-column receipt, and the head simply stopped printing at the edge
+ * of the paper — mid-word, with nothing to say it had.
+ *
+ * 125 of 1,313 customers — one in ten — have a name long enough to do this.
+ *
+ * WRAPPED RATHER THAN TRUNCATED. The roll is unlimited in length and fixed only
+ * in width, so a second line costs a few millimetres of paper; truncating costs
+ * the customer's actual name on their own receipt. Continuation lines are
+ * indented to the value column, which is the ordinary hanging indent this fixed
+ * grid already implies — the label column stays a label column and nothing
+ * below it moves.
+ *
+ * Breaks on spaces where it can and mid-word only when a single word is itself
+ * wider than the value column, which is the only case where there is no choice.
+ */
+function field(label: string, value: string): string[] {
+  const room = RECEIPT_WIDTH - LABEL_WIDTH
+  const indent = ' '.repeat(LABEL_WIDTH)
+  const lines = wrap(value, room)
+
+  // An empty value still prints its label: the receipt says which fields it
+  // carries, and a missing one is more legible as blank than as absent.
+  if (lines.length === 0) return [label.padEnd(LABEL_WIDTH)]
+
+  return lines.map((line, i) => (i === 0 ? label.padEnd(LABEL_WIDTH) : indent) + line)
+}
+
+/**
+ * Splits text into lines no wider than `room`.
+ *
+ * Greedy and space-based. A word longer than the column is hard-split rather
+ * than allowed to overhang, because an overhanging line is exactly what this
+ * function exists to prevent.
+ */
+function wrap(text: string, room: number): string[] {
+  const words = text.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return []
+
+  const lines: string[] = []
+  let line = ''
+
+  for (let word of words) {
+    // A single word wider than the column: emit full-width pieces until what is
+    // left of it fits, then carry on normally.
+    while (word.length > room) {
+      if (line) { lines.push(line); line = '' }
+      lines.push(word.slice(0, room))
+      word = word.slice(room)
+    }
+
+    if (!line) line = word
+    else if (line.length + 1 + word.length <= room) line += ' ' + word
+    else { lines.push(line); line = word }
+  }
+
+  if (line) lines.push(line)
+  return lines
 }
 
 /** The rule above the total, right-aligned over the amount column. */
@@ -160,15 +222,19 @@ export function renderReceipt(r: Receipt): string[] {
   if (r.companyPhone) out.push(centre(r.companyPhone))
   out.push('')
 
-  out.push(field('Receipt #', r.number))
-  out.push(field('Date', r.dateLabel))
-  out.push(field('Cashier', r.cashier))
+  // Spread, because a field is now as many lines as its value needs — see
+  // field(). Every one of these can overflow, not just the customer name: a
+  // long cashier name or a re-worded date would have run off the paper in
+  // exactly the same way.
+  out.push(...field('Receipt #', r.number))
+  out.push(...field('Date', r.dateLabel))
+  out.push(...field('Cashier', r.cashier))
   out.push('')
 
-  out.push(field('Customer', r.customerName))
+  out.push(...field('Customer', r.customerName))
   // Omitted entirely — not printed blank — when the customer has no account
   // number. See the note in lib/data/receipts.ts.
-  if (r.accountNumber) out.push(field('Account', r.accountNumber))
+  if (r.accountNumber) out.push(...field('Account', r.accountNumber))
   out.push('')
 
   // --- Charges ---
