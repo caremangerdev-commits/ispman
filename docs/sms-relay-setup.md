@@ -243,6 +243,46 @@ contradicted by a year of nightly dumps achieves nothing.
 
 ---
 
+## 7. The ISPMan side
+
+Apply `supabase/migrations/0021_sms.sql` in the Supabase SQL editor. Until it is
+applied `lib/schema.ts` reports `sms: false`, the SMS settings page and the
+messaging page stay hidden, and nothing is queued — so the order does not
+matter and a half-finished setup cannot text anybody.
+
+Add to `.env.local`:
+
+```sh
+SMS_RELAY_URL=https://sms.YOURDOMAIN
+SMS_DISPATCH_SECRET=$(openssl rand -hex 32)   # paste the generated value
+```
+
+Then start the ticker alongside the app:
+
+```sh
+pm2 start worker/sms-ticker.mjs --name ispman-sms -i 1
+pm2 save
+```
+
+**One instance.** A second ticker corrupts nothing — the outbox claim is a
+compare-and-swap and the dedupe key is a unique index — but it doubles the rate
+each SIM sends at, which is the one thing the throttle exists to prevent.
+
+Check it:
+
+```sh
+pm2 logs ispman-sms --lines 20
+```
+
+It is quiet by design. It logs only ticks that did something, because a line a
+minute would bury the one that matters under a week of "0 sent".
+
+Each tenant then pairs their own phone under **Settings → SMS Notifications**,
+using the username and password their app shows after it connects. Every message
+type is off until they turn it on.
+
+---
+
 ## Rolling it back
 
 ```sh
