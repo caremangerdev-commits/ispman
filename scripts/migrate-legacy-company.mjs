@@ -157,6 +157,29 @@ const SKIP_USER_IDS = new Set(
     .filter(Number.isInteger)
 )
 
+/**
+ * How STEP 2 decides the opening balance. --carry=rate (the default) is the
+ * behaviour every earlier run used; --carry=none opens every customer at zero.
+ *
+ * WHY THE CHOICE EXISTS. The default infers debt from silence: no payment
+ * since PAID_SINCE means one month's rate is owed. That reads a real signal
+ * when a company has payment history. When a company has NONE — and NYC NICK
+ * MAR and Tkl Wireless have not one payment row between them, ever — the
+ * inference has nothing behind it, and every single customer is billed a month
+ * they may well have paid in cash off the books. Across those two that is
+ * about J$1.5m of invented debt on day one.
+ *
+ * A zero opening balance is wrong in the other direction, and cheaply so: a
+ * customer who really does owe is asked next cycle instead. An owner can chase
+ * a payment that was missed. An owner cannot un-send a demand for money that
+ * was never owed.
+ */
+const CARRY = String(opts['carry'] ?? 'rate').trim().toLowerCase()
+if (!['rate', 'none'].includes(CARRY)) {
+  console.error('--carry must be "rate" or "none". Refusing to run rather than guess.')
+  process.exit(1)
+}
+
 if (
   !SCHEMA || (!Number.isInteger(COMPANY_ID) && !NEW_COMPANY) ||
   !Number.isInteger(CLD_COMPANY_ID) ||
@@ -176,7 +199,10 @@ if (
     '  --timezone       no column for either, so neither can be migrated.\n' +
     '  --csv            a curated export whose notes carry "Legacy #<id>".\n' +
     '  --from-db        read customers straight from <schema>.customers.\n' +
-    '                   Exactly one of --csv and --from-db.'
+    '                   Exactly one of --csv and --from-db.\n' +
+    '  --carry          rate (default) opens unpaid customers owing one month.\n' +
+    '                   none opens everyone at zero — use it when the company\n' +
+    '                   has no payment history to infer anything from.'
   )
   process.exit(1)
 }
@@ -198,6 +224,17 @@ if (CREATE_COMPANY && !DRY_RUN && (!CURRENCY || !TIMEZONE)) {
 for (const f of flags) {
   if (!['--dry-run', '--force', '--from-db', '--create-company'].includes(f)) {
     console.error('Unknown flag ' + f + '. Refusing to run rather than guess.')
+    process.exit(1)
+  }
+}
+
+// The same guard for the valued ones, which matters MORE and not less: a bare
+// flag that goes unrecognised is at least absent, but `--cary=none` parses
+// happily into opts, is never read, and the run falls back to charging every
+// customer a month — the exact outcome the flag was passed to prevent.
+for (const k of Object.keys(opts)) {
+  if (!['cld', 'csv', 'currency', 'timezone', 'skip-user', 'carry'].includes(k)) {
+    console.error('Unknown option --' + k + '. Refusing to run rather than guess.')
     process.exit(1)
   }
 }
@@ -1137,7 +1174,12 @@ async function main() {
   // `date` is a VARCHAR holding 'YYYY-MM-DD HH:MM', so >= against a bare
   // 'YYYY-MM-DD' is a lexicographic comparison and is correct for this format.
   let paidRecently = new Set()
-  if (legacyIds.length > 0) {
+  if (CARRY === 'none') {
+    // Nothing is queried: with every balance going to zero the answer cannot
+    // change the outcome, and reading it would only invite someone to believe
+    // the number below was derived from it.
+    console.log('  --carry=none — every customer opens at 0')
+  } else if (legacyIds.length > 0) {
     const [rows] = await my.query(
       'SELECT DISTINCT customer FROM `' + SCHEMA + '`.payments ' +
       'WHERE customer IN (?) AND date >= ?',
@@ -1150,7 +1192,8 @@ async function main() {
   let charged = 0
   let chargedTotal = 0
   for (const c of candidates) {
-    c.carried_balance = paidRecently.has(c.legacyId) ? 0 : c.monthly_rate
+    c.carried_balance =
+      CARRY === 'none' || paidRecently.has(c.legacyId) ? 0 : c.monthly_rate
     if (c.carried_balance === 0) zeroed += 1
     else {
       charged += 1
@@ -1158,7 +1201,8 @@ async function main() {
     }
   }
 
-  console.log('  paid since ' + PAID_SINCE + ' -> balance 0 : ' + zeroed)
+  console.log('  opening balance of 0               : ' + zeroed +
+    (CARRY === 'none' ? '  (all of them — --carry=none)' : '  (paid since ' + PAID_SINCE + ')'))
   console.log('  not paid -> balance = monthly rate : ' + charged)
   console.log('  total carried balance to write     : ' + chargedTotal.toLocaleString())
 
@@ -1602,7 +1646,8 @@ async function main() {
   console.log('')
   console.log('  CSV rows read              : ' + parsed.data.length)
   console.log('  customers inserted         : ' + inserted + (DRY_RUN ? ' (would be)' : ''))
-  console.log('  balances zeroed (paid)     : ' + zeroed)
+  console.log('  balances zeroed' +
+    (CARRY === 'none' ? ' (--carry=none)' : ' (paid)     ') + ': ' + zeroed)
   console.log('  balances charged (unpaid)  : ' + charged)
   console.log('  carried balance written    : ' + chargedTotal.toLocaleString())
   console.log(
