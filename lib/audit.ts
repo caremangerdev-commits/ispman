@@ -1,5 +1,6 @@
 import 'server-only'
 
+import { actingMarker, stripActingMarkers } from '@/lib/log-detail'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -23,34 +24,14 @@ import { tenantClient } from '@/lib/supabase/tenant'
  */
 
 /**
- * Appended to `details` when a platform operator writes into a tenant.
- *
- * A field on the existing `details` column rather than a new column, because
- * this project's migrations are applied by hand — a marker that depends on
- * someone remembering to run SQL is a marker that silently lies until they do.
- *
- * Follows the `| name=value` convention already used by radiusLogDetails(), so
- * it survives the field extractor in lib/format.ts#humaniseLogDetail, which
- * renders it as "(platform operator)".
+ * The marker and the sanitiser both come from lib/log-detail.ts, which owns the
+ * `details` wire format for readers and writers alike. This module used to
+ * carry its own copy of the marker regex while two separate readers carried
+ * theirs; one of those readers was wrong and took a page down. Re-exported
+ * rather than re-declared so `actingMarker` stays importable from here for the
+ * call sites that already do.
  */
-export function actingMarker(userId: number): string {
-  return ' | via=super_admin:#' + userId
-}
-
-/**
- * Strips anything already shaped like the marker out of caller-supplied text.
- *
- * Several `details` strings embed free-text form fields — checkoff notes, an
- * import's file name. Without this, a tenant's own staff could type
- * "| via=super_admin:#1" into a notes box and have their change render as the
- * platform operator's. The marker has to mean one thing, so this function is
- * the only thing allowed to put it there.
- */
-const MARKER_RE = /\s*\|\s*via=super_admin:#\d+/gi
-
-function stripMarkers(details: string): string {
-  return details.replace(MARKER_RE, '')
-}
+export { actingMarker } from '@/lib/log-detail'
 
 export type LogEventInput = {
   type: string
@@ -129,7 +110,7 @@ export async function logEvent(input: LogEventInput): Promise<LogEventResult> {
       profile.is_super_admin &&
       (actingAs !== null || companyId !== profile.company_id)
 
-    const clean = stripMarkers(input.details)
+    const clean = stripActingMarkers(input.details)
     const details = crossTenant ? clean + actingMarker(profile.id) : clean
 
     const row: Record<string, unknown> = {

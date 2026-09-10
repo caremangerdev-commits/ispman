@@ -1,6 +1,7 @@
 import { PencilLine } from 'lucide-react'
 
 import { decodeChanges, EMPTY } from '@/lib/customer-changes'
+import { logField, logSubject, readLogDetail } from '@/lib/log-detail'
 import { timeAgo } from '@/lib/format'
 import type { LogRow } from '@/lib/types'
 
@@ -16,30 +17,22 @@ import type { LogRow } from '@/lib/types'
  * truncating here would only send the reader to the database.
  */
 
-/** Pulls `changes=` and `by=` back out of a stored row. */
+/**
+ * Pulls `changes=` and `by=` back out of a stored row.
+ *
+ * Every piece of this comes from lib/log-detail.ts. It used to carry its own
+ * copy of the marker regex and its own field matcher, and the field matcher was
+ * subtly wrong in a way the other copy was not — see that module for what it
+ * cost. There is no regex against `details` left in this file.
+ */
 function parse(details: string | null) {
-  const body = (details ?? '').replace(/\s*\|\s*via=super_admin:#\d+\s*$/, '')
-  const platform = body !== (details ?? '')
-
-  const field = (name: string) => {
-    // THE PIPE MUST STAY ESCAPED. Written as '\| ' — a single backslash — this
-    // is not an escaped pipe at all: JavaScript drops the unknown escape, the
-    // pattern becomes the alternation `| name=(...)`, and its empty left branch
-    // matches at position 0 of EVERY string. `m` is then always truthy while
-    // `m[1]` is undefined, so `m[1].trim()` threw on every log row that does
-    // not carry this field — which is every row written before this card
-    // existed. That is the 500 on the customer page.
-    const m = new RegExp('\\| ' + name + '=([^|]+)').exec(body)
-    return m ? m[1].trim() : null
-  }
-
-  const subject = /^(.+?) updated \|/.exec(body.trim())
+  const { body, viaPlatform } = readLogDetail(details)
 
   return {
-    who: subject ? subject[1].trim() : null,
-    by: field('by'),
-    platform,
-    changes: decodeChanges(field('changes') ?? ''),
+    who: logSubject(body),
+    by: logField(body, 'by'),
+    platform: viaPlatform,
+    changes: decodeChanges(logField(body, 'changes') ?? ''),
   }
 }
 

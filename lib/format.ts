@@ -1,4 +1,5 @@
 import { decodeChanges } from '@/lib/customer-changes'
+import { logField, readLogDetail } from '@/lib/log-detail'
 
 /** Shared display formatting. Keep every user-facing number/date going through here. */
 
@@ -228,17 +229,14 @@ export function fullName(
 export function humaniseLogDetail(details: string | null | undefined): string {
   if (!details) return ''
 
-  // See lib/audit.ts#actingMarker. Stripped from the text that gets rewritten,
-  // then re-attached to whatever that rewrite produces.
-  const marked = /\s*\|\s*via=super_admin:#\d+\s*$/.test(details)
-  const body = marked ? details.replace(/\s*\|\s*via=super_admin:#\d+\s*$/, '') : details
-  const attribute = (text: string) => (marked ? text + ' (platform operator)' : text)
-
-  const field = (name: string) => {
-    // The pipe must stay escaped for the regex, not read as alternation.
-    const f = new RegExp('\\| ' + name + '=([^|]+)').exec(body)
-    return f ? f[1].trim() : null
-  }
+  // Marker stripped from the text that gets rewritten, then re-attached to
+  // whatever that rewrite produces. Both this and the field matcher come from
+  // lib/log-detail.ts, which is the only definition of the format — this
+  // function used to hold a second copy, and the copy in the Change History
+  // card was the one that was wrong.
+  const { body, viaPlatform } = readLogDetail(details)
+  const attribute = (text: string) => (viaPlatform ? text + ' (platform operator)' : text)
+  const field = (name: string) => logField(body, name)
 
   // A payment reversal carries every field a later report needs, which makes it
   // far too long to read in the activity panel. Summarised down to the two
