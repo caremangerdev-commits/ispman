@@ -97,6 +97,23 @@ body {
     display: none !important;
   }
 
+  /* NOTHING CONTRIBUTES AN OFFSET, and this rule does not depend on `:has()`.
+     The receipt sits fifteen elements deep — a table cell, a scroll box, the
+     dialog, `main.ml-64` (67.7mm on its own) and four nested paddings — and
+     every one of those was being neutralised only by the `:has()` reset below.
+     Measured: with that reset applied the receipt starts at 4.00mm; with it
+     absent it starts at 11.72mm and clips at the right edge. One rule deciding
+     whether the receipt lands on the paper is one rule too few, so the offsets
+     are cleared outright here and `:has()` is left to do the part only it can
+     — deciding what still exists. */
+  html,
+  body,
+  body * {
+    margin: 0 !important;
+    padding: 0 !important;
+    text-indent: 0 !important;
+  }
+
   /* The ancestors that survive are stripped back to plain blocks so the
      dialog's centring, scroll box, padding and rounded frame cannot displace
      the receipt or add a page. */
@@ -117,9 +134,16 @@ body {
   }
 
   /* --- The receipt itself ------------------------------------------------
-     72mm, not 80mm: the head can only reach 72.1mm of the 80mm roll. `margin:
-     0 auto` splits the remaining 8mm evenly, which puts the block inside the
-     printable window on a printer that centres it.
+     LEFT-ALIGNED AT THE ORIGIN, NOT CENTRED. This was `width: 72mm` with
+     `margin: 0 auto`, which split the 8mm the head cannot reach evenly and
+     started the text 4mm in — on the assumption the printer centres its
+     printable window. Measured against an 80mm page: the text block is 67.73mm
+     wide, so it ended at 71.72mm against a 72.1mm window. 0.38mm of headroom,
+     less than a twentieth of a character, and every one of those millimetres
+     was being spent on centring rather than on text.
+
+     Starting at 0 leaves 4.37mm. Same receipt, eleven times the tolerance, and
+     it no longer depends on the printer agreeing about where its window is.
 
      NOT absolutely positioned. An absolutely positioned box does not paginate
      — a long receipt would be clipped at the page edge rather than continuing
@@ -128,9 +152,10 @@ body {
   .receipt-print {
     display: block !important;
     position: static !important;
-    width: 72mm;
+    width: auto !important;
+    max-width: none !important;
     box-sizing: border-box;
-    margin: 2mm auto 0 !important;
+    margin: 2mm 0 0 !important;
     padding: 0 !important;
     /* No background of its own — the rule at the end of this block clears every
        fill in the subtree, and the sheet is already white. A fill would only
