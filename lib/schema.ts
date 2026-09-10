@@ -90,6 +90,18 @@ export type SchemaCapabilities = {
    * duplicates silently.
    */
   accountNumbers: boolean
+  /**
+   * Migration 0021: the `sms_outbox` queue, `sms_devices`, `sms_batches`, the
+   * per-type switches and templates on `settings`, and
+   * `customers.sms_opted_out`.
+   *
+   * REQUIRED TOGETHER. The queue without the settings has nothing to decide
+   * whether a message may be sent, and the settings without the queue give an
+   * operator switches that silently do nothing. A partially applied 0021 must
+   * read as absent, so the SMS settings page and the messaging page stay
+   * hidden and nothing enqueues.
+   */
+  sms: boolean
 }
 
 /**
@@ -117,6 +129,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     firstPeriodRes, amountDueRes, paymentSegmentRes,
     taxIdCustomerRes, taxIdSettingRes, accountNumberRes, accountCounterRes,
     accountPrefixRes,
+    smsOutboxRes, smsSettingRes, smsOptOutRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -159,6 +172,16 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('customers').select('account_number').limit(1),
     db.from('account_counters').select('company_id').limit(1),
     db.from('settings').select('account_number_prefix').limit(1),
+    db.from('sms_outbox').select('id').limit(1),
+    db
+      .from('settings')
+      .select(
+        'sms_payment_receipt_enabled, sms_expiry_warning_enabled, ' +
+        'sms_disconnection_enabled, sms_expiry_warning_days, ' +
+        'sms_throttle_seconds, sms_allow_foreign'
+      )
+      .limit(1),
+    db.from('customers').select('sms_opted_out').limit(1),
   ])
   console.log('[perf]     schema probe: 23 parallel queries  %dms', Date.now() - tProbe)
 
@@ -202,6 +225,13 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     accountPrefixRes.error?.code === '42703' ||
     accountCounterRes.error?.code === 'PGRST205' ||
     accountCounterRes.error?.code === '42P01'
+  // 0021 spans three tables and two sets of columns. Any missing piece disables
+  // the lot — see the note on `sms` above.
+  const missingSms =
+    smsOutboxRes.error?.code === 'PGRST205' ||
+    smsOutboxRes.error?.code === '42P01' ||
+    smsSettingRes.error?.code === '42703' ||
+    smsOptOutRes.error?.code === '42703'
   const missingPaymentCategories =
     paymentCategoryRes.error?.code === 'PGRST205' || paymentCategoryRes.error?.code === '42P01'
 
@@ -286,10 +316,19 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     'settings tax id columns': taxIdSettingRes,
     'customers.account_number': accountNumberRes,
     'settings.account_number_prefix': accountPrefixRes,
+    'settings SMS columns': smsSettingRes,
+    'customers.sms_opted_out': smsOptOutRes,
   })) {
     if (res.error && res.error.code !== '42703') {
       throw new Error('Schema probe failed for ' + what + ': ' + res.error.message)
     }
+  }
+  if (
+    smsOutboxRes.error &&
+    smsOutboxRes.error.code !== 'PGRST205' &&
+    smsOutboxRes.error.code !== '42P01'
+  ) {
+    throw new Error('Schema probe failed for sms_outbox: ' + smsOutboxRes.error.message)
   }
   if (
     accountCounterRes.error &&
@@ -321,6 +360,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     paymentSegment: !missingPaymentSegment,
     taxId: !missingTaxId,
     accountNumbers: !missingAccountNumbers,
+    sms: !missingSms,
   }
 })
 

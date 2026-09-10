@@ -4,22 +4,28 @@ import { ChevronLeft, ChevronRight, Eye, Plus } from 'lucide-react'
 
 import { AddressFilter } from '@/components/customers/AddressFilter'
 import { BulkActions } from '@/components/customers/BulkActions'
+import { CustomerFilterBar } from '@/components/customers/CustomerFilterBar'
 import { CustomerSearch } from '@/components/customers/CustomerSearch'
 import { ExpiryHint, StatusBadge } from '@/components/customers/StatusBadge'
 import { disconnectCustomer, reconnectCustomer } from '@/app/actions/customers'
 import { requirePermission } from '@/lib/session'
+import { filtersFromParams, filtersToParams, hasAnyFilter } from '@/lib/customer-filter'
+import { listMiscCategories, listServicePlans } from '@/lib/data/catalog'
 import { FILTERS, listCustomers, type CustomerFilter } from '@/lib/data/customers'
-import { daysUntilDateOnly, formatCurrency, formatDateOnly, fullName } from '@/lib/format'
+import {
+  CURRENCY_SYMBOL, daysUntilDateOnly, formatCurrency, formatDateOnly, fullName,
+} from '@/lib/format'
 import { can } from '@/lib/permissions'
-import { canDisconnect, canReconnect } from '@/lib/status'
+import { getSchemaCapabilities } from '@/lib/schema'
+import { CUSTOMER_STATUSES, canDisconnect, canReconnect, type CustomerStatus } from '@/lib/status'
 
 
 export const metadata: Metadata = { title: 'Customers · ISPMan' }
 
 const PER_PAGE = 10
 
-function isFilter(v: string | undefined): v is CustomerFilter {
-  return !!v && FILTERS.some((f) => f.key === v)
+function isStatus(v: string): v is CustomerStatus {
+  return (CUSTOMER_STATUSES as string[]).includes(v)
 }
 
 /** Preserves the active query/filter when building pagination + tab links. */
@@ -37,21 +43,27 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
   const sp = await searchParams
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v)
 
-  const query = one(sp.q) ?? ''
-  const filterParam = one(sp.filter)
-  const filter: CustomerFilter = isFilter(filterParam) ? filterParam : 'all'
-  const address = (one(sp.address) ?? '').trim()
   const page = Math.max(1, Number(one(sp.page) ?? '1') || 1)
 
   const { company, profile } = await requirePermission('view_customer_list')
-  const { rows, total, pageCount, counts, addresses, page: current } = await listCustomers({
-    companyId: company.id,
-    query,
-    filter,
-    address,
-    page,
-    perPage: PER_PAGE,
-  })
+
+  // ONE definition of what the filters mean, shared with the messaging page —
+  // see lib/customer-filter.ts. Nothing here decides what `?owing=5000` selects.
+  const filters = filtersFromParams(
+    (k) => one(sp[k as keyof typeof sp]),
+    isStatus
+  )
+  const query = filters.query
+  const filter: CustomerFilter = filters.status
+  const address = filters.address
+
+  const caps = await getSchemaCapabilities()
+  const [list, miscCategories, servicePlans] = await Promise.all([
+    listCustomers({ companyId: company.id, filters, page, perPage: PER_PAGE }),
+    caps.catalog ? listMiscCategories(company.id) : Promise.resolve([]),
+    caps.catalog ? listServicePlans(company.id) : Promise.resolve([]),
+  ])
+  const { rows, total, pageCount, counts, addresses, page: current } = list
 
   // Status arrives already merged onto each row by listCustomers(), which does
   // the registry lookup in one batched query.
@@ -60,12 +72,11 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
   const mayImport = can(role, 'import_customers')
   const mayNetwork = can(role, 'extend_disconnect_customer')
 
-  const base: Record<string, string> = {}
-  if (query) base.q = query
-  if (filter !== 'all') base.filter = filter
-  // Carried through the status tabs and the pager, so the two filters compose
-  // rather than clearing each other.
-  if (address) base.address = address
+  // Every active filter, carried through the status tabs and the pager so they
+  // compose rather than clearing each other. Built by the same module that
+  // reads them back, so a parameter cannot be written under one name and looked
+  // for under another.
+  const base = filtersToParams(filters)
 
   // Handed to the network actions so they redirect back to this exact view —
   // same search, same filter, same page — rather than to the customer record.
@@ -98,7 +109,7 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
         {/* The page title is in the header bar; this is just the count. */}
         <p className="text-sm text-gray-500">
           {total} {total === 1 ? 'customer' : 'customers'}
-          {filter !== 'all' || query || address ? ' matching your filters' : ' in total'}
+          {hasAnyFilter(filters) ? ' matching your filters' : ' in total'}
         </p>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -127,6 +138,21 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
           })}
         </div>
       </div>
+
+      {/* A second row rather than more controls in the first: the status tabs
+          carry counts and need the width. These four narrow the same set and
+          compose with everything above them. */}
+      <CustomerFilterBar
+        miscCategories={miscCategories.map((c) => ({ id: c.id, name: c.name }))}
+        servicePlans={servicePlans.map((p) => ({ id: p.id, name: p.name }))}
+        selected={{
+          category: base.category ?? '',
+          plan: base.plan ?? '',
+          expiring: base.expiring ?? '',
+          owing: base.owing ?? '',
+        }}
+        currencySymbol={CURRENCY_SYMBOL}
+      />
 
       <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
         <div className="overflow-x-auto">

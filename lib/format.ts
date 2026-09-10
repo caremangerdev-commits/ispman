@@ -18,6 +18,13 @@ const LOCALE = 'en-US'
  */
 const SYMBOL = 'J$'
 
+/**
+ * The same symbol, for the few places that need it without a number attached —
+ * a placeholder in an input, a column heading. Exported rather than re-typed so
+ * the TODO above stays a one-line change.
+ */
+export const CURRENCY_SYMBOL = SYMBOL
+
 const CURRENCY_SYMBOLS: Record<string, string> = {
   JMD: 'J$',
   USD: 'US$',

@@ -5,7 +5,7 @@ import { tenantClient } from '@/lib/supabase/tenant'
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { lastNetworkEvents } from '@/lib/data/network-events'
 import { localDateOnly } from '@/lib/format'
-import { matchesCustomer } from '@/lib/search'
+import { applyFilters, type CustomerFilters } from '@/lib/customer-filter'
 import {
   CUSTOMER_STATUSES, resolveStatus, STATUS_LABELS, type CustomerStatus,
 } from '@/lib/status'
@@ -43,6 +43,7 @@ async function selectWithExtras(join = false) {
   if (caps.expiryMode) sel += ', expiry_mode'
   if (caps.taxId) sel += ', tax_id'
   if (caps.accountNumbers) sel += ', account_number'
+  if (caps.sms) sel += ', sms_opted_out'
   if (caps.billing) {
     sel += ', billing_type, carried_balance, account_credit, bill_date, last_billed_date'
   }
@@ -100,6 +101,15 @@ export type CustomerListRow = CustomerWithExpiry & {
    * includes it.
    */
   address: string | null
+
+  /** Migration 0005. Undefined until the catalogue exists; the filters treat
+   *  undefined and null alike as "uncategorised". */
+  misc_category_id?: number | null
+  service_plan_id?: number | null
+
+  /** Migration 0021. Undefined until it is applied, which reads as "not opted
+   *  out" — correct, because before that column existed nobody could opt out. */
+  sms_opted_out?: boolean
 }
 
 export type CustomerListResult = {
@@ -120,25 +130,20 @@ export type CustomerListResult = {
 }
 
 /**
- * Lists customers for one company, with search, status filter and pagination.
+ * Every customer in one company, enriched with the facts that are not columns.
  *
- * Status is not a column: it is read from the network registry in one batched
- * query and merged onto each row, so filtering and the tab counts happen in
- * memory. A branch's customer list is small enough for that to be fine.
+ * SPLIT OUT OF listCustomers() so the messaging page can ask the same question
+ * without paging. Both callers need identical rows — a batch that reaches a
+ * different set of customers than the list showed is the bug this prevents —
+ * and both need the registry lookup and the event-log pass, which are the
+ * expensive parts and are done once here.
+ *
+ * Reads the WHOLE company. That is not an oversight: `radiusStatus` comes from
+ * the FreeRADIUS database and the ISPMan event log, so it cannot be a WHERE
+ * clause, and every filter that depends on it has to run in memory. See the
+ * paging note below for why the read itself is ranged.
  */
-export async function listCustomers(opts: {
-  companyId: number
-  query?: string
-  filter?: CustomerFilter
-  /** Exact address to narrow to, already trimmed. Empty means every address. */
-  address?: string
-  page?: number
-  perPage?: number
-}): Promise<CustomerListResult> {
-  const {
-    companyId, query = '', filter = 'all', address = '', page = 1, perPage = 10,
-  } = opts
-
+export async function loadEnrichedCustomers(companyId: number): Promise<CustomerListRow[]> {
   const db = tenantClient()
   const { sel } = await selectWithExtras()
 
@@ -162,11 +167,26 @@ export async function listCustomers(opts: {
   // fields, so address is carried back on explicitly rather than cast in.
   const all = (data as unknown as (Customer & { address: string | null })[])
     .map((row) => withBillingDefaults(row) as Customer & { address: string | null })
-    .map((row) => ({
-      ...withExpiry(row),
-      address: row.address ?? null,
-      account_number: (row as { account_number?: string | null }).account_number ?? null,
-    }))
+    .map((row) => {
+      // Carried on explicitly rather than relying on the spread: withExpiry()
+      // has a fixed return type, so anything not named here survives at runtime
+      // but is invisible to the type checker — which is how a filter reading
+      // one of these would compile and then always be undefined.
+      const extra = row as unknown as {
+        account_number?: string | null
+        misc_category_id?: number | null
+        service_plan_id?: number | null
+        sms_opted_out?: boolean
+      }
+      return {
+        ...withExpiry(row),
+        address: row.address ?? null,
+        account_number: extra.account_number ?? null,
+        misc_category_id: extra.misc_category_id ?? null,
+        service_plan_id: extra.service_plan_id ?? null,
+        sms_opted_out: extra.sms_opted_out ?? false,
+      }
+    })
 
   // One registry lookup for the whole company. A failure leaves every row
   // 'unknown' rather than falsely reporting them all unregistered.
@@ -194,6 +214,29 @@ export async function listCustomers(opts: {
     c.radiusExpiryDate = hit?.expiry ? localDateOnly(hit.expiry) : null
   }
 
+  return all
+}
+
+/**
+ * Lists customers for one company, with search, filters and pagination.
+ *
+ * The filters themselves live in lib/customer-filter.ts, which the messaging
+ * page also reads. Nothing here decides what a filter means — see the note in
+ * that module for why there is exactly one definition of it.
+ */
+export async function listCustomers(opts: {
+  companyId: number
+  filters: CustomerFilters
+  page?: number
+  perPage?: number
+}): Promise<CustomerListResult> {
+  const { companyId, filters, page = 1, perPage = 10 } = opts
+
+  const all = await loadEnrichedCustomers(companyId)
+
+  // COUNTED BEFORE THE FILTERS, so the status tabs keep showing the whole
+  // company. A tab that reported the count of its own filter would read 0 for
+  // every tab the operator is not currently on.
   const counts: Record<CustomerFilter, number> = {
     all: all.length,
     active: 0, expired: 0, inactive: 0, disconnected: 0, unprovisioned: 0, unknown: 0,
@@ -203,19 +246,15 @@ export async function listCustomers(opts: {
   // Trimmed on both sides so a stored "ENDEAVOUR " and the option built from it
   // are the same place. Imported rows come from a spreadsheet; some of them have
   // trailing spaces.
+  //
+  // Company-wide, for the same reason the counts are: a dropdown that hides the
+  // option you need because the current filter excluded it cannot be navigated
+  // out of.
   const addresses = [
     ...new Set(all.map((c) => (c.address ?? '').trim()).filter(Boolean)),
   ].sort((a, b) => a.localeCompare(b))
 
-  const wanted = address.trim()
-  const matched = all.filter((c) => {
-    if (filter !== 'all' && c.radiusStatus !== filter) return false
-    if (wanted && (c.address ?? '').trim() !== wanted) return false
-    // Same rule /api/search applies in SQL — see lib/search.ts. The two used to
-    // be separate field lists and disagreed about what a customer is findable
-    // by; matching them here is the point of that module.
-    return matchesCustomer(c, query)
-  })
+  const matched = applyFilters(all, filters)
 
   const pageCount = Math.max(1, Math.ceil(matched.length / perPage))
   const safePage = Math.min(Math.max(1, page), pageCount)

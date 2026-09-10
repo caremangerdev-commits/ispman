@@ -36,6 +36,7 @@ export type Permission =
   | 'view_nas_management'
   | 'manage_users'
   | 'manage_company_settings'
+  | 'send_bulk_sms'
   | 'view_super_admin_dashboard'
   | 'assign_company_admin'
 
@@ -133,6 +134,19 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // an admin role, whichever role they hold.
   manage_users: ['super_admin', 'company_admin', 'manager'],
   manage_company_settings: ['super_admin', 'company_admin', 'manager'],
+  // Texting the customer base is not a counter action. A cashier records a
+  // payment for one person standing in front of them; this reaches every
+  // customer at once, from the company's own number, and cannot be recalled
+  // once the relay has it. Manager and above, deliberately excluding cashier
+  // and CSR.
+  //
+  // NOT folded into manage_company_settings even though the roles match today:
+  // that permission is about configuring the tenant, this one is about speaking
+  // to its customers, and the day those two want different answers they must be
+  // separately adjustable. Configuring SMS still needs
+  // manage_company_settings — turning the feature on and using it are different
+  // acts.
+  send_bulk_sms: ['super_admin', 'company_admin', 'manager'],
   view_super_admin_dashboard: ['super_admin'],
   assign_company_admin: ['super_admin'],
 }
