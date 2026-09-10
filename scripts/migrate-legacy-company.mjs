@@ -139,6 +139,17 @@ const CLD_COMPANY_ID = Number(opts.cld)
  */
 const FROM_DB = flags.has('--from-db')
 
+/**
+ * Extra cld_users ids to leave out, on top of the platform-operator set.
+ * Comma separated: --skip-user=61,67
+ */
+const SKIP_USER_IDS = new Set(
+  String(opts['skip-user'] ?? '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter(Number.isInteger)
+)
+
 if (
   !SCHEMA || (!Number.isInteger(COMPANY_ID) && !NEW_COMPANY) ||
   !Number.isInteger(CLD_COMPANY_ID) ||
@@ -415,6 +426,27 @@ const ROLE_BY_LEGACY = {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 /**
+ * The platform operator's own legacy accounts, one per tenant. NOT staff.
+ *
+ * The legacy app had no cross-tenant role, so the operator gave themselves a
+ * separate Admin login inside each company — five of them, all some case
+ * variant of "haydn samuels", each with its own throwaway address:
+ *
+ *   #40 co1 wcnetjahs@   #61 co3 hagsamuels@   #67 co3 wcnetjav@
+ *   #73 co7 wcnetjasm@   #74 co8 wcnetjasmb@
+ *
+ * ISPMan does have a cross-tenant role: the operator is one super_admin who
+ * enters any tenant through the switch. Recreating these would hand out four
+ * more live company_admin logins that nobody needs and that each widen the
+ * blast radius of a leaked password.
+ *
+ * BY ID, NOT BY NAME — the same rule as everything else here. Matching
+ * "haydn samuels" would be matching a string that five different rows share,
+ * and would silently skip a genuine employee who happened to be called that.
+ */
+const PLATFORM_OPERATOR_LEGACY_IDS = new Set([40, 61, 67, 73, 74])
+
+/**
  * A temporary password for a migrated account.
  *
  * THE LEGACY BCRYPT HASH CANNOT COME ACROSS. Supabase's admin createUser takes
@@ -670,6 +702,15 @@ async function main() {
     const email = String(u.email ?? '').trim().toLowerCase()
     const role = ROLE_BY_LEGACY[String(u.role ?? '').trim().toLowerCase()]
 
+    if (PLATFORM_OPERATOR_LEGACY_IDS.has(Number(u.id)) || SKIP_USER_IDS.has(Number(u.id))) {
+      skip(
+        'user', '#' + u.id + ' ' + name,
+        'platform operator account — not recreated; the operator is one ' +
+        'super_admin who enters the tenant through the switch'
+      )
+      continue
+    }
+
     if (!role) {
       skip('user', '#' + u.id + ' ' + name, 'unmapped legacy role "' + u.role + '"')
       continue
@@ -701,6 +742,33 @@ async function main() {
       '    #' + String(p.legacyId).padEnd(5) + p.name.padEnd(24) +
       p.role.padEnd(15) + p.email
     )
+  }
+
+  // SKIPPING SOMEBODY WHO TOOK MONEY HAS A COST, and it should be visible
+  // before the run rather than discovered in the payments report afterwards.
+  // Every payment they collected lands as "Agent #<id>" with no account behind
+  // it, which is honest but unlinkable. For the platform operator that is
+  // usually right — they were not really the cashier — but it is a decision,
+  // so the run states the size of it.
+  const notCreated = [...PLATFORM_OPERATOR_LEGACY_IDS, ...SKIP_USER_IDS]
+  if (notCreated.length > 0) {
+    const [collected] = await my.query(
+      'SELECT agent, COUNT(*) n, SUM(amount) total FROM `' + SCHEMA + '`.payments ' +
+      'WHERE date >= ? AND agent IN (?) GROUP BY agent',
+      [PAYMENTS_SINCE, notCreated.map(String)]
+    )
+    if (collected.length > 0) {
+      console.log('\n  !! skipped accounts that DID collect in the window:')
+      for (const c of collected) {
+        console.log(
+          '     agent ' + String(c.agent).padEnd(6) + c.n + ' payments, J$' +
+          Number(c.total).toLocaleString() + ' — will read "Agent #' + c.agent +
+          '", user_id null'
+        )
+      }
+    } else {
+      console.log('\n  skipped accounts collected nothing in the window — no payment loses a link')
+    }
   }
 
   let usersCreated = 0
