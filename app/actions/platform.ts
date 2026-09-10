@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation'
 import { logEvent } from '@/lib/audit'
 import { ensureAccountCounter } from '@/lib/data/account-numbers'
 import { CURRENCIES, TIMEZONES } from '@/lib/data/company'
+import { isEmail } from '@/lib/email'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { supabaseUrl } from '@/lib/supabase/env'
@@ -175,8 +176,6 @@ const str = (fd: FormData, k: string) => {
   return typeof v === 'string' ? v.trim() : ''
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
 /**
  * Stands up a whole tenant: company, settings, sign-in account, first admin.
  *
@@ -213,7 +212,7 @@ export async function createCompany(
   const password = str(formData, 'admin_password')
 
   if (!name) return fail('Company name is required.')
-  if (email && !EMAIL_RE.test(email)) return fail('Enter a valid company email address.')
+  if (email && !isEmail(email)) return fail('Enter a valid company email address.')
   if (!(CURRENCIES as readonly string[]).includes(currency)) {
     return fail('Choose a currency.')
   }
@@ -222,7 +221,7 @@ export async function createCompany(
   }
 
   if (!adminFirst || !adminLast) return fail('The first admin needs a first and last name.')
-  if (!EMAIL_RE.test(adminEmail)) return fail('Enter a valid email for the first admin.')
+  if (!isEmail(adminEmail)) return fail('Enter a valid email for the first admin.')
   if (password.length < 8) {
     return fail('Temporary password must be at least 8 characters.')
   }

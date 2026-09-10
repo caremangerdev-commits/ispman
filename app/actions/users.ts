@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 
 import { logEvent } from '@/lib/audit'
+import { isEmail } from '@/lib/email'
 import { ADMIN_ROLES, ASSIGNABLE_ROLES, seesAdminRows } from '@/lib/data/users'
 import { can, type Role } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
@@ -36,7 +37,6 @@ function assignable(role: string): role is Role {
   return (ASSIGNABLE_ROLES as string[]).includes(role)
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MIN_PASSWORD = 8
 
 /**
@@ -315,7 +315,7 @@ export async function updateUser(
   const fieldErrors: Record<string, string> = {}
   if (!first) fieldErrors.first_name = 'First name is required.'
   if (!last) fieldErrors.last_name = 'Last name is required.'
-  if (!EMAIL_RE.test(email)) fieldErrors.email = 'Enter a valid email address.'
+  if (!isEmail(email)) fieldErrors.email = 'Enter a valid email address.'
 
   if (Object.keys(fieldErrors).length > 0) {
     return { ok: false, error: 'Please correct the highlighted fields.', fieldErrors }

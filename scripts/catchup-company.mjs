@@ -49,15 +49,15 @@ const ROLE_BY_LEGACY = {
   'customer support': 'csr',
 }
 /**
- * Stricter than the app's own check, deliberately.
+ * Kept in step with lib/email.ts by hand — a .mjs script cannot import the TS.
  *
- * app/actions/users.ts accepts `/^[^\s@]+@[^\s@]+\.[^\s@]+$/`, where the TLD
- * only has to be non-empty — so "renardosmith364@gmail.com1" passes it. That
- * address is a real typo in cld_users #51, nobody can receive mail at it, and
- * the earlier migration would have created an account whose owner could never
- * recover the login. The TLD has to be letters.
+ * This was once stricter than the app, which accepted any non-empty TLD and so
+ * let "renardosmith364@gmail.com1" through. That address is a real typo in
+ * cld_users #51: nobody can receive mail at it, and an account created on it
+ * would have had a login its owner could never recover. The app now rejects it
+ * too, and both patterns say the same thing.
  */
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)*\.[A-Za-z]{2,63}$/
 const PLATFORM_OPERATOR_LEGACY_IDS = new Set([40, 61, 67, 73, 74])
 const LEGACY_NOTE = /^Migrated from legacy payment #(\d+)$/
 

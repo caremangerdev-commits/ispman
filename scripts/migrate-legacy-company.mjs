@@ -480,7 +480,13 @@ const ROLE_BY_LEGACY = {
 }
 
 /** Same shape the app's own createUser enforces. */
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+/**
+ * Kept in step with lib/email.ts by hand — a .mjs script cannot import the TS.
+ * A staff account is a login and the only route to a password reset, so an
+ * address that cannot receive mail is worse here than a rejected one. West
+ * Central's #51 got through the older, looser pattern on "gmail.com1".
+ */
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)*\.[A-Za-z]{2,63}$/
 
 /**
  * The platform operator's own legacy accounts, one per tenant. NOT staff.

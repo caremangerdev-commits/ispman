@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation'
 import { logEvent } from '@/lib/audit'
 import { allocateAccountNumber } from '@/lib/data/account-numbers'
 import { BALANCE_ADJUSTED } from '@/lib/data/balance-adjustments'
+import { isEmail } from '@/lib/email'
 import {
   CUSTOMER_DELETED, CUSTOMER_UPDATED, encodeChanges, FIELD_LABELS, REDACTED,
   safeValue, sameValue,
@@ -132,7 +133,7 @@ export async function createCustomer(
   if (!last_name) fieldErrors.last_name = 'Last name is required.'
   if (!phone) fieldErrors.phone = 'Phone number is required.'
   if (!str(formData, 'address')) fieldErrors.address = 'Address is required.'
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+  if (email && !isEmail(email)) {
     fieldErrors.email = 'Enter a valid email address.'
   }
 
@@ -331,10 +332,19 @@ export async function updateCustomer(
     return { ok: false, error: gps.error, fieldErrors: { gps: gps.error } }
   }
 
+  // createCustomer rejected a malformed address and this did not, so an email
+  // that could not be entered on the way in could be typed in on the way past.
+  // Blank still clears the field, as it always has.
+  const email = str(formData, 'email')
+  if (email && !isEmail(email)) {
+    const message = 'Enter a valid email address.'
+    return { ok: false, error: message, fieldErrors: { email: message } }
+  }
+
   const patch: Record<string, unknown> = {
     first_name: str(formData, 'first_name'),
     last_name: str(formData, 'last_name'),
-    email: str(formData, 'email') || null,
+    email: email || null,
     phone: str(formData, 'phone'),
     address: str(formData, 'address') || null,
     gps: gps && gps.ok ? gps.value : null,
