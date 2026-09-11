@@ -63,7 +63,10 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
     caps.catalog ? listMiscCategories(company.id) : Promise.resolve([]),
     caps.catalog ? listServicePlans(company.id) : Promise.resolve([]),
   ])
-  const { rows, total, pageCount, counts, addresses, accessPoints, page: current } = list
+  const {
+    rows, total, pageCount, counts, addresses, accessPoints, cutOffDates,
+    hasBothConnectionTypes, page: current,
+  } = list
 
   // Status arrives already merged onto each row by listCustomers(), which does
   // the registry lookup in one batched query.
@@ -146,10 +149,14 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
         miscCategories={miscCategories.map((c) => ({ id: c.id, name: c.name }))}
         servicePlans={servicePlans.map((p) => ({ id: p.id, name: p.name }))}
         accessPoints={accessPoints}
+        cutOffDates={cutOffDates}
+        hasBothConnectionTypes={hasBothConnectionTypes}
         selected={{
           category: base.category ?? '',
           plan: base.plan ?? '',
           ap: base.ap ?? '',
+          cutoff: base.cutoff ?? '',
+          conn: base.conn ?? '',
           expiring: base.expiring ?? '',
           owing: base.owing ?? '',
         }}

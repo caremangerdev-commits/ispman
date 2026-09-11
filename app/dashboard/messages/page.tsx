@@ -49,6 +49,13 @@ export default async function MessagesPage() {
     ...new Set(customers.map((c) => (c.access_point ?? '').trim()).filter(Boolean)),
   ].sort((a, b) => a.localeCompare(b))
 
+  const cutOffDates = [
+    ...new Set(customers.map((c) => c.cut_off_date).filter((d): d is number => typeof d === 'number')),
+  ].sort((a, b) => a - b)
+
+  const hasBothConnectionTypes =
+    new Set(customers.map((c) => c.connection_type).filter(Boolean)).size > 1
+
   // Why sending is not possible, in the order the operator would fix them.
   const blockedReason = !relayConfigured()
     ? 'This server has no SMS relay configured. Ask your administrator.'
@@ -70,6 +77,8 @@ export default async function MessagesPage() {
         servicePlans={plans.map((p) => ({ id: p.id, name: p.name }))}
         addresses={addresses}
         accessPoints={accessPoints}
+        cutOffDates={cutOffDates}
+        hasBothConnectionTypes={hasBothConnectionTypes}
         templates={settings.templates}
         canSendNow={canSend(settings, device)}
         blockedReason={blockedReason}

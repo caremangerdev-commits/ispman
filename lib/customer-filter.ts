@@ -1,5 +1,6 @@
 import { matchesCustomer, type SearchableCustomer } from '@/lib/search'
 import type { CustomerStatus } from '@/lib/status'
+import type { ConnectionType } from '@/lib/types'
 
 /**
  * The one definition of "which customers am I looking at".
@@ -34,6 +35,10 @@ export type FilterableCustomer = SearchableCustomer & {
   service_plan_id?: number | null
   /** Migration 0003. The tower or radio a customer is connected through. */
   access_point?: string | null
+  /** Day of month access expires. Not the same as bill_date — see lib/billing.ts. */
+  cut_off_date?: number | null
+  /** Migration 0005. wireless or wired. */
+  connection_type?: ConnectionType | null
   sms_opted_out?: boolean
 }
 
@@ -53,6 +58,16 @@ export type CustomerFilters = {
    * several districts and one district is often served by two.
    */
   accessPoint: string
+  /**
+   * Day of the month access expires, 1-31. Null means any.
+   *
+   * THE CUT-OFF, NOT THE BILL DATE. They are different columns describing
+   * different events and neither substitutes for the other — the cut-off is
+   * when a customer loses service, which is what a reminder is about.
+   */
+  cutOffDate: number | null
+  /** wireless or wired, or null for any. */
+  connectionType: ConnectionType | null
   /** misc_categories.id, or null for any. */
   miscCategoryId: number | null
   /** service_plans.id, or null for any. */
@@ -75,6 +90,8 @@ export const NO_FILTERS: CustomerFilters = {
   status: 'all',
   address: '',
   accessPoint: '',
+  cutOffDate: null,
+  connectionType: null,
   miscCategoryId: null,
   servicePlanId: null,
   expiringWithinDays: null,
@@ -108,6 +125,12 @@ export function matchesFilters(c: FilterableCustomer, f: CustomerFilters): boole
   if (f.address && (c.address ?? '').trim() !== f.address.trim()) return false
 
   if (f.accessPoint && (c.access_point ?? '').trim() !== f.accessPoint.trim()) return false
+
+  if (f.cutOffDate !== null && (c.cut_off_date ?? null) !== f.cutOffDate) return false
+
+  if (f.connectionType !== null && (c.connection_type ?? null) !== f.connectionType) {
+    return false
+  }
 
   if (f.miscCategoryId !== null && (c.misc_category_id ?? null) !== f.miscCategoryId) {
     return false
@@ -160,11 +183,21 @@ export function filtersFromParams(
 
   const statusRaw = (get('filter') ?? '').trim()
 
+  // Validated rather than cast: this value comes off a URL anyone can type, and
+  // an unrecognised one must read as "no filter" rather than as a value that
+  // matches nobody and silently empties the list.
+  const toConnection = (raw: string | undefined): ConnectionType | null => {
+    const v = (raw ?? '').trim()
+    return v === 'wireless' || v === 'wired' ? v : null
+  }
+
   return {
     query: get('q') ?? '',
     status: isStatus(statusRaw) ? statusRaw : 'all',
     address: (get('address') ?? '').trim(),
     accessPoint: (get('ap') ?? '').trim(),
+    cutOffDate: num('cutoff'),
+    connectionType: toConnection(get('conn')),
     miscCategoryId: num('category'),
     servicePlanId: num('plan'),
     expiringWithinDays: num('expiring'),
@@ -179,6 +212,8 @@ export function filtersToParams(f: CustomerFilters): Record<string, string> {
   if (f.status !== 'all') out.filter = f.status
   if (f.address) out.address = f.address
   if (f.accessPoint) out.ap = f.accessPoint
+  if (f.cutOffDate !== null) out.cutoff = String(f.cutOffDate)
+  if (f.connectionType !== null) out.conn = f.connectionType
   if (f.miscCategoryId !== null) out.category = String(f.miscCategoryId)
   if (f.servicePlanId !== null) out.plan = String(f.servicePlanId)
   if (f.expiringWithinDays !== null) out.expiring = String(f.expiringWithinDays)
@@ -220,6 +255,8 @@ export function describeFilters(
   }
   if (f.address) parts.push(f.address)
   if (f.accessPoint) parts.push('AP ' + f.accessPoint)
+  if (f.cutOffDate !== null) parts.push('cut-off day ' + f.cutOffDate)
+  if (f.connectionType !== null) parts.push(f.connectionType)
   if (f.expiringWithinDays !== null) {
     parts.push('expiring within ' + f.expiringWithinDays + ' day' +
       (f.expiringWithinDays === 1 ? '' : 's'))

@@ -1,11 +1,14 @@
 import type { Metadata } from 'next'
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
 
 import { CheckoffClient } from '@/components/checkoff/CheckoffClient'
+import { HandoverHistory } from '@/components/checkoff/HandoverHistory'
 import {
-  getAllAgentsSummary, getCheckoffSummary, listAgents,
+  getAllAgentsSummary, getCheckoffSummary, listAgents, listHandovers,
 } from '@/lib/data/checkoff'
 import { getGeneralSettings } from '@/lib/data/company'
+import { currencySymbol } from '@/lib/format'
 import { CHECKOFF_HINT, getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { can } from '@/lib/permissions'
@@ -45,10 +48,14 @@ export default async function CheckoffPage({
   const raw = Array.isArray(sp.agent) ? sp.agent[0] : sp.agent
   const agentId = Number(raw)
 
+  const viewRaw = Array.isArray(sp.view) ? sp.view[0] : sp.view
+  const view: 'outstanding' | 'history' = viewRaw === 'history' ? 'history' : 'outstanding'
+
   const settings = await getGeneralSettings(company.id)
-  const [agents, allAgents] = await Promise.all([
+  const [agents, allAgents, handovers] = await Promise.all([
     listAgents(company.id),
     getAllAgentsSummary({ companyId: company.id, timezone: settings.timezone }),
+    listHandovers(company.id),
   ])
 
   const selectedAgent = Number.isInteger(agentId)
@@ -63,14 +70,57 @@ export default async function CheckoffPage({
       })
     : null
 
+  // Tabs are server-rendered links rather than state inside CheckoffClient:
+  // the two views load different data, and putting the switch in the URL means
+  // a handover history can be linked to and survives a refresh.
+  const tab = (key: 'outstanding' | 'history', label: string, count?: number) => {
+    const active = view === key
+    return (
+      <Link
+        key={key}
+        href={'/dashboard/checkoff' + (key === 'history' ? '?view=history' : '')}
+        aria-current={active ? 'page' : undefined}
+        className={
+          'rounded-lg px-3 py-1.5 text-xs font-medium transition ' +
+          (active
+            ? 'bg-blue-600 text-white'
+            : 'bg-gray-900 text-gray-400 hover:bg-gray-800 hover:text-gray-200')
+        }
+      >
+        {label}
+        {count !== undefined ? (
+          <span className={'ml-1.5 ' + (active ? 'text-blue-200' : 'text-gray-600')}>
+            {count}
+          </span>
+        ) : null}
+      </Link>
+    )
+  }
+
   return (
-    <CheckoffClient
-      agents={agents}
-      selectedAgent={selectedAgent}
-      summary={summary}
-      allAgents={{ rows: allAgents.rows, total: allAgents.total, customers: allAgents.customers }}
-      currency={settings.currency}
-      timezone={settings.timezone}
-    />
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {tab('outstanding', 'Outstanding')}
+        {tab('history', 'Past handovers', handovers.rows.length)}
+      </div>
+
+      {view === 'history' ? (
+        <HandoverHistory
+          rows={handovers.rows}
+          symbol={currencySymbol(settings.currency)}
+        />
+      ) : (
+        <CheckoffClient
+          agents={agents}
+          selectedAgent={selectedAgent}
+          summary={summary}
+          allAgents={{
+            rows: allAgents.rows, total: allAgents.total, customers: allAgents.customers,
+          }}
+          currency={settings.currency}
+          timezone={settings.timezone}
+        />
+      )}
+    </div>
   )
 }

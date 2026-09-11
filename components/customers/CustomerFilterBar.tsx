@@ -1,6 +1,8 @@
 'use client'
 
-import { CalendarClock, Coins, Gauge, RadioTower, Tags, X } from 'lucide-react'
+import {
+  Cable, CalendarClock, CalendarDays, Coins, Gauge, RadioTower, Tags, X,
+} from 'lucide-react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useTransition } from 'react'
 
@@ -31,16 +33,24 @@ export function CustomerFilterBar({
   miscCategories,
   servicePlans,
   accessPoints,
+  cutOffDates,
+  hasBothConnectionTypes,
   selected,
   currencySymbol,
 }: {
   miscCategories: FilterOption[]
   servicePlans: FilterOption[]
   accessPoints: string[]
+  /** The cut-off days this company actually uses, ascending. */
+  cutOffDates: number[]
+  /** False when every customer is the same kind — see the note by the control. */
+  hasBothConnectionTypes: boolean
   selected: {
     category: string
     plan: string
     ap: string
+    cutoff: string
+    conn: string
     expiring: string
     owing: string
   }
@@ -64,15 +74,17 @@ export function CustomerFilterBar({
 
   function clearAll() {
     const next = new URLSearchParams(params.toString())
-    for (const k of ['category', 'plan', 'ap', 'expiring', 'owing']) next.delete(k)
+    for (const k of ['category', 'plan', 'ap', 'cutoff', 'conn', 'expiring', 'owing']) {
+      next.delete(k)
+    }
     next.delete('page')
     const qs = next.toString()
     startTransition(() => router.replace(pathname + (qs ? '?' + qs : '')))
   }
 
   const active = Boolean(
-    selected.category || selected.plan || selected.ap ||
-    selected.expiring || selected.owing
+    selected.category || selected.plan || selected.ap || selected.cutoff ||
+    selected.conn || selected.expiring || selected.owing
   )
 
   const pill = (on: boolean) =>
@@ -155,6 +167,53 @@ export function CustomerFilterBar({
             {accessPoints.map((ap) => (
               <option key={ap} value={ap}>{ap}</option>
             ))}
+          </select>
+        </div>
+      ) : null}
+
+      {/* Built from the days this company actually uses, not 1-31. Across the
+          platform only 18 distinct days are in use and no company uses more
+          than a handful, so a full month of options would be 25 dead entries
+          to scroll past. */}
+      {cutOffDates.length > 0 ? (
+        <div className="relative">
+          <CalendarDays
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500"
+            aria-hidden
+          />
+          <label htmlFor="filter-cutoff" className="sr-only">Filter by cut-off day</label>
+          <select
+            id="filter-cutoff"
+            value={selected.cutoff}
+            onChange={(e) => set('cutoff', e.target.value)}
+            className={pill(Boolean(selected.cutoff))}
+          >
+            <option value="">Any cut-off day</option>
+            {cutOffDates.map((d) => (
+              <option key={d} value={String(d)}>Cut-off {d}</option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+
+      {/* Only when both kinds are present. A wholly wireless company filtering
+          by "wireless" selects everybody, which is not a filter. */}
+      {hasBothConnectionTypes ? (
+        <div className="relative">
+          <Cable
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500"
+            aria-hidden
+          />
+          <label htmlFor="filter-conn" className="sr-only">Filter by connection type</label>
+          <select
+            id="filter-conn"
+            value={selected.conn}
+            onChange={(e) => set('conn', e.target.value)}
+            className={pill(Boolean(selected.conn))}
+          >
+            <option value="">Wireless &amp; wired</option>
+            <option value="wireless">Wireless</option>
+            <option value="wired">Wired</option>
           </select>
         </div>
       ) : null}

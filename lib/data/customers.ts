@@ -109,6 +109,14 @@ export type CustomerListRow = CustomerWithExpiry & {
 
   /** Migration 0003. Null until the connection columns exist. */
   access_point?: string | null
+  /** Migration 0005. */
+  connection_type?: ConnectionType | null
+  /**
+   * Day of month access expires. Present on every row via the base SELECT, but
+   * named here because withExpiry() narrows the type and a field it does not
+   * declare is invisible to the checker even though it survives the spread.
+   */
+  cut_off_date?: number | null
 
   /** Migration 0021. Undefined until it is applied, which reads as "not opted
    *  out" — correct, because before that column existed nobody could opt out. */
@@ -138,6 +146,10 @@ export type CustomerListResult = {
    * current filter excluded it cannot be navigated out of.
    */
   accessPoints: string[]
+  /** Cut-off days in use by this company, ascending. */
+  cutOffDates: number[]
+  /** True only when the company has BOTH wireless and wired customers. */
+  hasBothConnectionTypes: boolean
 }
 
 /**
@@ -186,6 +198,8 @@ export async function loadEnrichedCustomers(companyId: number): Promise<Customer
       const extra = row as unknown as {
         account_number?: string | null
         access_point?: string | null
+        connection_type?: ConnectionType | null
+        cut_off_date?: number | null
         misc_category_id?: number | null
         service_plan_id?: number | null
         sms_opted_out?: boolean
@@ -195,6 +209,8 @@ export async function loadEnrichedCustomers(companyId: number): Promise<Customer
         address: row.address ?? null,
         account_number: extra.account_number ?? null,
         access_point: extra.access_point ?? null,
+        connection_type: extra.connection_type ?? null,
+        cut_off_date: extra.cut_off_date ?? null,
         misc_category_id: extra.misc_category_id ?? null,
         service_plan_id: extra.service_plan_id ?? null,
         sms_opted_out: extra.sms_opted_out ?? false,
@@ -271,6 +287,13 @@ export async function listCustomers(opts: {
     ...new Set(all.map((c) => (c.access_point ?? '').trim()).filter(Boolean)),
   ].sort((a, b) => a.localeCompare(b))
 
+  const cutOffDates = [
+    ...new Set(all.map((c) => c.cut_off_date).filter((d): d is number => typeof d === 'number')),
+  ].sort((a, b) => a - b)
+
+  const kinds = new Set(all.map((c) => c.connection_type).filter(Boolean))
+  const hasBothConnectionTypes = kinds.size > 1
+
   const matched = applyFilters(all, filters)
 
   const pageCount = Math.max(1, Math.ceil(matched.length / perPage))
@@ -285,6 +308,8 @@ export async function listCustomers(opts: {
     counts,
     addresses,
     accessPoints,
+    cutOffDates,
+    hasBothConnectionTypes,
   }
 }
 

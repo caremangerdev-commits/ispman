@@ -33,13 +33,15 @@ function humanise(seconds: number): string {
 }
 
 export function Composer({
-  miscCategories, servicePlans, addresses, accessPoints, templates, canSendNow,
-  blockedReason,
+  miscCategories, servicePlans, addresses, accessPoints, cutOffDates,
+  hasBothConnectionTypes, templates, canSendNow, blockedReason,
 }: {
   miscCategories: Option[]
   servicePlans: Option[]
   addresses: string[]
   accessPoints: string[]
+  cutOffDates: number[]
+  hasBothConnectionTypes: boolean
   templates: Record<Exclude<SmsKind, 'bulk'>, string>
   canSendNow: boolean
   blockedReason: string | null
@@ -170,6 +172,39 @@ export function Composer({
               >
                 <option value="">Any access point</option>
                 {accessPoints.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+          ) : null}
+
+          {cutOffDates.length > 0 ? (
+            <div>
+              <label htmlFor="f-cutoff" className={label}>Cut-off day</label>
+              <select
+                id="f-cutoff" className={input + ' mt-1'}
+                value={num(filters.cutOffDate)}
+                onChange={(e) => patch({ cutOffDate: toNum(e.target.value) })}
+              >
+                <option value="">Any cut-off day</option>
+                {cutOffDates.map((d) => (
+                  <option key={d} value={d}>Cut-off {d}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
+          {hasBothConnectionTypes ? (
+            <div>
+              <label htmlFor="f-conn" className={label}>Connection</label>
+              <select
+                id="f-conn" className={input + ' mt-1'}
+                value={filters.connectionType ?? ''}
+                onChange={(e) => patch({
+                  connectionType: e.target.value === '' ? null : e.target.value as 'wireless' | 'wired',
+                })}
+              >
+                <option value="">Wireless &amp; wired</option>
+                <option value="wireless">Wireless</option>
+                <option value="wired">Wired</option>
               </select>
             </div>
           ) : null}

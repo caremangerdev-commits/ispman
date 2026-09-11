@@ -351,3 +351,101 @@ export async function getAllAgentsSummary(opts: {
     customers: rows.reduce((s, r) => s + r.customers, 0),
   }
 }
+
+// ---------------------------------------------------------------------------
+// Past handovers
+// ---------------------------------------------------------------------------
+
+/**
+ * A completed handover, as `checkoff_records` holds it.
+ *
+ * WHY THIS FUNCTION DID NOT EXIST UNTIL NOW. `checkoff_records` has been
+ * written since migration 0010 — by app/actions/checkoff.ts every time somebody
+ * reconciles, and by the legacy migration scripts — and read by nothing. The
+ * checkoff page shows OUTSTANDING collections, which it derives from `payments`
+ * where `checked_off = false`; that is a live reconciliation screen and by
+ * construction it cannot show a handover that is already settled. So every
+ * record ever written was invisible: 20 of Ezmze's own, plus 16 migrated for
+ * West Central.
+ */
+export type HandoverRecord = {
+  id: number
+  agentName: string
+  /**
+   * NULLABLE, and the difference matters.
+   *
+   * The all-agents checkoff writes the money onto ONE summary row and leaves
+   * the per-agent rows null. So null here means "not recorded against this
+   * row", which is a different claim from zero — coercing it would render
+   * Ezmze's twenty real handovers as "J$0 handed over".
+   */
+  amountReceived: number | null
+  systemTotal: number
+  discrepancy: number | null
+  customersCount: number
+  isAllAgents: boolean
+  createdAt: string
+  notes: string | null
+  /**
+   * True when this row came from a legacy import rather than from someone
+   * pressing Check Off in this app.
+   *
+   * The distinction matters to the reader, not just to us: a migrated handover
+   * has NO payments attached to it. The legacy table recorded the amount handed
+   * over but never which payments made it up, so there is nothing to drill into
+   * and the UI must not imply otherwise.
+   */
+  migrated: boolean
+}
+
+/** Matches what the migration scripts write into `notes`. */
+const MIGRATED_NOTE = /^Migrated from legacy checkoff #\d+/i
+
+export async function listHandovers(
+  companyId: number,
+  limit = 200
+): Promise<{ available: boolean; rows: HandoverRecord[] }> {
+  const caps = await getSchemaCapabilities()
+  if (!caps.checkoff) return { available: false, rows: [] }
+
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('checkoff_records')
+    .select(
+      'id, agent_name, amount_received, system_total, discrepancy, ' +
+      'customers_count, is_all_agents, created_at, notes'
+    )
+    .eq('company_id', companyId)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+
+  if (error) throw new Error('Failed to load handovers: ' + error.message)
+
+  const rows = (data ?? []).map((r) => {
+    const h = r as unknown as {
+      id: number
+      agent_name: string | null
+      amount_received: number | string | null
+      system_total: number | string | null
+      discrepancy: number | string | null
+      customers_count: number | null
+      is_all_agents: boolean | null
+      created_at: string
+      notes: string | null
+    }
+    return {
+      id: h.id,
+      agentName: h.agent_name ?? 'Unknown',
+      amountReceived: h.amount_received === null ? null : Number(h.amount_received),
+      systemTotal: Number(h.system_total ?? 0),
+      discrepancy: h.discrepancy === null ? null : Number(h.discrepancy),
+      customersCount: Number(h.customers_count ?? 0),
+      isAllAgents: Boolean(h.is_all_agents),
+      createdAt: h.created_at,
+      notes: h.notes,
+      migrated: MIGRATED_NOTE.test(String(h.notes ?? '')),
+    }
+  })
+
+  return { available: true, rows }
+}
