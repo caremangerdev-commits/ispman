@@ -1,6 +1,6 @@
 'use client'
 
-import { CalendarClock, Coins, Gauge, Tags, X } from 'lucide-react'
+import { CalendarClock, Coins, Gauge, RadioTower, Tags, X } from 'lucide-react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useTransition } from 'react'
 
@@ -30,14 +30,17 @@ export type FilterOption = { id: number; name: string }
 export function CustomerFilterBar({
   miscCategories,
   servicePlans,
+  accessPoints,
   selected,
   currencySymbol,
 }: {
   miscCategories: FilterOption[]
   servicePlans: FilterOption[]
+  accessPoints: string[]
   selected: {
     category: string
     plan: string
+    ap: string
     expiring: string
     owing: string
   }
@@ -61,14 +64,16 @@ export function CustomerFilterBar({
 
   function clearAll() {
     const next = new URLSearchParams(params.toString())
-    for (const k of ['category', 'plan', 'expiring', 'owing']) next.delete(k)
+    for (const k of ['category', 'plan', 'ap', 'expiring', 'owing']) next.delete(k)
     next.delete('page')
     const qs = next.toString()
     startTransition(() => router.replace(pathname + (qs ? '?' + qs : '')))
   }
 
-  const active =
-    Boolean(selected.category || selected.plan || selected.expiring || selected.owing)
+  const active = Boolean(
+    selected.category || selected.plan || selected.ap ||
+    selected.expiring || selected.owing
+  )
 
   const pill = (on: boolean) =>
     'appearance-none rounded-lg border py-1.5 pl-8 pr-3 text-xs font-medium outline-none transition ' +
@@ -118,6 +123,37 @@ export function CustomerFilterBar({
             <option value="">All plans</option>
             {servicePlans.map((p) => (
               <option key={p.id} value={String(p.id)}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+
+      {/* Hidden until at least one customer has an access point recorded.
+          Across the platform today exactly one row does, so for nine tenants
+          out of ten this control would be an empty dropdown promising a
+          capability their data cannot deliver. */}
+      {accessPoints.length > 0 ? (
+        <div className="relative">
+          <RadioTower
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500"
+            aria-hidden
+          />
+          <label htmlFor="filter-ap" className="sr-only">Filter by access point</label>
+          <select
+            id="filter-ap"
+            value={selected.ap}
+            onChange={(e) => set('ap', e.target.value)}
+            className={'max-w-[11rem] truncate ' + pill(Boolean(selected.ap))}
+          >
+            <option value="">All access points</option>
+            {/* A URL can name an AP nobody is on any more. Without an option to
+                match it the control would read "All access points" while the
+                list stayed filtered to nothing. */}
+            {selected.ap && !accessPoints.includes(selected.ap) ? (
+              <option value={selected.ap}>{selected.ap} (no customers)</option>
+            ) : null}
+            {accessPoints.map((ap) => (
+              <option key={ap} value={ap}>{ap}</option>
             ))}
           </select>
         </div>

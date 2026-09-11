@@ -45,6 +45,10 @@ export default async function MessagesPage() {
     ...new Set(customers.map((c) => (c.address ?? '').trim()).filter(Boolean)),
   ].sort((a, b) => a.localeCompare(b))
 
+  const accessPoints = [
+    ...new Set(customers.map((c) => (c.access_point ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b))
+
   // Why sending is not possible, in the order the operator would fix them.
   const blockedReason = !relayConfigured()
     ? 'This server has no SMS relay configured. Ask your administrator.'
@@ -65,6 +69,7 @@ export default async function MessagesPage() {
         miscCategories={categories.map((c) => ({ id: c.id, name: c.name }))}
         servicePlans={plans.map((p) => ({ id: p.id, name: p.name }))}
         addresses={addresses}
+        accessPoints={accessPoints}
         templates={settings.templates}
         canSendNow={canSend(settings, device)}
         blockedReason={blockedReason}

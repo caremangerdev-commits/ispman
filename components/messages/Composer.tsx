@@ -33,11 +33,13 @@ function humanise(seconds: number): string {
 }
 
 export function Composer({
-  miscCategories, servicePlans, addresses, templates, canSendNow, blockedReason,
+  miscCategories, servicePlans, addresses, accessPoints, templates, canSendNow,
+  blockedReason,
 }: {
   miscCategories: Option[]
   servicePlans: Option[]
   addresses: string[]
+  accessPoints: string[]
   templates: Record<Exclude<SmsKind, 'bulk'>, string>
   canSendNow: boolean
   blockedReason: string | null
@@ -154,6 +156,23 @@ export function Composer({
               {addresses.map((a) => <option key={a} value={a}>{a}</option>)}
             </select>
           </div>
+
+          {/* The AP outage case: everyone behind one tower loses service at
+              once, and they are exactly who should be told. Hidden when no
+              customer has one recorded. */}
+          {accessPoints.length > 0 ? (
+            <div>
+              <label htmlFor="f-ap" className={label}>Access point</label>
+              <select
+                id="f-ap" className={input + ' mt-1'}
+                value={filters.accessPoint}
+                onChange={(e) => patch({ accessPoint: e.target.value })}
+              >
+                <option value="">Any access point</option>
+                {accessPoints.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+          ) : null}
 
           {miscCategories.length > 0 ? (
             <div>

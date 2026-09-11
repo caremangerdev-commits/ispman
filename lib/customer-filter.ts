@@ -32,6 +32,8 @@ export type FilterableCustomer = SearchableCustomer & {
   balance?: number | string | null
   misc_category_id?: number | null
   service_plan_id?: number | null
+  /** Migration 0003. The tower or radio a customer is connected through. */
+  access_point?: string | null
   sms_opted_out?: boolean
 }
 
@@ -42,6 +44,15 @@ export type CustomerFilters = {
   status: CustomerStatus | 'all'
   /** Exact address, already trimmed. Empty means every address. */
   address: string
+  /**
+   * Exact access point. Empty means every one.
+   *
+   * THE REASON THIS FILTER EXISTS is an AP going down: everyone behind it loses
+   * service at once, and they are the exact set who should be told. That is a
+   * different question from "everyone at this address" — one tower serves
+   * several districts and one district is often served by two.
+   */
+  accessPoint: string
   /** misc_categories.id, or null for any. */
   miscCategoryId: number | null
   /** service_plans.id, or null for any. */
@@ -63,6 +74,7 @@ export const NO_FILTERS: CustomerFilters = {
   query: '',
   status: 'all',
   address: '',
+  accessPoint: '',
   miscCategoryId: null,
   servicePlanId: null,
   expiringWithinDays: null,
@@ -94,6 +106,8 @@ export function matchesFilters(c: FilterableCustomer, f: CustomerFilters): boole
   if (f.status !== 'all' && (c.radiusStatus ?? 'unknown') !== f.status) return false
 
   if (f.address && (c.address ?? '').trim() !== f.address.trim()) return false
+
+  if (f.accessPoint && (c.access_point ?? '').trim() !== f.accessPoint.trim()) return false
 
   if (f.miscCategoryId !== null && (c.misc_category_id ?? null) !== f.miscCategoryId) {
     return false
@@ -150,6 +164,7 @@ export function filtersFromParams(
     query: get('q') ?? '',
     status: isStatus(statusRaw) ? statusRaw : 'all',
     address: (get('address') ?? '').trim(),
+    accessPoint: (get('ap') ?? '').trim(),
     miscCategoryId: num('category'),
     servicePlanId: num('plan'),
     expiringWithinDays: num('expiring'),
@@ -163,6 +178,7 @@ export function filtersToParams(f: CustomerFilters): Record<string, string> {
   if (f.query) out.q = f.query
   if (f.status !== 'all') out.filter = f.status
   if (f.address) out.address = f.address
+  if (f.accessPoint) out.ap = f.accessPoint
   if (f.miscCategoryId !== null) out.category = String(f.miscCategoryId)
   if (f.servicePlanId !== null) out.plan = String(f.servicePlanId)
   if (f.expiringWithinDays !== null) out.expiring = String(f.expiringWithinDays)
@@ -203,6 +219,7 @@ export function describeFilters(
     parts.push(names.servicePlan?.(f.servicePlanId) ?? 'plan #' + f.servicePlanId)
   }
   if (f.address) parts.push(f.address)
+  if (f.accessPoint) parts.push('AP ' + f.accessPoint)
   if (f.expiringWithinDays !== null) {
     parts.push('expiring within ' + f.expiringWithinDays + ' day' +
       (f.expiringWithinDays === 1 ? '' : 's'))

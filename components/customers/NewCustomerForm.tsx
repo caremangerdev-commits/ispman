@@ -79,6 +79,8 @@ export function NewCustomerForm({
   miscCategories,
   typesAvailable,
   catalogAvailable,
+  taxIdAvailable,
+  taxIdLabel,
   defaultMonthlyRate,
   billingAvailable,
   defaultBillingType,
@@ -89,6 +91,10 @@ export function NewCustomerForm({
   miscCategories: MiscCategory[]
   typesAvailable: boolean
   catalogAvailable: boolean
+  /** Migration 0019. */
+  taxIdAvailable: boolean
+  /** What this company calls it — TRN, EIN/SSN, or just Tax ID. */
+  taxIdLabel: string
   /** 0 means no company default — the field starts empty. */
   defaultMonthlyRate: number
   /** False until migration 0011 is applied; the control renders disabled. */
@@ -170,6 +176,17 @@ export function NewCustomerForm({
           <Field label="GPS Coordinates" htmlFor="gps" error={errors.gps}>
             <input id="gps" name="gps" defaultValue={v('gps')} placeholder="lat,lng e.g. 18.0179,-76.8099" className={cls('gps')} />
           </Field>
+
+          {/* Migration 0019. createCustomer has always read `tax_id` off this
+              form — the field was simply never added to it, so the value was
+              unreachable on the way in and could only be filled by editing the
+              customer afterwards. The label is the company's own word for it
+              (TRN, EIN/SSN, Tax ID), same as the detail page. */}
+          {taxIdAvailable ? (
+            <Field label={taxIdLabel} htmlFor="tax_id" error={errors.tax_id}>
+              <input id="tax_id" name="tax_id" defaultValue={v('tax_id')} className={cls('tax_id')} />
+            </Field>
+          ) : null}
 
           {catalogAvailable ? (
             <>

@@ -11,6 +11,8 @@ import {
 } from '@/lib/data/company'
 import { CATALOG_HINT, getSchemaCapabilities } from '@/lib/schema'
 import { requirePermission } from '@/lib/session'
+import { getGeneralSettings } from '@/lib/data/company'
+import { taxIdLabel } from '@/lib/tax-id'
 
 export const metadata: Metadata = { title: 'Add Customer · ISPMan' }
 
@@ -28,6 +30,11 @@ export default async function NewCustomerPage() {
     getDefaultBillingType(company.id),
     getDefaultBillDate(company.id),
   ])
+
+  // The label only, for the tax id field. Read after the batch above because
+  // it is the one value here that depends on company settings rather than the
+  // catalogue.
+  const settings = await getGeneralSettings(company.id)
 
   const pending: string[] = []
   if (!caps.catalog) pending.push(CATALOG_HINT)
@@ -58,6 +65,8 @@ export default async function NewCustomerPage() {
         additionalServices={addons}
         miscCategories={miscCats}
         typesAvailable={caps.connectionTypes}
+        taxIdAvailable={caps.taxId}
+        taxIdLabel={taxIdLabel(settings.taxIdLabel, settings.country)}
         catalogAvailable={caps.catalog}
         defaultMonthlyRate={defaultRate}
         billingAvailable={caps.billing}

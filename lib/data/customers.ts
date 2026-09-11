@@ -107,6 +107,9 @@ export type CustomerListRow = CustomerWithExpiry & {
   misc_category_id?: number | null
   service_plan_id?: number | null
 
+  /** Migration 0003. Null until the connection columns exist. */
+  access_point?: string | null
+
   /** Migration 0021. Undefined until it is applied, which reads as "not opted
    *  out" — correct, because before that column existed nobody could opt out. */
   sms_opted_out?: boolean
@@ -127,6 +130,14 @@ export type CustomerListResult = {
    * current filter excluded it is a dropdown you cannot navigate out of.
    */
   addresses: string[]
+  /**
+   * Every distinct access point in the company, sorted.
+   *
+   * Company-wide and built before the filters, for the same reason the
+   * addresses are: a dropdown that hides the option you need because the
+   * current filter excluded it cannot be navigated out of.
+   */
+  accessPoints: string[]
 }
 
 /**
@@ -174,6 +185,7 @@ export async function loadEnrichedCustomers(companyId: number): Promise<Customer
       // one of these would compile and then always be undefined.
       const extra = row as unknown as {
         account_number?: string | null
+        access_point?: string | null
         misc_category_id?: number | null
         service_plan_id?: number | null
         sms_opted_out?: boolean
@@ -182,6 +194,7 @@ export async function loadEnrichedCustomers(companyId: number): Promise<Customer
         ...withExpiry(row),
         address: row.address ?? null,
         account_number: extra.account_number ?? null,
+        access_point: extra.access_point ?? null,
         misc_category_id: extra.misc_category_id ?? null,
         service_plan_id: extra.service_plan_id ?? null,
         sms_opted_out: extra.sms_opted_out ?? false,
@@ -254,6 +267,10 @@ export async function listCustomers(opts: {
     ...new Set(all.map((c) => (c.address ?? '').trim()).filter(Boolean)),
   ].sort((a, b) => a.localeCompare(b))
 
+  const accessPoints = [
+    ...new Set(all.map((c) => (c.access_point ?? '').trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b))
+
   const matched = applyFilters(all, filters)
 
   const pageCount = Math.max(1, Math.ceil(matched.length / perPage))
@@ -267,6 +284,7 @@ export async function listCustomers(opts: {
     pageCount,
     counts,
     addresses,
+    accessPoints,
   }
 }
 
