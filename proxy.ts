@@ -3,8 +3,21 @@ import { NextResponse, type NextRequest } from 'next/server'
 
 import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase/env'
 
-/** Path prefixes reachable without a session. */
-const PUBLIC_PATHS = ['/login', '/auth']
+/**
+ * Path prefixes reachable without a session.
+ *
+ * `/api/sms/dispatch` is NOT public in any meaningful sense — it authenticates
+ * itself with a shared secret, because the caller is a background worker with
+ * no user and therefore no cookie. It has to be exempted HERE because this
+ * proxy redirects anything unauthenticated to /login, and a 307 to a login page
+ * is something `fetch` follows silently: the ticker would read the login HTML,
+ * see a 200, find no JSON, and log nothing at all. It would appear to run
+ * perfectly every minute while dispatching precisely nothing.
+ *
+ * Anything added to this list must do its own authorization. See the secret
+ * check in app/api/sms/dispatch/route.ts.
+ */
+const PUBLIC_PATHS = ['/login', '/auth', '/api/sms/dispatch']
 
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some(

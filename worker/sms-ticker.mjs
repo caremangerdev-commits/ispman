@@ -65,15 +65,41 @@ async function tick() {
     const res = await fetch(URL_, {
       method: 'POST',
       headers: { 'x-sms-dispatch-secret': SECRET },
+      // NEVER FOLLOW A REDIRECT. The app's proxy sends anything without a
+      // session to /login, and a followed redirect returns that page as a 200
+      // with no JSON in it — which this loop would have read as "a tick that
+      // did nothing" and printed no warning about, every minute, forever.
+      // Failing loudly here is the whole point.
+      redirect: 'manual',
       // Generous: the app's own budget cuts a tick off at 50s, and this only
       // has to outlast that plus the round trip.
       signal: AbortSignal.timeout(90_000),
     })
 
+    if (res.status >= 300 && res.status < 400) {
+      console.error(
+        '[sms-ticker] ' + res.status + ' redirect to ' +
+        (res.headers.get('location') ?? '?') +
+        ' — /api/sms/dispatch is being intercepted before it runs. ' +
+        'Check PUBLIC_PATHS in proxy.ts.'
+      )
+      return
+    }
+
     const body = await res.json().catch(() => null)
 
     if (!res.ok) {
       console.error('[sms-ticker] ' + res.status + ' ' + (body?.error ?? ''))
+      return
+    }
+
+    // A 200 that is not the JSON this endpoint returns means something answered
+    // in its place. Treated as a failure rather than an empty tick.
+    if (!body || body.ok !== true) {
+      console.error(
+        '[sms-ticker] 200 but not a dispatch response — something else served ' +
+        'this URL. Nothing was dispatched.'
+      )
       return
     }
 
