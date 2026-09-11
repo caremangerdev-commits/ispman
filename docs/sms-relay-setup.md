@@ -281,16 +281,20 @@ and the private token from step 2 never reaches ISPMan at all.
 
 ```sh
 pm2 restart ispman --update-env
-pm2 start worker/sms-ticker.mjs --name ispman-sms -i 1 --cwd /PATH/TO/ispman
+pm2 start worker/sms-ticker.mjs --name ispman-sms --cwd /PATH/TO/ispman
 pm2 save
 ```
 
 `--update-env` matters: without it pm2 reuses the old environment and
 `SMS_RELAY_URL` stays unset, which looks exactly like having done nothing.
 
-**One ticker instance.** A second corrupts nothing — the outbox claim is a
-compare-and-swap and the dedupe key is a unique index — but it doubles the rate
-each SIM sends at, which is the one thing the throttle exists to prevent.
+**One ticker instance**, which is what plain fork mode (pm2's default) gives.
+Do NOT add `-i 1`: despite how it reads, that switches pm2 into CLUSTER mode,
+which is the wrong runtime for an ESM script and the opposite of the intent.
+
+A second ticker corrupts nothing — the outbox claim is a compare-and-swap and
+the dedupe key is a unique index — but it doubles the rate each SIM sends at,
+which is the one thing the throttle exists to prevent.
 
 ```sh
 pm2 logs ispman-sms --lines 20
