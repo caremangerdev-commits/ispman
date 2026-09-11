@@ -32,14 +32,26 @@ export function relayConfigured(): boolean {
 /**
  * The API prefix.
  *
- * The upstream example file is INCONSISTENT: most endpoints are
- * `{base}/3rdparty/v1/...` while two (`/logs`, and one push route) appear as
- * `{base}/api/3rdparty/v1/...`. The messages and devices endpoints this app
- * uses are all in the first form, which is also what the docs show, so that is
- * what is used here. If a future server version moves them, this is the one
- * line to change.
+ * VERIFIED AGAINST A RUNNING PRIVATE SERVER, not inferred. The upstream
+ * examples are inconsistent — most show `{base}/3rdparty/v1/...` and two show
+ * `{base}/api/3rdparty/v1/...` — and the first form is what the hosted cloud
+ * uses. A private server is different: `http.api.path` defaults to `/api`
+ * (see configs/config.example.yml), so everything is mounted under it. Probed
+ * on the box:
+ *
+ *   /api/3rdparty/v1/health -> 200
+ *   /health                 -> 200   (plain liveness, outside the API)
+ *   /api/health             -> 404
+ *
+ * Had this stayed `/3rdparty/v1`, every send would have 404'd — and the
+ * dispatcher would have recorded each one as a terminal failure with a
+ * relay-returned-404 error, which reads like a tenant credential problem
+ * rather than a wrong URL.
+ *
+ * If a tenant ever runs a relay with a different `http.api.path`, this is the
+ * one line to change.
  */
-const API = '/3rdparty/v1'
+const API = '/api/3rdparty/v1'
 
 /** How long any single call may take before it is abandoned. */
 const TIMEOUT_MS = 15_000

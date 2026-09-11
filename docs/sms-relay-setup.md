@@ -131,7 +131,8 @@ sudo chmod 600 /opt/smsgate/config.yml
 sudo ls -l /opt/smsgate/config.yml
 ```
 
-Expect `-rw------- 1 root root`.
+Expect `-rw------- 1 root root`. The container runs as uid 405, so step 3 will
+fail to read this until it is chowned — that is handled there.
 
 ---
 
@@ -168,7 +169,7 @@ Expect a listener on **127.0.0.1:3001** — not `0.0.0.0:3001`. If it shows
 `sudo docker restart smsgate`.
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/3rdparty/v1/health
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/api/3rdparty/v1/health
 ```
 
 **200 or 401 both mean it is up** — 401 just means that endpoint wants
@@ -237,7 +238,7 @@ command reloads the server ISPMan is behind.
 ```sh
 sudo a2ensite sms
 sudo systemctl reload apache2
-curl -sS -o /dev/null -w '%{http_code}\n' http://sms.YOURDOMAIN/3rdparty/v1/health
+curl -sS -o /dev/null -w '%{http_code}\n' http://sms.YOURDOMAIN/api/3rdparty/v1/health
 ```
 
 Same expectation as before: 200 or 401.
@@ -250,7 +251,7 @@ Choose redirect-to-HTTPS when it offers. Then, from a machine that is **not** th
 box:
 
 ```sh
-curl -sS -o /dev/null -w '%{http_code}\n' https://sms.YOURDOMAIN/3rdparty/v1/health
+curl -sS -o /dev/null -w '%{http_code}\n' https://sms.YOURDOMAIN/api/3rdparty/v1/health
 ```
 
 Confirm ISPMan is still served and its certificate is untouched:
@@ -270,7 +271,7 @@ SMS_RELAY_URL=https://sms.YOURDOMAIN
 SMS_DISPATCH_SECRET=PASTE-A-SECOND-openssl-rand-hex-32
 ```
 
-`SMS_RELAY_URL` is the vhost, with no path — the `/3rdparty/v1` prefix is added
+`SMS_RELAY_URL` is the vhost, with no path — the `/api/3rdparty/v1` prefix is added
 by `lib/sms/relay.ts`. `SMS_DISPATCH_SECRET` is unrelated to the relay: it is
 what stops anything but the ticker calling `/api/sms/dispatch`.
 
