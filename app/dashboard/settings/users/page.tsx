@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 
 import { UsersManager } from '@/components/settings/UsersManager'
-import { ASSIGNABLE_ROLES, listCompanyUsers } from '@/lib/data/users'
+import { assignableRoles, listCompanyUsers } from '@/lib/data/users'
 import { getSession } from '@/lib/session'
 import { canOpenSetting } from '@/lib/settings-nav'
 
@@ -30,7 +30,7 @@ export default async function UsersPage() {
 
       <UsersManager
         users={users}
-        roles={ASSIGNABLE_ROLES}
+        roles={assignableRoles(profile.role)}
         currentUserId={profile.id}
         viewerRole={profile.role}
       />

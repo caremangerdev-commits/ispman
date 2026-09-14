@@ -10,7 +10,7 @@ import {
 } from '@/app/actions/users'
 import { Modal, settingsInput, StatusPill } from '@/components/settings/Modal'
 import { seesAdminRows, type CompanyUser } from '@/lib/data/users'
-import { ROLE_LABELS, type Role } from '@/lib/permissions'
+import { can, ROLE_LABELS, type Role } from '@/lib/permissions'
 
 const ROLE_STYLES: Record<string, string> = {
   super_admin: 'bg-amber-500/15 text-amber-400',
@@ -23,6 +23,22 @@ const ROLE_STYLES: Record<string, string> = {
 
 function label(role: string | null) {
   return ROLE_LABELS[(role ?? '') as Role] ?? role ?? 'Unknown'
+}
+
+/**
+ * The line under a role select. Says what is true for THIS caller: the list it
+ * sits under is built from the same permission (lib/data/users.ts), so the
+ * text and the options cannot disagree. It used to claim "only a super admin
+ * can grant those" for everyone, while nothing checked for one.
+ */
+function RoleHint({ assignsAdmin }: { assignsAdmin: boolean }) {
+  return (
+    <p className="text-[11px] text-gray-600">
+      {assignsAdmin
+        ? 'Company Admin can delete customers and every payment attached to them. Give it to the company’s owner only.'
+        : 'Company Admin can only be granted by a super admin.'}
+    </p>
+  )
 }
 
 function SubmitButton({ label: text }: { label: string }) {
@@ -38,7 +54,13 @@ function SubmitButton({ label: text }: { label: string }) {
   )
 }
 
-function AddUserForm({ roles, onDone }: { roles: Role[]; onDone: () => void }) {
+function AddUserForm({
+  roles, assignsAdmin, onDone,
+}: {
+  roles: Role[]
+  assignsAdmin: boolean
+  onDone: () => void
+}) {
   const [state, action] = useActionState<UserResult | null, FormData>(createUser, null)
 
   // Closes AFTER the commit, not during it.
@@ -83,9 +105,7 @@ function AddUserForm({ roles, onDone }: { roles: Role[]; onDone: () => void }) {
             <option key={r} value={r}>{ROLE_LABELS[r]}</option>
           ))}
         </select>
-        <p className="text-[11px] text-gray-600">
-          Admin roles are not assignable here — only a super admin can grant those.
-        </p>
+        <RoleHint assignsAdmin={assignsAdmin} />
       </div>
 
       <div className="space-y-1.5">
@@ -110,18 +130,19 @@ function AddUserForm({ roles, onDone }: { roles: Role[]; onDone: () => void }) {
  * Details and role in ONE dialog, but two forms and two server actions.
  *
  * They are separate posts on purpose. updateUserRole carries a stricter
- * guardrail than updateUser — no admin target may be re-roled by anyone from
- * this screen, whoever is asking — so folding role into the details write would
- * either loosen that rule or tighten the other. Keeping them apart lets a
- * company_admin correct another admin's name without also being handed the
- * ability to demote them.
+ * guardrail than updateUser — a company_admin target may only be re-roled by a
+ * caller holding assign_company_admin, and a super_admin target by nobody — so
+ * folding role into the details write would either loosen that rule or tighten
+ * the other. Keeping them apart lets a company_admin correct another admin's
+ * name without also being handed the ability to demote them.
  */
 function EditUserForm({
-  user, roles, canEditRole, onDone,
+  user, roles, assignsAdmin, canEditRole, onDone,
 }: {
   user: CompanyUser
   roles: Role[]
-  /** False for an admin target: updateUserRole rejects those for every caller. */
+  assignsAdmin: boolean
+  /** False when updateUserRole would refuse this target for this caller. */
   canEditRole: boolean
   onDone: () => void
 }) {
@@ -249,9 +270,7 @@ function EditUserForm({
                   <option key={r} value={r}>{ROLE_LABELS[r]}</option>
                 ))}
               </select>
-              <p className="text-[11px] text-gray-600">
-                Admin roles are not assignable here — only a super admin can grant those.
-              </p>
+              <RoleHint assignsAdmin={assignsAdmin} />
             </div>
 
             <SubmitButton label="Save Role" />
@@ -261,7 +280,9 @@ function EditUserForm({
             <p className="text-xs font-medium text-gray-400">Role</p>
             <p className="text-sm text-gray-300">{label(user.role)}</p>
             <p className="text-[11px] text-gray-600">
-              An admin role cannot be changed from this screen.
+              {user.role === 'super_admin' || user.is_super_admin
+                ? 'A super admin account cannot be changed from this screen.'
+                : 'Admin roles can only be changed by a super admin.'}
             </p>
           </div>
         )}
@@ -372,6 +393,18 @@ export function UsersManager({
   const [resetting, setResetting] = useState<CompanyUser | null>(null)
 
   const viewerIsAdmin = seesAdminRows(viewerRole)
+  const viewerAssignsAdmin = can(viewerRole, 'assign_company_admin')
+
+  /**
+   * Mirrors updateUserRole's target checks so the form is only offered where
+   * the server would accept the post: never yourself, never a platform-level
+   * account, and a company_admin only for a caller who may assign that role.
+   */
+  const mayEditRoleOf = (u: CompanyUser) =>
+    u.id !== currentUserId &&
+    u.role !== 'super_admin' &&
+    !u.is_super_admin &&
+    (u.role !== 'company_admin' || viewerAssignsAdmin)
 
   return (
     <div className="space-y-4">
@@ -411,14 +444,14 @@ export function UsersManager({
                 // list is filtered server-side — so this only ever describes
                 // what an ADMIN caller may do to another admin.
                 //
-                // Details and password reset are open to them; role and
-                // deactivate are not, because updateUserRole and
-                // toggleUserActive reject an admin target for every caller and
-                // those guardrails are unchanged. Mirroring that split here
-                // keeps the buttons honest instead of offering a click that
-                // the server will refuse.
+                // Details and password reset are open to them. Role follows
+                // updateUserRole: a company_admin target only for a caller
+                // holding assign_company_admin. Deactivate stays closed for
+                // every admin target because toggleUserActive still rejects
+                // those for every caller. Mirroring the server here keeps the
+                // buttons honest instead of offering a click it will refuse.
                 const mayTouch = !isSelf && (!isAdmin || viewerIsAdmin)
-                const mayEditRole = !isSelf && !isAdmin
+                const mayEditRole = mayEditRoleOf(u)
                 const mayDeactivate = !isSelf && !isAdmin
 
                 return (
@@ -521,7 +554,11 @@ export function UsersManager({
 
       {adding ? (
         <Modal title="Add User" onClose={() => setAdding(false)}>
-          <AddUserForm roles={roles} onDone={() => setAdding(false)} />
+          <AddUserForm
+            roles={roles}
+            assignsAdmin={viewerAssignsAdmin}
+            onDone={() => setAdding(false)}
+          />
         </Modal>
       ) : null}
 
@@ -530,9 +567,8 @@ export function UsersManager({
           <EditUserForm
             user={editing}
             roles={roles}
-            canEditRole={
-              editing.role !== 'company_admin' && editing.role !== 'super_admin'
-            }
+            assignsAdmin={viewerAssignsAdmin}
+            canEditRole={mayEditRoleOf(editing)}
             onDone={() => setEditing(null)}
           />
         </Modal>

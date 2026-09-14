@@ -1,4 +1,4 @@
-import type { Role } from '@/lib/permissions'
+import { can, type Role } from '@/lib/permissions'
 import { supabaseUrl } from '@/lib/supabase/env'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -9,6 +9,24 @@ import { tenantClient } from '@/lib/supabase/tenant'
  * able to mint a peer or escalate to platform level from this screen.
  */
 export const ASSIGNABLE_ROLES: Role[] = ['manager', 'csr', 'cashier', 'technician']
+
+/**
+ * Roles THIS caller may hand out — the single definition, used by the page
+ * that renders the dropdown and by the two actions that validate the post, so
+ * the options a caller sees and the values the server accepts never disagree.
+ *
+ * company_admin is added for a caller holding assign_company_admin, which is
+ * super_admin only. A company's owner has to hold company_admin, and until
+ * this existed the only way to mint one was company creation itself.
+ *
+ * super_admin is never assignable from here: that is a platform-level account,
+ * not a tenant role, and it is granted in the database, not on this screen.
+ */
+export function assignableRoles(callerRole: Role): Role[] {
+  return can(callerRole, 'assign_company_admin')
+    ? ['company_admin', ...ASSIGNABLE_ROLES]
+    : ASSIGNABLE_ROLES
+}
 
 export type CompanyUser = {
   id: number

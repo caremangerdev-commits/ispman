@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 
 import { logEvent } from '@/lib/audit'
 import { isEmail } from '@/lib/email'
-import { ADMIN_ROLES, ASSIGNABLE_ROLES, seesAdminRows } from '@/lib/data/users'
+import { ADMIN_ROLES, assignableRoles, seesAdminRows } from '@/lib/data/users'
 import { can, type Role } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -33,8 +33,17 @@ const idOf = (fd: FormData) => {
   return Number.isInteger(n) ? n : null
 }
 
-function assignable(role: string): role is Role {
-  return (ASSIGNABLE_ROLES as string[]).includes(role)
+/**
+ * Whether THIS caller may hand out `role`. Same list the dropdown was built
+ * from, so a super admin's company_admin option is accepted here and a
+ * company admin's forged one is not.
+ */
+function assignable(role: string, callerRole: Role): role is Role {
+  return (assignableRoles(callerRole) as string[]).includes(role)
+}
+
+function chooseOneOf(callerRole: Role): string {
+  return 'Choose one of: ' + assignableRoles(callerRole).join(', ') + '.'
 }
 
 const MIN_PASSWORD = 8
@@ -91,7 +100,8 @@ async function loadTarget(
 }
 
 /**
- * Audit row for the two actions that could be used to take over an account.
+ * Audit row for the actions that could be used to take over an account or to
+ * hand out authority.
  *
  * Goes through lib/audit.ts#logEvent, which every log write in this app uses:
  * it owns the company id, the actor and the platform-operator marker, so a
@@ -103,7 +113,7 @@ async function loadTarget(
 async function logUserEvent(opts: {
   companyId: number
   actorId: number
-  type: 'user_email_changed' | 'user_password_reset'
+  type: 'user_email_changed' | 'user_password_reset' | 'user_role_changed'
   details: string
 }) {
   await logEvent({
@@ -126,7 +136,7 @@ export async function createUser(
   _prev: UserResult | null,
   formData: FormData
 ): Promise<UserResult> {
-  const { company } = await authorize()
+  const { company, profile } = await authorize()
 
   const first = str(formData, 'first_name')
   const last = str(formData, 'last_name')
@@ -138,8 +148,8 @@ export async function createUser(
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return { ok: false, error: 'Enter a valid email address.' }
   }
-  if (!assignable(role)) {
-    return { ok: false, error: 'Choose one of: ' + ASSIGNABLE_ROLES.join(', ') + '.' }
+  if (!assignable(role, profile.role)) {
+    return { ok: false, error: chooseOneOf(profile.role) }
   }
   if (password.length < 8) {
     return { ok: false, error: 'Temporary password must be at least 8 characters.' }
@@ -202,22 +212,35 @@ export async function updateUserRole(
   if (id === profile.id) return { ok: false, error: 'You cannot change your own role.' }
 
   const role = str(formData, 'role')
-  if (!assignable(role)) {
-    return { ok: false, error: 'Choose one of: ' + ASSIGNABLE_ROLES.join(', ') + '.' }
+  if (!assignable(role, profile.role)) {
+    return { ok: false, error: chooseOneOf(profile.role) }
   }
 
   const db = tenantClient()
 
-  // Never let an admin demote or re-role another admin from this screen.
+  // The target's role is re-read from the database, never taken from the form.
   const { data: target } = await db
     .from('users')
-    .select('role')
+    .select('email, role, is_super_admin')
     .eq('company_id', company.id)
     .eq('id', id)
     .maybeSingle()
 
-  const current = (target as { role: string | null } | null)?.role ?? ''
-  if (current === 'company_admin' || current === 'super_admin') {
+  const row = target as { email: string; role: string | null; is_super_admin: boolean } | null
+  if (!row) return { ok: false, error: 'That user no longer exists.' }
+
+  const current = row.role ?? ''
+  if (current === role) return { ok: true }
+
+  // A platform-level account is never re-roled from a tenant screen, whoever
+  // is asking: super_admin is granted in the database, not here.
+  if (current === 'super_admin' || row.is_super_admin) {
+    return { ok: false, error: 'A super admin account cannot be changed from this screen.' }
+  }
+
+  // Re-roling an existing company admin — demoting the owner, in effect — is
+  // the same authority as minting one, so it is gated on the same permission.
+  if (current === 'company_admin' && !can(profile.role, 'assign_company_admin')) {
     return { ok: false, error: 'Admin roles can only be changed by a super admin.' }
   }
 
@@ -228,6 +251,19 @@ export async function updateUserRole(
     .eq('id', id)
 
   if (error) return { ok: false, error: 'Could not update role: ' + error.message }
+
+  // Logged because a role grant is an authority grant: company_admin can delete
+  // customers and every payment attached to them. Goes through logEvent, so a
+  // super admin doing this from inside the switch is marked as the platform
+  // operator in the tenant's own trail.
+  await logUserEvent({
+    companyId: company.id,
+    actorId: profile.id,
+    type: 'user_role_changed',
+    details:
+      'Role for ' + row.email + ' (user #' + id + ') changed from ' +
+      (current || 'none') + ' to ' + role + ' by ' + (profile.first_name ?? 'an operator'),
+  })
 
   revalidatePath('/dashboard/settings/users')
   return { ok: true }
