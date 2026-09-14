@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 import {
-  AlertCircle, Ban, CheckCircle2, Clock, DollarSign, Users, WifiOff, XCircle,
+  AlertCircle, Banknote, CheckCircle2, Clock, DollarSign, UserPlus, Users, WifiOff, XCircle,
 } from 'lucide-react'
 
 import { CustomerDonut } from '@/components/charts/CustomerDonut'
@@ -98,9 +98,22 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
         Here is what is happening across {company.name} today.
       </p>
 
-      {/* Row 1 — KPIs */}
+      {/* Row 1 — KPIs. Six customer tiles, then three money tiles, which is
+          what the xl six-column grid lays out as two rows.
+
+          These are only rendered for view_dashboard_kpis (manager and above);
+          every other role was sent to its own home above. That gate is what
+          keeps Collected Today — a company-wide figure — off a CSR's or a
+          cashier's screen, the same as Revenue This Month beside it. */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
         <StatCard label="Total Customers" value={String(stats.totalCustomers)} icon={Users} accent="blue" trend={stats.totalCustomersTrend} />
+        <StatCard
+          label="Added This Month"
+          value={String(stats.addedThisMonth)}
+          icon={UserPlus}
+          accent="blue"
+          hint={'Last month: ' + stats.addedLastMonth}
+        />
         <StatCard
           label="Active Customers"
           value={String(stats.activeCustomers)}
@@ -109,13 +122,24 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
           trend={stats.activeCustomersTrend}
           hint={stats.radiusKnown ? 'Currently able to get online' : 'Unable to reach network'}
         />
-        {/* Every count below comes from the network registry, so the five
-            status cards always sum to Total Customers. */}
+        {/* The status counts come from the network registry. Disconnected is
+            not a tile: it is on the donut below, the status tab on the customer
+            list, and the sidebar entry that opens that tab. */}
         <StatCard label="Expired" value={String(stats.expiredCustomers)} icon={XCircle} accent="red" hint="Lapsed within 3 months" />
         <StatCard label="Inactive" value={String(stats.inactiveCustomers)} icon={Clock} accent="orange" hint="Lapsed over 3 months ago" />
         <StatCard label="Not Activated" value={String(stats.unprovisionedCustomers)} icon={WifiOff} accent="amber" hint="Not on the network yet" />
-        <StatCard label="Disconnected" value={String(stats.disconnectedCustomers)} icon={Ban} accent="slate" hint="Taken off by an operator" />
         <StatCard label="Revenue This Month" value={formatCurrency(stats.revenueThisMonth)} icon={DollarSign} accent="emerald" trend={stats.revenueTrend} />
+        <StatCard
+          label="Collected Today"
+          value={formatCurrency(stats.collectedToday)}
+          icon={Banknote}
+          accent="emerald"
+          hint={
+            stats.paymentsToday === 0
+              ? 'No payments yet today'
+              : stats.paymentsToday + (stats.paymentsToday === 1 ? ' payment' : ' payments')
+          }
+        />
         <StatCard label="Outstanding Balance" value={formatCurrency(stats.outstandingBalance)} icon={AlertCircle} accent="orange" hint={'Across ' + stats.accountsInArrears + ' accounts'} />
       </div>
 

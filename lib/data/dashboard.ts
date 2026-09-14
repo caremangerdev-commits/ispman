@@ -1,6 +1,7 @@
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { lastNetworkEvents } from '@/lib/data/network-events'
-import { dateOnlyToLocalDate, localDateOnly } from '@/lib/format'
+import { dateOnlyToLocalDate, instantToDateOnly, localDateOnly } from '@/lib/format'
+import { getGeneralSettings } from '@/lib/data/company'
 import { withBillingDefaults } from '@/lib/data/customers'
 import {
   CUSTOMER_STATUSES, resolveStatus, STATUS_LABELS, type CustomerStatus,
@@ -23,17 +24,31 @@ export type Trend = { direction: 'up' | 'down' | 'flat'; percent: number } | nul
 export type Stats = {
   totalCustomers: number
   totalCustomersTrend: Trend
+  /**
+   * Customers whose date_added falls in the current month, IN THE COMPANY'S
+   * TIMEZONE. date_added rather than created_at: an import stamps created_at
+   * with the day the spreadsheet was loaded, and date_added with the day the
+   * customer actually joined, which is the one an owner means by "added".
+   */
+  addedThisMonth: number
+  addedLastMonth: number
   /** Every count below is derived from the network registry, not from Postgres. */
   activeCustomers: number
   activeCustomersTrend: Trend
   expiredCustomers: number
   inactiveCustomers: number
   unprovisionedCustomers: number
-  disconnectedCustomers: number
   /** False when the registry could not be consulted; counts read 'unknown'. */
   radiusKnown: boolean
   revenueThisMonth: number
   revenueTrend: Trend
+  /**
+   * Payments dated today IN THE COMPANY'S TIMEZONE. A payment taken at 10pm in
+   * Kingston is 3am UTC tomorrow, and a "today" cut at UTC midnight would
+   * move the evening's takings onto a day that has not happened yet.
+   */
+  collectedToday: number
+  paymentsToday: number
   outstandingBalance: number
   accountsInArrears: number
 }
@@ -113,7 +128,7 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
     String(d.getMonth() + 1).padStart(2, '0') + '-' +
     String(d.getDate()).padStart(2, '0')
 
-  const [customerRows, paymentRows, recentPaymentsRes, ticketsRes, logRes] =
+  const [customerRows, paymentRows, recentPaymentsRes, ticketsRes, logRes, settings] =
     await Promise.all([
       // The customer set for an ISP branch is small enough to read whole, and
       // expiry is a derived value Postgres has no column for — so bucketing
@@ -179,6 +194,10 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
         .limit(8),
+
+      // For the timezone. "Today" and "this month" on the two tiles below are
+      // the company's, not the server's.
+      getGeneralSettings(companyId),
     ])
 
   // The two paged reads above throw on failure from inside fetchAllRows, so
@@ -298,18 +317,46 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
   const activeNow = customers.filter((c) => c.radiusStatus === 'active')
   const activeLastMonth = existedLastMonth.filter((c) => c.radiusStatus === 'active')
 
+  // --- today and this month, in the company's own calendar -----------------
+  // Both are string comparisons against DATE columns, so no instant is ever
+  // converted twice. `today` is the one conversion: the current instant, in
+  // the company's zone, as YYYY-MM-DD. The month prefixes come from it.
+  const timezone = settings.timezone
+  const today = instantToDateOnly(now, timezone)
+  const thisMonthPrefix = today.slice(0, 7)
+  const lastMonthPrefix = (() => {
+    const [y, m] = today.split('-').map(Number)
+    const d = new Date(Date.UTC(y, m - 2, 1))
+    return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0')
+  })()
+
+  const addedIn = (prefix: string) =>
+    customers.filter((c) => (c.date_added ?? '').slice(0, 7) === prefix).length
+
+  // paid_on is the calendar date the money was taken, already a local date.
+  // Rows from before 0013 have only the timestamp, which is placed on a
+  // calendar day in the company's zone rather than the server's.
+  const paidToday = payments.filter((p) =>
+    p.paid_on
+      ? p.paid_on === today
+      : instantToDateOnly(new Date(p.payment_date), timezone) === today
+  )
+
   const stats: Stats = {
     totalCustomers: customers.length,
     totalCustomersTrend: toTrend(percentChange(customers.length, existedLastMonth.length)),
+    addedThisMonth: addedIn(thisMonthPrefix),
+    addedLastMonth: addedIn(lastMonthPrefix),
     activeCustomers: activeNow.length,
     activeCustomersTrend: toTrend(percentChange(activeNow.length, activeLastMonth.length)),
     expiredCustomers: countOf('expired'),
     inactiveCustomers: countOf('inactive'),
     unprovisionedCustomers: countOf('unprovisioned'),
-    disconnectedCustomers: countOf('disconnected'),
     radiusKnown,
     revenueThisMonth: thisMonth,
     revenueTrend: toTrend(percentChange(thisMonth, lastMonth)),
+    collectedToday: paidToday.reduce((sum, p) => sum + num(p.amount), 0),
+    paymentsToday: paidToday.length,
     // One rule for both, or the money and the head count describe different
     // sets of people.
     outstandingBalance: customers.reduce((s, c) => s + amountOwed(c), 0),
