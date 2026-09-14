@@ -5,7 +5,8 @@ import { redirect } from 'next/navigation'
 import { CheckoffClient } from '@/components/checkoff/CheckoffClient'
 import { HandoverHistory } from '@/components/checkoff/HandoverHistory'
 import {
-  getAllAgentsSummary, getCheckoffSummary, listAgents, listHandovers,
+  getAllAgentsSummary, getCheckoffSummary, handoverDateFor, listAgents,
+  listHandovers, lastHandoverByAgent,
 } from '@/lib/data/checkoff'
 import { getGeneralSettings } from '@/lib/data/company'
 import { currencySymbol } from '@/lib/format'
@@ -52,10 +53,11 @@ export default async function CheckoffPage({
   const view: 'outstanding' | 'history' = viewRaw === 'history' ? 'history' : 'outstanding'
 
   const settings = await getGeneralSettings(company.id)
-  const [agents, allAgents, handovers] = await Promise.all([
+  const [agents, allAgents, handovers, handoverIndex] = await Promise.all([
     listAgents(company.id),
     getAllAgentsSummary({ companyId: company.id, timezone: settings.timezone }),
     listHandovers(company.id),
+    lastHandoverByAgent(company.id),
   ])
 
   const selectedAgent = Number.isInteger(agentId)
@@ -119,6 +121,9 @@ export default async function CheckoffPage({
           }}
           currency={settings.currency}
           timezone={settings.timezone}
+          lastHandoverIso={
+            selectedAgent ? handoverDateFor(selectedAgent, handoverIndex) : null
+          }
         />
       )}
     </div>

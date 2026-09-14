@@ -449,3 +449,71 @@ export async function listHandovers(
 
   return { available: true, rows }
 }
+
+/**
+ * When each agent last handed money over, from `checkoff_records`.
+ *
+ * THE SAME SOURCE THE PAST HANDOVERS TAB READS, deliberately. "Total Since
+ * Checkoff" is a number with no meaning until you know since when — J$856,100
+ * is alarming as a running balance and unremarkable as nine days of collecting.
+ * Deriving the date from anywhere else would let the tile and the history tab
+ * disagree about when an agent last settled up.
+ *
+ * Keyed BOTH ways. A record carries `agent_id` when the agent was a known user
+ * at the time and `agent_name` always; migrated rows may have either, since the
+ * legacy table identified agents by id in some rows and by free text in others.
+ * Looking up by id alone would report "no handover on record" for an agent who
+ * has a shelf full of them under their name.
+ */
+export async function lastHandoverByAgent(
+  companyId: number
+): Promise<{ byId: Map<number, string>; byName: Map<string, string> }> {
+  const byId = new Map<number, string>()
+  const byName = new Map<string, string>()
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.checkoff) return { byId, byName }
+
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('checkoff_records')
+    .select('agent_id, agent_name, created_at, is_all_agents')
+    .eq('company_id', companyId)
+    .order('created_at', { ascending: true })
+
+  if (error) throw new Error('Failed to load handover dates: ' + error.message)
+
+  for (const r of (data ?? []) as unknown as {
+    agent_id: number | null
+    agent_name: string | null
+    created_at: string
+    is_all_agents: boolean | null
+  }[]) {
+    // The all-agents summary row is a roll-up of the per-agent rows written
+    // beside it, not a handover by anyone called "All agents (3)". Counting it
+    // would put a date against a person who does not exist.
+    if (r.is_all_agents) continue
+
+    if (r.agent_id !== null) {
+      const cur = byId.get(r.agent_id)
+      if (!cur || r.created_at > cur) byId.set(r.agent_id, r.created_at)
+    }
+    const name = (r.agent_name ?? '').trim().toLowerCase()
+    if (name) {
+      const cur = byName.get(name)
+      if (!cur || r.created_at > cur) byName.set(name, r.created_at)
+    }
+  }
+
+  return { byId, byName }
+}
+
+/** The one rule for resolving an agent's last handover. Id first, then name. */
+export function handoverDateFor(
+  agent: { id: number; name: string },
+  index: { byId: Map<number, string>; byName: Map<string, string> }
+): string | null {
+  return index.byId.get(agent.id)
+    ?? index.byName.get(agent.name.trim().toLowerCase())
+    ?? null
+}

@@ -130,6 +130,7 @@ export function CheckoffClient({
   allAgents,
   currency,
   timezone,
+  lastHandoverIso,
 }: {
   agents: AgentOption[]
   selectedAgent: AgentOption | null
@@ -137,6 +138,14 @@ export function CheckoffClient({
   allAgents: { rows: AllAgentsRow[]; total: number; customers: number }
   currency: string
   timezone: string
+  /**
+   * When the selected agent last handed money over, or null if never.
+   *
+   * Read from checkoff_records by the page — the same source the Past
+   * handovers tab reads, so the tile and the history cannot disagree about
+   * when an agent last settled up.
+   */
+  lastHandoverIso: string | null
 }) {
   const router = useRouter()
   const params = useSearchParams()
@@ -210,9 +219,28 @@ export function CheckoffClient({
           </header>
 
           <div className="grid gap-3 p-5 sm:grid-cols-4">
-            <Stat label="Total Since Checkoff" value={symbol + fmt(summary.sinceCheckoffTotal)} accent />
+            <Stat
+              label="Total Since Checkoff"
+              value={symbol + fmt(summary.sinceCheckoffTotal)}
+              accent
+              footnote={
+                lastHandoverIso
+                  ? 'since ' + stamp(lastHandoverIso)
+                  : 'no handover on record'
+              }
+              footnoteMuted={!lastHandoverIso}
+            />
             <Stat label="Total Today" value={symbol + fmt(summary.todayTotal)} />
-            <Stat label="Customers Since Checkoff" value={String(summary.sinceCheckoffCustomers)} />
+            <Stat
+              label="Customers Since Checkoff"
+              value={String(summary.sinceCheckoffCustomers)}
+              footnote={
+                lastHandoverIso
+                  ? 'since ' + stamp(lastHandoverIso)
+                  : 'no handover on record'
+              }
+              footnoteMuted={!lastHandoverIso}
+            />
             <Stat label="Customers Today" value={String(summary.todayCustomers)} />
           </div>
 
@@ -362,7 +390,23 @@ export function CheckoffClient({
   )
 }
 
-function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function Stat({
+  label, value, accent, footnote, footnoteMuted,
+}: {
+  label: string
+  value: string
+  accent?: boolean
+  /**
+   * The line under the number that says what it is measured from.
+   *
+   * "Total Since Checkoff" is not a number until you know since when:
+   * J$856,100 reads as an alarming running balance and as nine ordinary days
+   * of collecting, and only the date tells you which.
+   */
+  footnote?: string
+  /** True when the footnote reports an absence rather than a date. */
+  footnoteMuted?: boolean
+}) {
   return (
     <div className="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2.5">
       <p className="text-[11px] font-medium text-gray-500">{label}</p>
@@ -374,6 +418,11 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
       >
         {value}
       </p>
+      {footnote ? (
+        <p className={'mt-0.5 text-[11px] ' + (footnoteMuted ? 'text-amber-400/80' : 'text-gray-500')}>
+          {footnote}
+        </p>
+      ) : null}
     </div>
   )
 }
