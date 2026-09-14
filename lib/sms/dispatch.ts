@@ -233,15 +233,23 @@ async function drain(
 
   while (budget > 0 && Date.now() < deadline) {
     // PAYMENT RECEIPTS FIRST. A customer standing at a counter must not wait
-    // behind a 400-message blast. `kind` ordering puts them ahead; the relay
-    // priority below is the second half of the same promise.
+    // behind a 400-message blast. The relay priority below is the second half
+    // of the same promise.
+    //
+    // DESCENDING, and this relies on the kind names: payment_receipt >
+    // expiry_warning > disconnection_notice > bulk alphabetically, so Z-to-A
+    // is receipts first and bulk last. This was ascending for a while, which
+    // is the exact opposite — bulk first, receipts last — and nobody noticed
+    // until an outage blast was about to go out. PostgREST cannot express a
+    // CASE ordering, so if a kind is ever added whose name breaks this order,
+    // sort in memory here instead of renaming it.
     const { data, error } = await db
       .from('sms_outbox')
       .select('id, attempts, phone, body, kind')
       .eq('company_id', companyId)
       .eq('status', 'queued')
       .lt('attempts', MAX_ATTEMPTS)
-      .order('kind', { ascending: true })
+      .order('kind', { ascending: false })
       .order('created_at', { ascending: true })
       .limit(1)
 
