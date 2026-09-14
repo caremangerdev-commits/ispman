@@ -38,8 +38,20 @@ export default async function MessagesPage() {
     loadEnrichedCustomers(company.id),
     listMiscCategories(company.id).catch(() => []),
     listServicePlans(company.id).catch(() => []),
-    listSmsBatches(company.id, 25),
+    // Enough that a run of one-number tests cannot push the real batches off
+    // the page: the two kinds are split below and capped separately.
+    listSmsBatches(company.id, 80),
   ])
+
+  // ONE ROW PER BATCH in the table, and only customer batches. A direct send
+  // is stored as a batch of one — same table, same detail page — but listing
+  // it among the batches makes ten tests to your own phone look like a batch
+  // that shattered into ten rows. They get their own, shorter list.
+  const customerBatches = batches.filter((b) => !b.direct).slice(0, 25)
+  const directSends = batches.filter((b) => b.direct).slice(0, 10)
+
+  const directStatus = (b: typeof batches[number]) =>
+    b.failed > 0 ? 'failed' : b.sent > 0 ? 'sent' : b.total === 0 ? 'skipped' : 'queued'
 
   const addresses = [
     ...new Set(customers.map((c) => (c.address ?? '').trim()).filter(Boolean)),
@@ -86,13 +98,16 @@ export default async function MessagesPage() {
       />
 
       {/* The record. A batch is who sent it, when, what it said, and how it
-          went — reachable long after the messages themselves are gone. */}
+          went — reachable long after the messages themselves are gone. One
+          row per batch; the per-recipient detail is behind the link. */}
       <section className="space-y-2">
         <h2 className="text-sm font-semibold text-gray-200">Recent batches</h2>
 
-        {batches.length === 0 ? (
+        {customerBatches.length === 0 ? (
           <p className="rounded-xl border border-gray-800 bg-gray-900 px-4 py-8 text-center text-sm text-gray-600">
-            Nothing has been sent yet.
+            {directSends.length > 0
+              ? 'No batches to customers yet — only the direct messages below.'
+              : 'Nothing has been sent yet.'}
           </p>
         ) : (
           <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
@@ -109,7 +124,7 @@ export default async function MessagesPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800">
-                  {batches.map((b) => (
+                  {customerBatches.map((b) => (
                     <tr key={b.id} className="transition hover:bg-gray-800/40">
                       <td className="whitespace-nowrap px-4 py-2.5 text-gray-400">
                         <Link
@@ -152,6 +167,49 @@ export default async function MessagesPage() {
           </div>
         )}
       </section>
+
+      {/* One-number sends: a technician, a supplier, a test to your own phone.
+          Each is one message, so the counts a batch needs collapse to a single
+          status word. Same detail page behind the time. */}
+      {directSends.length > 0 ? (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold text-gray-200">Direct messages</h2>
+          <ul className="divide-y divide-gray-800 overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
+            {directSends.map((b) => {
+              const status = directStatus(b)
+              return (
+                <li key={b.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2.5 text-sm">
+                  <Link
+                    href={'/dashboard/messages/' + b.id}
+                    className="whitespace-nowrap text-gray-400 transition hover:text-blue-400"
+                  >
+                    {timeAgo(b.createdAt)}
+                  </Link>
+                  <span className="whitespace-nowrap font-mono text-xs text-gray-300">
+                    +{b.directTo}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-gray-400" title={b.body}>
+                    {b.body}
+                  </span>
+                  <span className="whitespace-nowrap text-xs text-gray-500">{b.sentByName}</span>
+                  <span
+                    className={
+                      'rounded px-1.5 py-0.5 text-[11px] font-medium ' +
+                      (status === 'sent'
+                        ? 'bg-green-500/15 text-green-400'
+                        : status === 'failed'
+                          ? 'bg-red-500/15 text-red-400'
+                          : 'bg-gray-700/40 text-gray-300')
+                    }
+                  >
+                    {status}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      ) : null}
     </div>
   )
 }

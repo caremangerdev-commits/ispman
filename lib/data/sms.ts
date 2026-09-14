@@ -312,6 +312,15 @@ export type SmsBatchRow = {
   failed: number
   skipped: number
   createdAt: string
+  /**
+   * A one-number send rather than a customer selection. Same table, same
+   * shape — one batch row, one outbox row — but the messaging page lists them
+   * apart, because twenty test messages to the operator's own phone are not
+   * twenty batches and must not read as one batch broken into pieces.
+   */
+  direct: boolean
+  /** The E.164 number of a direct send, without the plus. Null otherwise. */
+  directTo: string | null
 }
 
 export async function listSmsBatches(
@@ -343,6 +352,7 @@ export async function listSmsBatches(
       skipped: number
       created_at: string
     }
+    const direct = isDirectAudience(b.audience)
     return {
       id: b.id,
       sentByName: b.sent_by_name,
@@ -353,6 +363,8 @@ export async function listSmsBatches(
       failed: b.failed,
       skipped: b.skipped,
       createdAt: b.created_at,
+      direct,
+      directTo: direct ? (b.audience ?? '').slice(DIRECT_AUDIENCE_PREFIX.length) : null,
     }
   })
 }
