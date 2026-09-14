@@ -202,9 +202,7 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
                 </span>
 
                 <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500">
-                  <span className="tabular-nums text-gray-300">
-                    {formatCurrency(c.monthly_rate)}
-                  </span>
+                  <Balance carried={c.carried_balance} credit={c.account_credit} />
                   <span className="text-gray-700">|</span>
                   <span className="text-gray-400">{formatDateOnly(c.radiusExpiryDate)}</span>
                   <ExpiryHint days={daysUntilDateOnly(c.radiusExpiryDate)} />
@@ -230,7 +228,10 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
                     record, and nobody scans a list for a phone number. */}
                 <th scope="col" className="px-4 py-2.5 font-semibold">Address</th>
                 <th scope="col" className="px-4 py-2.5 font-semibold">MAC Address</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Monthly Rate</th>
+                {/* Balance, not the monthly rate. The rate is static and is on
+                    the record; the balance is what someone scanning a list is
+                    looking for, and the Owing filter above narrows by it. */}
+                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Balance</th>
                 <th scope="col" className="px-4 py-2.5 font-semibold">Status</th>
                 <th scope="col" className="px-4 py-2.5 font-semibold">Expiry</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-semibold">Actions</th>
@@ -279,8 +280,8 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
                   <td className="px-4 py-2.5 font-mono text-xs text-gray-400">
                     {c.mac_address ?? '—'}
                   </td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-gray-200">
-                    {formatCurrency(c.monthly_rate)}
+                  <td className="px-4 py-2.5 text-right tabular-nums">
+                    <Balance carried={c.carried_balance} credit={c.account_credit} />
                   </td>
                   <td className="px-4 py-2.5">
                     <StatusBadge status={c.radiusStatus ?? 'unknown'} />
@@ -411,6 +412,29 @@ function NetworkActions({
   }
 
   return null
+}
+
+/**
+ * What the customer owes, as the list shows it.
+ *
+ * The carried balance, which is the amount due (lib/billing.ts) and the figure
+ * the dashboard's Outstanding Balance sums. Orange when something is owed,
+ * muted when square. A customer holding credit and owing nothing shows the
+ * credit instead, marked as such, so a prepaid customer does not read as
+ * merely "0" — that is the difference between "paid up" and "paid ahead".
+ */
+function Balance({ carried, credit }: { carried: number; credit: number }) {
+  if (carried > 0) {
+    return <span className="tabular-nums font-medium text-orange-400">{formatCurrency(carried)}</span>
+  }
+  if (credit > 0) {
+    return (
+      <span className="tabular-nums text-green-400" title="Credit on account">
+        {formatCurrency(credit)} cr
+      </span>
+    )
+  }
+  return <span className="tabular-nums text-gray-500">{formatCurrency(0)}</span>
 }
 
 function PageLink({
