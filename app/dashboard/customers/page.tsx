@@ -164,7 +164,62 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
       />
 
       <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
-        <div className="overflow-x-auto">
+        {/* ---------------- Phone: one card per customer ----------------
+            The table below is `min-w-[860px]`, which through a 360px window is
+            two and a half screens of sideways dragging per row — and the Name
+            column, the only one you are looking for, scrolls out of view on the
+            way to Actions. Same `rows`, same helpers, same server actions: this
+            is a second RENDERING, not a second query or a second idea of what a
+            customer is. */}
+        <ul className="divide-y divide-gray-800 lg:hidden">
+          {rows.length === 0 ? (
+            <li className="px-4 py-12 text-center text-gray-600">
+              No customers match this search.
+            </li>
+          ) : null}
+
+          {rows.map((c) => (
+            <li key={c.id} className="px-4 py-3">
+              <Link
+                href={'/dashboard/customers/' + c.id}
+                className="-mx-2 block rounded-lg px-2 py-1 transition active:bg-gray-800/60"
+              >
+                <span className="flex items-start justify-between gap-3">
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium text-gray-100">{fullName(c)}</span>
+                    {c.account_number ? (
+                      <span className="mt-0.5 block font-mono text-[11px] text-gray-500">
+                        {c.account_number}
+                      </span>
+                    ) : null}
+                  </span>
+                  <StatusBadge status={c.radiusStatus ?? 'unknown'} />
+                </span>
+
+                <span className="mt-1.5 block truncate text-xs text-gray-400">
+                  {c.address ?? '—'}
+                </span>
+
+                <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500">
+                  <span className="tabular-nums text-gray-300">
+                    {formatCurrency(c.monthly_rate)}
+                  </span>
+                  <span className="text-gray-700">|</span>
+                  <span className="text-gray-400">{formatDateOnly(c.radiusExpiryDate)}</span>
+                  <ExpiryHint days={daysUntilDateOnly(c.radiusExpiryDate)} />
+                </span>
+              </Link>
+
+              {mayNetwork ? (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <NetworkActions id={c.id} status={c.radiusStatus ?? 'unknown'} returnTo={returnTo} />
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+
+        <div className="hidden overflow-x-auto lg:block">
           <table className="w-full min-w-[860px] text-left text-sm">
             <thead>
               <tr className="border-b border-gray-800 text-[11px] uppercase tracking-wider text-gray-500">
@@ -244,44 +299,18 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
                     <div className="flex items-center justify-end gap-1.5">
                       <Link
                         href={'/dashboard/customers/' + c.id}
-                        className="inline-flex items-center gap-1 rounded-md bg-gray-800 px-2 py-1 text-[11px] font-semibold text-gray-300 transition hover:bg-gray-700"
+                        className="inline-flex items-center gap-1 rounded-md bg-gray-800 px-2.5 py-1.5 text-[11px] font-semibold text-gray-300 transition hover:bg-gray-700"
                       >
                         <Eye className="h-3 w-3" aria-hidden />
                         View
                       </Link>
 
-{/* The two network actions that need no further input. Provision
-                          and Extend are not offered here: the first is a
-                          deliberate first-time write and the second needs a
-                          date, so both belong on the customer record.
-
-                          return_to keeps the operator on this page instead of
-                          bouncing them into a customer they only wanted to
-                          reconnect in passing. */}
-                      {mayNetwork && canReconnect(c.radiusStatus ?? 'unknown') ? (
-                      <form action={reconnectCustomer}>
-                        <input type="hidden" name="id" value={c.id} />
-                        <input type="hidden" name="return_to" value={returnTo} />
-                        <button
-                          type="submit"
-                          className="rounded-md bg-green-500/10 px-2 py-1 text-[11px] font-semibold text-green-400 transition hover:bg-green-500/20"
-                        >
-                          Reconnect
-                        </button>
-                      </form>
-                      ) : null}
-
-                      {mayNetwork && canDisconnect(c.radiusStatus ?? 'unknown') ? (
-                      <form action={disconnectCustomer}>
-                        <input type="hidden" name="id" value={c.id} />
-                        <input type="hidden" name="return_to" value={returnTo} />
-                        <button
-                          type="submit"
-                          className="rounded-md bg-red-500/10 px-2 py-1 text-[11px] font-semibold text-red-400 transition hover:bg-red-500/20"
-                        >
-                          Disconnect
-                        </button>
-                      </form>
+                      {mayNetwork ? (
+                        <NetworkActions
+                          id={c.id}
+                          status={c.radiusStatus ?? 'unknown'}
+                          returnTo={returnTo}
+                        />
                       ) : null}
                     </div>
                   </td>
@@ -319,6 +348,68 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
       </div>
     </div>
   )
+}
+
+/**
+ * The two network actions that need no further input.
+ *
+ * Defined once and rendered by both the phone card list and the desktop table,
+ * so the two views cannot drift into disagreeing about when a Disconnect is
+ * offered — or, worse, about what `return_to` should be.
+ *
+ * Provision and Extend are not offered here: the first is a deliberate
+ * first-time write and the second needs a date, so both belong on the customer
+ * record. `return_to` keeps the operator on this page instead of bouncing them
+ * into a customer they only wanted to reconnect in passing.
+ *
+ * At most one of the two ever renders: canDisconnect is `active` alone and
+ * canReconnect is everything else, so there is no adjacent pair of buttons
+ * where one restores service and the other cuts it.
+ */
+function NetworkActions({
+  id,
+  status,
+  returnTo,
+}: {
+  id: number
+  status: CustomerStatus
+  returnTo: string
+}) {
+  // min-h-11 is the phone target; lg:min-h-0 hands the desk its compact row back.
+  const cls =
+    'inline-flex min-h-11 items-center rounded-md px-3 py-1.5 text-xs font-semibold transition lg:min-h-0 lg:px-2.5 lg:text-[11px]'
+
+  if (canReconnect(status)) {
+    return (
+      <form action={reconnectCustomer}>
+        <input type="hidden" name="id" value={id} />
+        <input type="hidden" name="return_to" value={returnTo} />
+        <button
+          type="submit"
+          className={cls + ' bg-green-500/10 text-green-400 hover:bg-green-500/20'}
+        >
+          Reconnect
+        </button>
+      </form>
+    )
+  }
+
+  if (canDisconnect(status)) {
+    return (
+      <form action={disconnectCustomer}>
+        <input type="hidden" name="id" value={id} />
+        <input type="hidden" name="return_to" value={returnTo} />
+        <button
+          type="submit"
+          className={cls + ' bg-red-500/10 text-red-400 hover:bg-red-500/20'}
+        >
+          Disconnect
+        </button>
+      </form>
+    )
+  }
+
+  return null
 }
 
 function PageLink({

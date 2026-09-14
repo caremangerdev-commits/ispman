@@ -97,6 +97,15 @@ export function CollectionsList({
       hour: 'numeric', minute: '2-digit', hour12: true,
     }).format(new Date(iso))
 
+  // No year and no minutes-past-the-hour padding. These are payments taken
+  // since the agent's last handover — the year is never the thing in doubt,
+  // and on a phone it is 40px that the customer's name needs more.
+  const shortStamp = (iso: string) =>
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true,
+    }).format(new Date(iso))
+
   return (
     <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-5 py-3.5">

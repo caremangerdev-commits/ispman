@@ -48,8 +48,15 @@ export function PageHeading({
   })()
 
   return (
-    <header className="mb-5">
-      <p className="min-h-5 text-sm text-gray-500">
+    // THREE LINES ON A DESK, ONE ON A PHONE.
+    //
+    // The clock and the greeting are desk furniture: pleasant on a monitor,
+    // and about 110px of a 640px screen — 17% of everything a cashier can see,
+    // spent restating who they are, above the fold, on every navigation. On a
+    // phone only the line that can change between tenants survives, because
+    // for a switched super admin it is the one thing worth checking.
+    <header className="mb-3 lg:mb-5">
+      <p className="hidden min-h-5 text-sm text-gray-500 lg:block">
         {now ? (
           <>
             {fmt({ weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}
@@ -61,13 +68,13 @@ export function PageHeading({
         ) : null}
       </p>
 
-      <h1 className="mt-1 text-2xl font-bold tracking-tight text-white">
+      <h1 className="truncate text-base font-bold tracking-tight text-white lg:mt-1 lg:text-2xl">
         {companyName}
         <span className="mx-2 font-normal text-gray-600">·</span>
         <span className="text-blue-400">{roleLabel}</span>
       </h1>
 
-      <h2 className="mt-1 text-lg font-semibold text-gray-400">
+      <h2 className="mt-1 hidden text-lg font-semibold text-gray-400 lg:block">
         {greeting ? greeting + ', ' : ''}
         <span className="text-gray-300">{userName}</span>
       </h2>

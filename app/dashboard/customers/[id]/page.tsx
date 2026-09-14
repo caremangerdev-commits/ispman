@@ -158,7 +158,50 @@ export default async function CustomerDetailPage({
             No payments recorded for this customer.
           </p>
         ) : (
-          <div className="overflow-x-auto">
+          <>
+          {/* Phone: the same payments as rows of prose rather than a 720px
+              table scrolled through a 360px window. Date and amount lead,
+              because those are what anyone querying a payment reads out. */}
+          <ul className="divide-y divide-gray-800 lg:hidden">
+            {payments.map((p) => (
+              <li key={p.id} className="px-4 py-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="text-sm text-gray-300">
+                    {new Date(p.payment_date).toLocaleDateString('en-US', {
+                      day: 'numeric', month: 'short', year: 'numeric',
+                    })}
+                  </span>
+                  <span className="font-semibold tabular-nums text-gray-100">
+                    {formatCurrency(p.amount)}
+                  </span>
+                </div>
+
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+                  <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-300">
+                    {p.payment_type ?? 'other'}
+                  </span>
+                  {p.months_paid ? <span>{p.months_paid} mo</span> : null}
+                  <span className="text-gray-700">|</span>
+                  <span>{p.agent ?? '—'}</span>
+                </div>
+
+                {p.notes ? (
+                  <p className="mt-1 text-xs leading-snug text-gray-500">{p.notes}</p>
+                ) : null}
+              </li>
+            ))}
+
+            <li className="flex items-baseline justify-between gap-3 bg-gray-950/40 px-4 py-3">
+              <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Total Paid
+              </span>
+              <span className="text-sm font-semibold tabular-nums text-white">
+                {formatCurrency(totalPaid)}
+              </span>
+            </li>
+          </ul>
+
+          <div className="hidden overflow-x-auto lg:block">
             <table className="w-full min-w-[720px] text-left text-sm">
               <thead>
                 <tr className="border-b border-gray-800 text-[11px] uppercase tracking-wider text-gray-500">
@@ -207,6 +250,7 @@ export default async function CustomerDetailPage({
               </tfoot>
             </table>
           </div>
+          </>
         )}
       </section>
 
