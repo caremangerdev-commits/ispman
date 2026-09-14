@@ -103,8 +103,9 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
 
           {/* Import, cut-off dates and provisioning live behind the overflow
               menu: all three are migration tools and all three need
-              import_customers, so a CSR sees only Add Customer. */}
-          {mayImport ? <BulkActions /> : null}
+              import_customers, so a CSR sees only Add Customer. The filters go
+              along for Set Access Point, which acts on the filtered list. */}
+          {mayImport ? <BulkActions filters={filters} /> : null}
         </div>
       </div>
 

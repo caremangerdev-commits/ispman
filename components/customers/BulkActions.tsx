@@ -6,16 +6,19 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle, CalendarCog, CalendarClock, CheckCircle2, Download, Loader2,
-  MoreHorizontal, Receipt, Upload, Zap,
+  MoreHorizontal, RadioTower, Receipt, Upload, Zap,
 } from 'lucide-react'
 
 import { Modal, settingsInput } from '@/components/settings/Modal'
+import type { CustomerFilters } from '@/lib/customer-filter'
 import { formatCurrency } from '@/lib/format'
 import {
-  billBatch, loadBillAllPlan, loadBillDatePlan, loadCutOffPlan, loadProvisionPlan,
-  logBulkBill, logBulkProvision, provisionBatch, setAllBillDates, setAllCutOffDates,
-  type BillAllPlan, type BillDatePlan, type BillOutcome, type BillTarget,
-  type CutOffPlan, type ProvisionOutcome, type ProvisionPlanResult, type ProvisionTarget,
+  billBatch, loadAccessPointPlan, loadBillAllPlan, loadBillDatePlan, loadCutOffPlan,
+  loadProvisionPlan, logBulkBill, logBulkProvision, provisionBatch, setAccessPoint,
+  setAllBillDates, setAllCutOffDates,
+  type AccessPointPlan, type BillAllPlan, type BillDatePlan, type BillOutcome,
+  type BillTarget, type CutOffPlan, type ProvisionOutcome, type ProvisionPlanResult,
+  type ProvisionTarget,
 } from '@/app/actions/bulk'
 
 /**
@@ -90,8 +93,19 @@ function prettyDate(value: string): string {
  * accident. Behind a menu they are still one click away for the manager who
  * wants them.
  */
-export function BulkActions() {
-  const [open, setOpen] = useState<'cutoff' | 'provision' | 'bill' | 'billdate' | null>(null)
+export function BulkActions({
+  filters,
+}: {
+  /**
+   * The list's current filters, for Set Access Point — the one tool here that
+   * acts on the filtered set rather than the whole company. The others ignore
+   * it, deliberately: a bill run is everyone.
+   */
+  filters: CustomerFilters
+}) {
+  const [open, setOpen] = useState<
+    'cutoff' | 'provision' | 'bill' | 'billdate' | 'accesspoint' | null
+  >(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -175,6 +189,25 @@ export function BulkActions() {
             Provision All
           </button>
 
+          {/* Acts on the FILTERED list, not the company. Filter to an address
+              first; the modal says exactly how many it will touch. */}
+          <p className="border-t border-gray-800 px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-gray-600">
+            Network
+          </p>
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenuOpen(false)
+              setOpen('accesspoint')
+            }}
+            className={menuItem}
+          >
+            <RadioTower className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
+            Set Access Point
+          </button>
+
           {/* Separate group on purpose. The tools above are one-off migration
               work; these two are recurring billing operations that a manager
               runs deliberately, month after month. */}
@@ -214,7 +247,199 @@ export function BulkActions() {
       {open === 'provision' ? <ProvisionModal onClose={() => setOpen(null)} /> : null}
       {open === 'bill' ? <BillAllModal onClose={() => setOpen(null)} /> : null}
       {open === 'billdate' ? <BillDateModal onClose={() => setOpen(null)} /> : null}
+      {open === 'accesspoint' ? (
+        <AccessPointModal filters={filters} onClose={() => setOpen(null)} />
+      ) : null}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Set access point on the filtered customers
+// ---------------------------------------------------------------------------
+
+/**
+ * Same shape as CutOffModal — a value, a count, the count typed back — with
+ * one difference that matters: the count is the FILTERED list, not the
+ * company. So the modal leads with what the filter is, and says so loudly
+ * when there is none, because "every customer is on tower 3" is the mistake
+ * this tool makes easiest.
+ */
+function AccessPointModal({
+  filters, onClose,
+}: {
+  filters: CustomerFilters
+  onClose: () => void
+}) {
+  const router = useRouter()
+  const [plan, setPlan] = useState<AccessPointPlan | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [name, setName] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState<{ updated: number; accessPoint: string } | null>(null)
+
+  useEffect(() => {
+    let live = true
+    loadAccessPointPlan(filters)
+      .then((result) => live && setPlan(result))
+      .catch((err: Error) => live && setLoadError(err.message))
+    return () => {
+      live = false
+    }
+  }, [filters])
+
+  const count = plan?.matched ?? 0
+  const nameValid = name.trim().length > 0 && name.trim().length <= 100
+  const confirmed = confirm.trim() === String(count) && count > 0
+
+  async function submit() {
+    if (!nameValid || !confirmed) return
+    setSaving(true)
+    setError(null)
+    try {
+      const result = await setAccessPoint({ filters, accessPoint: name, confirmCount: count })
+      if (result.ok) {
+        setDone({ updated: result.updated, accessPoint: result.accessPoint })
+        router.refresh()
+      } else {
+        setError(result.error)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title="Set access point" onClose={onClose}>
+      {loadError ? <ErrorNote>{loadError}</ErrorNote> : null}
+
+      {!plan && !loadError ? <Loading /> : null}
+
+      {plan && !plan.supported ? (
+        <div className="space-y-4">
+          <ErrorNote>Access points need migration 0005. Ask your administrator.</ErrorNote>
+          <button type="button" onClick={onClose} className={ghostBtn}>Close</button>
+        </div>
+      ) : done !== null ? (
+        <div className="space-y-4">
+          <p className="flex items-center gap-2 text-sm text-gray-200">
+            <CheckCircle2 className="h-4 w-4 text-green-400" aria-hidden />
+            Access point set to <strong className="font-semibold">{done.accessPoint}</strong> for{' '}
+            {done.updated.toLocaleString()} {done.updated === 1 ? 'customer' : 'customers'}.
+          </p>
+          <p className="text-xs text-gray-500">
+            They can now be selected by access point on the customer list and on the
+            messaging page.
+          </p>
+          <button type="button" onClick={onClose} className={primaryBtn}>
+            Done
+          </button>
+        </div>
+      ) : plan ? (
+        <div className="space-y-4">
+          {/* Who, first. This is the whole difference from the other tools. */}
+          {plan.filtered ? (
+            <div className="rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2.5 text-sm">
+              <p className="text-gray-200">
+                This will set the access point on{' '}
+                <strong className="font-semibold">{count.toLocaleString()}</strong>{' '}
+                {count === 1 ? 'customer' : 'customers'}
+                <span className="text-gray-500"> of {plan.total.toLocaleString()}</span>.
+              </p>
+              <p className="mt-1 text-xs text-gray-400">
+                Matching: <span className="text-gray-300">{plan.audience}</span>
+              </p>
+              {plan.alreadySet > 0 ? (
+                <p className="mt-1 text-xs text-amber-300/90">
+                  {plan.alreadySet.toLocaleString()} of them already{' '}
+                  {plan.alreadySet === 1 ? 'has' : 'have'} an access point, which will be
+                  replaced.
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-amber-900/50 bg-amber-950/30 px-3 py-2.5 text-sm">
+              <p className="flex items-start gap-2 text-amber-300">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <span>
+                  No filter is active, so this is{' '}
+                  <strong className="font-semibold">every customer</strong> in the company
+                  ({count.toLocaleString()}).
+                </span>
+              </p>
+              <p className="mt-1.5 text-xs text-amber-300/80">
+                One tower rarely serves everyone. Close this, filter the list to an address
+                or a search, and come back — the number here follows the filter.
+              </p>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <label htmlFor="bulk-ap-name" className="block text-xs font-medium text-gray-400">
+              Access point
+            </label>
+            <input
+              id="bulk-ap-name"
+              list="bulk-ap-existing"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={100}
+              autoComplete="off"
+              placeholder={plan.existing[0] ?? 'e.g. Tower 3'}
+              className={settingsInput}
+            />
+            {plan.existing.length > 0 ? (
+              <datalist id="bulk-ap-existing">
+                {plan.existing.map((ap) => <option key={ap} value={ap} />)}
+              </datalist>
+            ) : null}
+            <p className="text-xs text-gray-500">
+              {plan.existing.length > 0
+                ? 'Pick one already in use, or type a new one. Spelling is what the filters match on.'
+                : 'Type the tower or radio name as you want it to appear in the filters.'}
+            </p>
+          </div>
+
+          {count === 0 ? (
+            <ErrorNote>No customers match the current filters.</ErrorNote>
+          ) : (
+            <div className="space-y-1.5">
+              <label htmlFor="bulk-ap-confirm" className="block text-xs font-medium text-gray-400">
+                Type &quot;{count}&quot; to confirm
+              </label>
+              <input
+                id="bulk-ap-confirm"
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                autoComplete="off"
+                className={settingsInput + ' w-32 tabular-nums'}
+              />
+            </div>
+          )}
+
+          {error ? <ErrorNote>{error}</ErrorNote> : null}
+
+          <div className="flex items-center gap-2 border-t border-gray-800 pt-4">
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!nameValid || !confirmed || saving}
+              className={primaryBtn}
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+              {saving ? 'Updating…' : 'Set access point'}
+            </button>
+            <button type="button" onClick={onClose} disabled={saving} className={ghostBtn}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </Modal>
   )
 }
 

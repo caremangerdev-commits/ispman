@@ -3,8 +3,14 @@
 import { revalidatePath } from 'next/cache'
 
 import { logEvent } from '@/lib/audit'
+import {
+  applyFilters, describeFilters, hasAnyFilter, type CustomerFilters, type FilterNames,
+} from '@/lib/customer-filter'
+import { listMiscCategories, listServicePlans } from '@/lib/data/catalog'
+import { loadEnrichedCustomers } from '@/lib/data/customers'
 import { can } from '@/lib/permissions'
 import { getSession, type Session } from '@/lib/session'
+import { STATUS_LABELS } from '@/lib/status'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { getGeneralSettings } from '@/lib/data/company'
 import {
@@ -13,7 +19,7 @@ import {
   type BillableCustomer,
 } from '@/lib/data/bulk'
 import { getSchemaCapabilities } from '@/lib/schema'
-import { formatCurrency } from '@/lib/format'
+import { CURRENCY_SYMBOL, formatCurrency } from '@/lib/format'
 import { activateInRadius, batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { usernameKey } from '@/lib/radius/format'
 import { formatRadiusExpiration, radiusIdentity } from '@/lib/radius/format'
@@ -1068,4 +1074,179 @@ export async function setAllBillDates(input: {
   revalidatePath('/dashboard/customers')
   revalidatePath('/dashboard')
   return { ok: true, updated }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Set access point on the filtered customers
+// ---------------------------------------------------------------------------
+
+/**
+ * THE ONLY BULK ACTION THAT TAKES THE LIST'S FILTERS. The four above are
+ * company-wide by design — a migration or a bill run is everyone. An access
+ * point is the opposite: one tower serves a few districts, so the operator
+ * filters the list to an address and stamps the tower on what is left.
+ *
+ * Why it matters: the messaging page's access point filter is only as good as
+ * the column behind it, and when this was written one customer on the whole
+ * platform had one recorded. An outage is almost always one AP, and without
+ * this the choice during one is "text everybody" or "text nobody".
+ */
+
+export type AccessPointPlan = {
+  /** Migration 0005 not applied: the column cannot be selected or written. */
+  supported: boolean
+  /** How many customers the filters select right now. */
+  matched: number
+  /** The whole company, so the modal can say when the two are the same. */
+  total: number
+  /** Whether any filter is active — an empty set means every customer. */
+  filtered: boolean
+  /** The filters in words, for the modal and for the log row. */
+  audience: string
+  /** Matched customers that already carry an access point, which this replaces. */
+  alreadySet: number
+  /** Every access point in use, for the input's suggestions. */
+  existing: string[]
+}
+
+async function filterNames(companyId: number): Promise<FilterNames> {
+  const caps = await getSchemaCapabilities()
+  const [categories, plans] = caps.catalog
+    ? await Promise.all([
+        listMiscCategories(companyId).catch(() => []),
+        listServicePlans(companyId).catch(() => []),
+      ])
+    : [[], []]
+  return {
+    status: (s) => STATUS_LABELS[s],
+    miscCategory: (id) => categories.find((c) => c.id === id)?.name,
+    servicePlan: (id) => plans.find((p) => p.id === id)?.name,
+    currency: (n) => CURRENCY_SYMBOL + n.toLocaleString(),
+  }
+}
+
+export async function loadAccessPointPlan(filters: CustomerFilters): Promise<AccessPointPlan> {
+  const { company } = await authorize()
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.connectionTypes) {
+    return {
+      supported: false, matched: 0, total: 0, filtered: hasAnyFilter(filters),
+      audience: '', alreadySet: 0, existing: [],
+    }
+  }
+
+  const [all, names] = await Promise.all([
+    loadEnrichedCustomers(company.id), filterNames(company.id),
+  ])
+  const matched = applyFilters(all, filters)
+
+  return {
+    supported: true,
+    matched: matched.length,
+    total: all.length,
+    filtered: hasAnyFilter(filters),
+    audience: describeFilters(filters, names),
+    alreadySet: matched.filter((c) => (c.access_point ?? '').trim() !== '').length,
+    existing: [
+      ...new Set(all.map((c) => (c.access_point ?? '').trim()).filter(Boolean)),
+    ].sort((a, b) => a.localeCompare(b)),
+  }
+}
+
+export type AccessPointResult =
+  | { ok: true; updated: number; accessPoint: string }
+  | { ok: false; error: string }
+
+/** customers.access_point is VARCHAR(100) — see migration 0003. */
+const ACCESS_POINT_MAX = 100
+
+/**
+ * Writes one access point onto every customer the filters select.
+ *
+ * RECOMPUTES THE SET from the filters, the way sendBulkSms does: the browser
+ * never posts a list of ids. `confirmCount` is the number the operator was
+ * shown and typed back, and if the filters select a different number now, the
+ * run is refused rather than applied to a set they did not agree to.
+ *
+ * Only `access_point` is written. Nothing about a customer's service, expiry
+ * or network state changes.
+ */
+export async function setAccessPoint(input: {
+  filters: CustomerFilters
+  accessPoint: string
+  confirmCount: number
+}): Promise<AccessPointResult> {
+  const { company, profile } = await authorize()
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.connectionTypes) {
+    return { ok: false, error: 'Access points need migration 0005. Ask your administrator.' }
+  }
+
+  // Trimmed, because the filter compares trimmed values and a stored
+  // "TOWER 3 " would be a tower nobody can select.
+  const accessPoint = input.accessPoint.trim()
+  if (!accessPoint) return { ok: false, error: 'Enter the access point name.' }
+  if (accessPoint.length > ACCESS_POINT_MAX) {
+    return { ok: false, error: 'Access point names are at most ' + ACCESS_POINT_MAX + ' characters.' }
+  }
+
+  const [all, names] = await Promise.all([
+    loadEnrichedCustomers(company.id), filterNames(company.id),
+  ])
+  const matched = applyFilters(all, input.filters)
+
+  if (matched.length !== input.confirmCount) {
+    return {
+      ok: false,
+      error:
+        'The selection changed from ' + input.confirmCount + ' to ' + matched.length +
+        ' customers while this was open. Nothing was changed — reopen and confirm the new number.',
+    }
+  }
+  if (matched.length === 0) return { ok: false, error: 'No customers match these filters.' }
+
+  const db = tenantClient()
+  const ids = matched.map((c) => c.id)
+  let updated = 0
+
+  // Chunked: the id list travels in the request URL, and a company-wide
+  // selection is thousands of ids.
+  const CHUNK = 200
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const slice = ids.slice(i, i + CHUNK)
+    const { error, count } = await db
+      .from('customers')
+      .update({ access_point: accessPoint }, { count: 'exact' })
+      .eq('company_id', company.id)
+      .in('id', slice)
+
+    if (error) {
+      return {
+        ok: false,
+        error:
+          'Could not set the access point: ' + error.message +
+          (updated > 0 ? ' — ' + updated + ' of ' + ids.length + ' were updated before it failed.' : ''),
+      }
+    }
+    updated += count ?? slice.length
+  }
+
+  const audience = describeFilters(input.filters, names)
+
+  await logEvent({
+    customerId: null,
+    type: 'bulk_access_point_set',
+    details:
+      'Access point set to ' + accessPoint + ' for ' + updated +
+      (updated === 1 ? ' customer' : ' customers') +
+      ' (' + audience + ') by ' + (profile.first_name ?? profile.email),
+    tag: '[bulk]',
+  })
+
+  revalidatePath('/dashboard/customers')
+  // The messaging page builds its access point dropdown from this column.
+  revalidatePath('/dashboard/messages')
+  return { ok: true, updated, accessPoint }
 }
