@@ -80,6 +80,7 @@ export default async function MessagesPage() {
         cutOffDates={cutOffDates}
         hasBothConnectionTypes={hasBothConnectionTypes}
         templates={settings.templates}
+        allowForeign={settings.allowForeign}
         canSendNow={canSend(settings, device)}
         blockedReason={blockedReason}
       />

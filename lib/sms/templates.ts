@@ -103,6 +103,23 @@ export function unknownPlaceholders(text: string): string[] {
   )]
 }
 
+/**
+ * Known placeholders in `text` that can only be filled from a customer record.
+ *
+ * A message to a typed-in number has no customer behind it, so any of these
+ * would reach the phone as an empty string — "Hi , your account  expires " —
+ * and the moment to say so is before it is queued. `{{company}}` is the one
+ * placeholder that does not need a customer.
+ */
+export function customerPlaceholders(text: string): string[] {
+  const found = text.match(/\{\{[a-z_]+\}\}/gi) ?? []
+  return [...new Set(
+    found
+      .map((t) => t.toLowerCase())
+      .filter((t) => t in PLACEHOLDERS && t !== '{{company}}')
+  )]
+}
+
 // ---------------------------------------------------------------------------
 // Segments
 // ---------------------------------------------------------------------------

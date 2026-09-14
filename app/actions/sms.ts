@@ -3,18 +3,22 @@
 import { revalidatePath } from 'next/cache'
 
 import { logEvent } from '@/lib/audit'
-import { applyFilters, describeFilters, type CustomerFilters } from '@/lib/customer-filter'
+import {
+  applyFilters, describeFilters, explainNoMatch, type CustomerFilters, type FilterNames,
+} from '@/lib/customer-filter'
 import { listMiscCategories, listServicePlans } from '@/lib/data/catalog'
 import { loadEnrichedCustomers } from '@/lib/data/customers'
 import {
-  canSend, enqueueSms, getSmsDevice, getSmsSettings,
+  canSend, DIRECT_AUDIENCE_PREFIX, enqueueSms, getSmsDevice, getSmsSettings,
 } from '@/lib/data/sms'
 import { CURRENCY_SYMBOL, formatCurrency } from '@/lib/format'
-import { summarisePhones } from '@/lib/phone'
+import { classifyPhone, PHONE_SKIP_REASON, sendablePhone, summarisePhones } from '@/lib/phone'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { displayName, requirePermission } from '@/lib/session'
 import { verifyCredentials } from '@/lib/sms/relay'
-import { countSegments, renderTemplate, unknownPlaceholders } from '@/lib/sms/templates'
+import {
+  countSegments, customerPlaceholders, renderTemplate, unknownPlaceholders,
+} from '@/lib/sms/templates'
 import { STATUS_LABELS } from '@/lib/status'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -217,6 +221,11 @@ export type AudiencePreview = {
   /** Seconds, at this company's throttle. */
   estimatedSeconds: number
   audience: string
+  /**
+   * Why `matched` is zero, filter by filter. Empty unless it is zero and at
+   * least one filter is active — see lib/customer-filter.ts#explainNoMatch.
+   */
+  emptyReasons: string[]
   segments: number
   encoding: string
   characters: number
@@ -258,6 +267,13 @@ export async function previewAudience(filters: CustomerFilters, body: string) {
 
   const seg = countSegments(body)
 
+  const names: FilterNames = {
+    status: (s) => STATUS_LABELS[s],
+    miscCategory: (id) => categories.find((c) => c.id === id)?.name,
+    servicePlan: (id) => plans.find((p) => p.id === id)?.name,
+    currency: (n) => CURRENCY_SYMBOL + n.toLocaleString(),
+  }
+
   const preview: AudiencePreview = {
     matched: matched.length,
     sendable: sendable.length,
@@ -269,18 +285,136 @@ export async function previewAudience(filters: CustomerFilters, body: string) {
     // of the tenant's credit, so the estimate multiplies by them.
     estimatedSeconds:
       sendable.length * settings.throttleSeconds * Math.max(1, seg.segments),
-    audience: describeFilters(filters, {
-      status: (s) => STATUS_LABELS[s],
-      miscCategory: (id) => categories.find((c) => c.id === id)?.name,
-      servicePlan: (id) => plans.find((p) => p.id === id)?.name,
-      currency: (n) => CURRENCY_SYMBOL + n.toLocaleString(),
-    }),
+    audience: describeFilters(filters, names),
+    emptyReasons: explainNoMatch(customers, filters, names),
     segments: seg.segments,
     encoding: seg.encoding,
     characters: seg.characters,
   }
 
   return preview
+}
+
+/**
+ * Queues one message to a typed-in number: a technician, a supplier, the
+ * operator's own phone to check the relay is alive.
+ *
+ * Same permission, same gates and the same write path as a bulk send — this
+ * goes through enqueueSms like everything else, so the master switch, the
+ * paired device and the phone rules all still apply. What it skips is the
+ * customer lookup: the number is the recipient, not a record.
+ *
+ * It still gets a batch row. A message to a number that is not a customer is
+ * exactly the one someone will later ask about — "who texted that supplier
+ * and what did they say" — and the batch list is where that answer lives.
+ */
+export async function sendDirectSms(phone: string, body: string): Promise<SendBulkResult> {
+  const { company, profile } = await requirePermission('send_bulk_sms')
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.sms) return { ok: false, error: 'SMS is not set up on this system yet.' }
+
+  const text = body.trim()
+  if (!text) return { ok: false, error: 'The message is empty.' }
+
+  const unknown = unknownPlaceholders(text)
+  if (unknown.length > 0) return { ok: false, error: 'Unknown placeholder: ' + unknown.join(', ') }
+
+  // Refused rather than filled with blanks: there is no customer to fill them
+  // from, and "Hi , your account  expires " is not a message anyone meant.
+  const needsCustomer = customerPlaceholders(text)
+  if (needsCustomer.length > 0) {
+    return {
+      ok: false,
+      error:
+        'This message uses ' + needsCustomer.join(', ') + ', which can only be filled ' +
+        'in from a customer record. Remove it or send to customers instead.',
+    }
+  }
+
+  const [settings, device] = await Promise.all([
+    getSmsSettings(company.id), getSmsDevice(company.id),
+  ])
+
+  if (!canSend(settings, device)) {
+    return {
+      ok: false,
+      error: settings.enabled
+        ? 'No phone is paired for this company.'
+        : 'SMS is switched off for this company.',
+    }
+  }
+
+  const e164 = sendablePhone(phone, { allowForeign: settings.allowForeign })
+  if (!e164) {
+    const kind = classifyPhone(phone).kind
+    return {
+      ok: false,
+      error: kind === 'jamaica'
+        ? 'That number cannot be sent to.'
+        : PHONE_SKIP_REASON[kind] + '.',
+    }
+  }
+
+  const audience = DIRECT_AUDIENCE_PREFIX + e164
+  const rendered = renderTemplate(text, { '{{company}}': company.name })
+
+  const db = tenantClient()
+  const { data: batchRow, error: batchError } = await db
+    .from('sms_batches')
+    .insert({
+      company_id: company.id,
+      sent_by: profile.id,
+      sent_by_name: displayName(profile),
+      body: text,
+      audience,
+      total: 1,
+      sent: 0,
+      failed: 0,
+      skipped: 0,
+    })
+    .select('id')
+    .single()
+
+  if (batchError || !batchRow) {
+    return { ok: false, error: 'Could not start the batch: ' + (batchError?.message ?? '') }
+  }
+
+  const batchId = (batchRow as { id: number }).id
+
+  const result = await enqueueSms({
+    companyId: company.id,
+    kind: 'bulk',
+    settings,
+    device,
+    dedupeKey: null,
+    batchId,
+    body: rendered,
+    target: { customerId: null, phone: e164, values: {} },
+  })
+
+  if (!result.queued) {
+    await db.from('sms_batches').update({ total: 0, skipped: 1 }).eq('id', batchId)
+    return { ok: false, error: result.reason }
+  }
+
+  await logEvent({
+    type: 'sms_direct_sent',
+    details:
+      'Direct SMS queued | batch=' + batchId + ' | to=+' + e164 +
+      ' | by=' + displayName(profile),
+    tag: '[sms]',
+  })
+
+  revalidatePath('/dashboard/messages')
+
+  return {
+    ok: true,
+    batchId,
+    queued: 1,
+    skipped: 0,
+    message: 'Message to +' + e164 + ' queued.',
+  }
 }
 
 export type SendBulkResult =

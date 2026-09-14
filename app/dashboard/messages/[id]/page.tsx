@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import { notFound } from 'next/navigation'
 
-import { getSmsBatchMessages, listSmsBatches } from '@/lib/data/sms'
+import { getSmsBatchMessages, isDirectAudience, listSmsBatches } from '@/lib/data/sms'
 import { formatDateTime } from '@/lib/format'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { requirePermission } from '@/lib/session'
@@ -119,6 +119,8 @@ export default async function BatchPage({ params }: PageProps<'/dashboard/messag
                       >
                         {names.get(m.customerId) ?? 'Customer #' + m.customerId}
                       </Link>
+                    ) : isDirectAudience(batch.audience) ? (
+                      <span className="text-gray-500">Direct number</span>
                     ) : (
                       <span className="text-gray-600">Customer removed</span>
                     )}

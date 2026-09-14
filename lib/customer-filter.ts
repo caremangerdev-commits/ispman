@@ -233,39 +233,98 @@ export function hasAnyFilter(f: CustomerFilters): boolean {
  * batch that then describes itself as "category 7" explains nothing to the
  * person asking why 400 customers got a text.
  */
-export function describeFilters(
-  f: CustomerFilters,
-  names: {
-    status?: (s: CustomerStatus) => string
-    miscCategory?: (id: number) => string | undefined
-    servicePlan?: (id: number) => string | undefined
-    currency?: (n: number) => string
-  } = {}
-): string {
-  const parts: string[] = []
+export type FilterNames = {
+  status?: (s: CustomerStatus) => string
+  miscCategory?: (id: number) => string | undefined
+  servicePlan?: (id: number) => string | undefined
+  currency?: (n: number) => string
+}
+
+/** One active filter, in words, with the key it came from. */
+export type FilterPart = { key: keyof CustomerFilters; text: string }
+
+/**
+ * The active filters, one entry each, in the order the description reads.
+ *
+ * The single source for both the one-line audience description and the
+ * per-filter "this one is why nobody matched" explanation, so the two can
+ * never name a filter differently.
+ */
+export function describeFilterParts(f: CustomerFilters, names: FilterNames = {}): FilterPart[] {
+  const parts: FilterPart[] = []
 
   if (f.status !== 'all') {
-    parts.push(names.status ? names.status(f.status) : f.status)
+    parts.push({ key: 'status', text: names.status ? names.status(f.status) : f.status })
   }
   if (f.miscCategoryId !== null) {
-    parts.push(names.miscCategory?.(f.miscCategoryId) ?? 'category #' + f.miscCategoryId)
+    parts.push({
+      key: 'miscCategoryId',
+      text: names.miscCategory?.(f.miscCategoryId) ?? 'category #' + f.miscCategoryId,
+    })
   }
   if (f.servicePlanId !== null) {
-    parts.push(names.servicePlan?.(f.servicePlanId) ?? 'plan #' + f.servicePlanId)
+    parts.push({
+      key: 'servicePlanId',
+      text: names.servicePlan?.(f.servicePlanId) ?? 'plan #' + f.servicePlanId,
+    })
   }
-  if (f.address) parts.push(f.address)
-  if (f.accessPoint) parts.push('AP ' + f.accessPoint)
-  if (f.cutOffDate !== null) parts.push('cut-off day ' + f.cutOffDate)
-  if (f.connectionType !== null) parts.push(f.connectionType)
+  if (f.address) parts.push({ key: 'address', text: f.address })
+  if (f.accessPoint) parts.push({ key: 'accessPoint', text: 'AP ' + f.accessPoint })
+  if (f.cutOffDate !== null) {
+    parts.push({ key: 'cutOffDate', text: 'cut-off day ' + f.cutOffDate })
+  }
+  if (f.connectionType !== null) parts.push({ key: 'connectionType', text: f.connectionType })
   if (f.expiringWithinDays !== null) {
-    parts.push('expiring within ' + f.expiringWithinDays + ' day' +
-      (f.expiringWithinDays === 1 ? '' : 's'))
+    parts.push({
+      key: 'expiringWithinDays',
+      text: 'expiring within ' + f.expiringWithinDays + ' day' +
+        (f.expiringWithinDays === 1 ? '' : 's'),
+    })
   }
   if (f.owingAtLeast !== null) {
     const amount = names.currency ? names.currency(f.owingAtLeast) : String(f.owingAtLeast)
-    parts.push('owing ' + amount + ' or more')
+    parts.push({ key: 'owingAtLeast', text: 'owing ' + amount + ' or more' })
   }
-  if (f.query) parts.push('matching "' + f.query + '"')
+  if (f.query) parts.push({ key: 'query', text: 'matching "' + f.query + '"' })
 
-  return parts.length ? parts.join(' · ') : 'All customers'
+  return parts
+}
+
+export function describeFilters(f: CustomerFilters, names: FilterNames = {}): string {
+  const parts = describeFilterParts(f, names)
+  return parts.length ? parts.map((p) => p.text).join(' · ') : 'All customers'
+}
+
+/**
+ * Why a filter set matched nobody, filter by filter.
+ *
+ * "0 matched" on its own leaves the operator guessing whether the search box,
+ * the address or the status is the one excluding everyone — and during an
+ * outage that guess costs minutes. Each active filter is tried ALONE against
+ * the whole company: one that matches nobody by itself is named as the reason.
+ * When every filter matches someone on its own, the combination is the
+ * problem, and the message says that instead.
+ *
+ * Empty when the set actually matched someone, or when no filter is active —
+ * an empty company is a different message and not this module's to write.
+ */
+export function explainNoMatch<T extends FilterableCustomer>(
+  rows: T[],
+  f: CustomerFilters,
+  names: FilterNames = {}
+): string[] {
+  const parts = describeFilterParts(f, names)
+  if (parts.length === 0 || rows.length === 0) return []
+  if (applyFilters(rows, f).length > 0) return []
+
+  const alone = parts.filter((p) => {
+    const only: CustomerFilters = { ...NO_FILTERS, [p.key]: f[p.key] }
+    return applyFilters(rows, only).length === 0
+  })
+
+  if (alone.length > 0) {
+    return alone.map((p) => 'No customer is ' + p.text + '.')
+  }
+
+  return ['Each of these filters matches someone, but no customer matches all of them together.']
 }

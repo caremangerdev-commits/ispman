@@ -169,6 +169,18 @@ export function stripSecret(d: SmsDevice | null): SafeSmsDevice | null {
   return { ...rest, hasPassword: Boolean(apiPassword) }
 }
 
+/**
+ * The audience stamp of a batch sent to a typed-in number rather than to a
+ * customer selection. The batch pages use it to tell "this row never had a
+ * customer" from "this customer has since been deleted", which the outbox row
+ * alone cannot: both have a null customer_id.
+ */
+export const DIRECT_AUDIENCE_PREFIX = 'Direct to +'
+
+export function isDirectAudience(audience: string | null | undefined): boolean {
+  return (audience ?? '').startsWith(DIRECT_AUDIENCE_PREFIX)
+}
+
 /** Whether the tenant could send anything at all right now. */
 export function canSend(settings: SmsSettings, device: SmsDevice | null): boolean {
   return settings.enabled && Boolean(device?.apiUsername && device?.apiPassword)
