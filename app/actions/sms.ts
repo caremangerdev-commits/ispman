@@ -15,6 +15,7 @@ import { CURRENCY_SYMBOL, formatCurrency } from '@/lib/format'
 import { classifyPhone, PHONE_SKIP_REASON, sendablePhone, summarisePhones } from '@/lib/phone'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { displayName, requirePermission } from '@/lib/session'
+import { refreshBatchCounts, syncDelivery } from '@/lib/sms/delivery'
 import { verifyCredentials } from '@/lib/sms/relay'
 import {
   countSegments, customerPlaceholders, renderTemplate, unknownPlaceholders,
@@ -581,4 +582,149 @@ export async function setSmsOptOut(customerId: number, optedOut: boolean) {
 
   revalidatePath('/dashboard/customers/' + customerId)
   return { ok: true as const }
+}
+
+// ---------------------------------------------------------------------------
+// Batch delivery and retry
+// ---------------------------------------------------------------------------
+
+export type BatchActionResult =
+  | { ok: true; message: string }
+  | { ok: false; error: string }
+
+/** The batch, if it belongs to this company. Scoping is what makes the id safe to take from a form. */
+async function ownBatch(companyId: number, batchId: number) {
+  const { data } = await tenantClient()
+    .from('sms_batches').select('id, total').eq('company_id', companyId).eq('id', batchId).maybeSingle()
+  return data as { id: number; total: number } | null
+}
+
+/**
+ * Asks the relay what the phone did with every message in a batch that ISPMan
+ * still has as merely 'sent'.
+ *
+ * The dispatcher does this on its own for recent rows, a few dozen a tick; this
+ * is the same call for one batch, all at once, for the operator standing on
+ * its page who wants the answer now.
+ */
+export async function checkBatchDelivery(batchId: number): Promise<BatchActionResult> {
+  const { company } = await requirePermission('send_bulk_sms')
+
+  const batch = await ownBatch(company.id, batchId)
+  if (!batch) return { ok: false, error: 'That batch does not exist.' }
+
+  const r = await syncDelivery({ companyId: company.id, batchId, limit: 2000 })
+  await refreshBatchCounts(batchId)
+  revalidatePath('/dashboard/messages/' + batchId)
+  revalidatePath('/dashboard/messages')
+
+  if (r.checked === 0) {
+    return { ok: true, message: 'Nothing left to check: every message in this batch is already resolved.' }
+  }
+  return {
+    ok: true,
+    message:
+      'Checked ' + r.checked + ': ' + r.delivered + ' delivered, ' + r.failed + ' failed on the phone, ' +
+      r.pending + ' still in progress' + (r.unknown ? ', ' + r.unknown + ' the relay could not answer for' : '') + '.',
+  }
+}
+
+/**
+ * Re-queues a batch's failed messages — and only those.
+ *
+ * NEW ROWS, NOT THE OLD ONES REOPENED. The outbox id is the idempotency key the
+ * relay is given (lib/sms/relay.ts#sendMessage), and the relay treats a
+ * repeated id as the same message. That is exactly right for the dispatcher's
+ * own retries, where a timeout may have hidden an acceptance — but it means a
+ * row the relay already holds and marked failed would be REFUSED as a
+ * duplicate if sent again under its own id. So each failed row is copied to a
+ * fresh row, which gets a fresh id, and the original is marked cancelled with
+ * a pointer to its replacement. A message that actually went out is not among
+ * them: only status 'failed' is copied, and a delivered or sent row is neither.
+ *
+ * The copies carry no dedupe key, like every bulk row, so the unique index does
+ * not stand in their way. The batch's total is unchanged: the retry sends
+ * within the number that was queued, not on top of it.
+ */
+export async function retryFailedInBatch(batchId: number): Promise<BatchActionResult> {
+  const { company, profile } = await requirePermission('send_bulk_sms')
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.sms) return { ok: false, error: 'SMS is not set up on this system yet.' }
+
+  const batch = await ownBatch(company.id, batchId)
+  if (!batch) return { ok: false, error: 'That batch does not exist.' }
+
+  const [settings, device] = await Promise.all([
+    getSmsSettings(company.id), getSmsDevice(company.id),
+  ])
+  if (!canSend(settings, device)) {
+    return {
+      ok: false,
+      error: settings.enabled ? 'No phone is paired for this company.' : 'SMS is switched off for this company.',
+    }
+  }
+
+  const db = tenantClient()
+  const { data: failedRows, error: readError } = await db
+    .from('sms_outbox')
+    .select('id, customer_id, kind, phone, body')
+    .eq('company_id', company.id)
+    .eq('batch_id', batchId)
+    .eq('status', 'failed')
+    .order('id')
+
+  if (readError) return { ok: false, error: 'Could not read the batch: ' + readError.message }
+
+  const failed = (failedRows ?? []) as { id: number; customer_id: number | null; kind: string; phone: string; body: string }[]
+  if (failed.length === 0) return { ok: false, error: 'Nothing in this batch is marked failed. Check delivery first.' }
+
+  let requeued = 0
+  for (const row of failed) {
+    // Insert the copy first, then cancel the original. If the insert fails the
+    // original stays 'failed' and can be retried again; the other order could
+    // cancel a row and then lose its replacement.
+    const { data: copy, error: insertError } = await db
+      .from('sms_outbox')
+      .insert({
+        company_id: company.id,
+        customer_id: row.customer_id,
+        batch_id: batchId,
+        kind: row.kind,
+        phone: row.phone,
+        body: row.body,
+        status: 'queued',
+        dedupe_key: null,
+      })
+      .select('id')
+      .single()
+
+    if (insertError || !copy) continue
+
+    await db.from('sms_outbox')
+      .update({ status: 'cancelled', error: 'Retried as message #' + (copy as { id: number }).id })
+      .eq('id', row.id)
+    requeued += 1
+  }
+
+  await refreshBatchCounts(batchId)
+
+  await logEvent({
+    type: 'sms_batch_retried',
+    details:
+      'Retried ' + requeued + ' failed message' + (requeued === 1 ? '' : 's') +
+      ' of batch #' + batchId + ' | by=' + displayName(profile),
+    tag: '[sms]',
+  })
+
+  revalidatePath('/dashboard/messages/' + batchId)
+  revalidatePath('/dashboard/messages')
+
+  return {
+    ok: true,
+    message:
+      requeued + ' message' + (requeued === 1 ? '' : 's') + ' re-queued' +
+      (requeued < failed.length ? ' (' + (failed.length - requeued) + ' could not be copied and stay failed)' : '') +
+      '. They go out at your configured rate; the rows below update as they send.',
+  }
 }

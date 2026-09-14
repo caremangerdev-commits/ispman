@@ -7,6 +7,7 @@ import {
 } from '@/lib/data/sms'
 import { daysUntilDateOnly, formatCurrency } from '@/lib/format'
 import { getSchemaCapabilities } from '@/lib/schema'
+import { refreshBatchCounts, syncDelivery } from '@/lib/sms/delivery'
 import { sendMessage, relayConfigured, type RelayCredentials } from '@/lib/sms/relay'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -302,10 +303,25 @@ async function drain(
   return { sent, failed }
 }
 
-/** Keeps the batch tallies in step with the rows they describe. */
-async function refreshBatchCounts(companyId: number): Promise<void> {
-  const db = tenantClient()
+/**
+ * How many 'sent' rows one tick asks the relay about. Each is one HTTP call,
+ * and the tick has a time budget; 60 a minute clears a 291-row batch in five
+ * ticks without crowding out the sending.
+ */
+const DELIVERY_CHECKS_PER_TICK = 60
 
+/**
+ * Learns what the phone did with recently sent messages, then keeps the batch
+ * tallies in step with the rows.
+ *
+ * The delivery sync is what makes "failed" a state a row can actually reach
+ * after the relay accepted it — see lib/sms/delivery.ts for why it was
+ * missing and what that cost.
+ */
+async function settleRecent(companyId: number): Promise<void> {
+  await syncDelivery({ companyId, limit: DELIVERY_CHECKS_PER_TICK })
+
+  const db = tenantClient()
   const { data } = await db
     .from('sms_batches')
     .select('id')
@@ -313,16 +329,7 @@ async function refreshBatchCounts(companyId: number): Promise<void> {
     .order('created_at', { ascending: false })
     .limit(20)
 
-  for (const b of (data ?? []) as { id: number }[]) {
-    const { data: rows } = await db
-      .from('sms_outbox').select('status').eq('batch_id', b.id)
-    if (!rows) continue
-    const list = rows as { status: string }[]
-    await db.from('sms_batches').update({
-      sent: list.filter((r) => r.status === 'sent' || r.status === 'delivered').length,
-      failed: list.filter((r) => r.status === 'failed').length,
-    }).eq('id', b.id)
-  }
+  for (const b of (data ?? []) as { id: number }[]) await refreshBatchCounts(b.id)
 }
 
 /**
@@ -376,7 +383,7 @@ export async function runDispatch(only?: number): Promise<DispatchSummary[]> {
     })
   }
 
-  for (const co of targets) await refreshBatchCounts(co.id)
+  for (const co of targets) await settleRecent(co.id)
 
   return out
 }

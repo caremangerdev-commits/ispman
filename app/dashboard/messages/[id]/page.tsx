@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import { notFound } from 'next/navigation'
 
+import { BatchActions } from '@/components/messages/BatchActions'
 import { getSmsBatchMessages, isDirectAudience, listSmsBatches } from '@/lib/data/sms'
 import { formatDateTime } from '@/lib/format'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -38,6 +39,13 @@ export default async function BatchPage({ params }: PageProps<'/dashboard/messag
 
   const messages = await getSmsBatchMessages(company.id, batchId)
 
+  // Counted from the rows, not the batch tallies: the tallies are refreshed by
+  // the dispatcher a tick later, and the buttons must reflect what is true now.
+  const count = (s: string) => messages.filter((m) => m.status === s).length
+  const delivered = count('delivered')
+  const failedNow = count('failed')
+  const unresolved = count('sent')
+
   // Names for the rows, in one query rather than one per message.
   const ids = [...new Set(messages.map((m) => m.customerId).filter((v): v is number => v !== null))]
   const names = new Map<number, string>()
@@ -71,9 +79,16 @@ export default async function BatchPage({ params }: PageProps<'/dashboard/messag
             </p>
           </div>
           <div className="flex gap-4 text-right">
+            {/* "sent" is what the relay accepted; "delivered" is what the
+                phone confirmed. The gap between them is what Check delivery
+                closes — see lib/sms/delivery.ts. */}
             <div>
               <p className="text-lg font-semibold text-green-400">{batch.sent}</p>
               <p className="text-[11px] text-gray-500">sent</p>
+            </div>
+            <div>
+              <p className="text-lg font-semibold text-green-300">{delivered}</p>
+              <p className="text-[11px] text-gray-500">delivered</p>
             </div>
             <div>
               <p className="text-lg font-semibold text-red-400">{batch.failed}</p>
@@ -95,6 +110,10 @@ export default async function BatchPage({ params }: PageProps<'/dashboard/messag
             <span className="text-gray-400">Audience:</span> {batch.audience}
           </p>
         ) : null}
+
+        <div className="border-t border-gray-800 pt-3">
+          <BatchActions batchId={batchId} failed={failedNow} unresolved={unresolved} />
+        </div>
       </section>
 
       <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
