@@ -1,7 +1,8 @@
 import 'server-only'
 
-import { enqueueSms, getSmsDevice, getSmsSettings } from '@/lib/data/sms'
+import { getSmsSettings } from '@/lib/data/sms'
 import { formatCurrency } from '@/lib/format'
+import { channelReadiness, enqueueForRoute } from '@/lib/messaging/enqueue'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -10,10 +11,15 @@ import { tenantClient } from '@/lib/supabase/tenant'
  *
  * NEVER THROWS, and never blocks the thing it is reporting on. The payment has
  * already been taken and the customer has already been disconnected by the time
- * these run; failing the operator's action because a text could not be queued
- * would undo something real to protect something cosmetic. Every failure is
- * logged to the console and swallowed — the same trade logEvent makes, for the
- * same reason.
+ * these run; failing the operator's action because a message could not be
+ * queued would undo something real to protect something cosmetic. Every
+ * failure is logged to the console and swallowed — the same trade logEvent
+ * makes, for the same reason.
+ *
+ * CHANNEL-NEUTRAL. Neither function names a channel: each asks
+ * enqueueForRoute() to apply the company's route for its kind, which is where
+ * "email if they have one, otherwise SMS" is decided. A receipt goes with the
+ * receipt PDF attached wherever the channel can carry one.
  *
  * WHY NOT IN THE SWEEP. A disconnection is an act, not a state to be discovered
  * by scanning: the sweep would have to infer it from a status, and radcheck
@@ -23,12 +29,15 @@ import { tenantClient } from '@/lib/supabase/tenant'
  */
 
 type CustomerBits = {
+  id: number
   first_name: string | null
   last_name: string | null
   phone: string | null
+  email: string | null
   account_number?: string | null
   carried_balance?: number | null
   sms_opted_out?: boolean | null
+  email_opted_out?: boolean | null
 }
 
 async function loadCustomerBits(
@@ -38,10 +47,11 @@ async function loadCustomerBits(
   const caps = await getSchemaCapabilities()
   const db = tenantClient()
 
-  let cols = 'first_name, last_name, phone'
+  let cols = 'id, first_name, last_name, phone, email'
   if (caps.accountNumbers) cols += ', account_number'
   if (caps.billing) cols += ', carried_balance'
   if (caps.sms) cols += ', sms_opted_out'
+  if (caps.messaging) cols += ', email_opted_out'
 
   const { data, error } = await db
     .from('customers').select(cols)
@@ -51,27 +61,38 @@ async function loadCustomerBits(
   return data as unknown as CustomerBits
 }
 
-/** Shared preamble: is this tenant able to send anything at all? */
+/** Shared preamble: the settings, what the tenant can send on, and the customer. */
 async function prepare(companyId: number, customerId: number) {
   const caps = await getSchemaCapabilities()
   if (!caps.sms) return null
 
-  const [settings, device, customer] = await Promise.all([
+  const [settings, customer] = await Promise.all([
     getSmsSettings(companyId),
-    getSmsDevice(companyId),
     loadCustomerBits(companyId, customerId),
   ])
+  if (!customer) return null
 
-  if (!settings.enabled || !device || !customer) return null
-  return { settings, device, customer }
+  const readiness = await channelReadiness(companyId, settings)
+  return { settings, readiness, customer }
+}
+
+function baseValues(customer: CustomerBits, companyName: string) {
+  return {
+    '{{name}}': [customer.first_name, customer.last_name].filter(Boolean).join(' '),
+    '{{first_name}}': customer.first_name ?? '',
+    '{{account}}': customer.account_number ?? '',
+    '{{balance}}': formatCurrency(customer.carried_balance ?? 0),
+    '{{company}}': companyName,
+  }
 }
 
 /**
- * Texts a customer their receipt.
+ * Sends a customer their receipt.
  *
  * The dedupe key is the PAYMENT id, so a payment that is submitted twice — a
- * double-clicked button, a retried form post — cannot produce two texts even
- * though it would produce two payment rows for a manager to correct.
+ * double-clicked button, a retried form post — cannot produce two messages on
+ * a channel even though it would produce two payment rows for a manager to
+ * correct. By email, the receipt PDF rides along.
  */
 export async function notifyPaymentReceipt(opts: {
   companyId: number
@@ -83,36 +104,27 @@ export async function notifyPaymentReceipt(opts: {
   try {
     const ready = await prepare(opts.companyId, opts.customerId)
     if (!ready) return
+    const { settings, readiness, customer } = ready
+    if (!settings.paymentReceipt) return
 
-    const { settings, device, customer } = ready
-
-    await enqueueSms({
+    await enqueueForRoute({
       companyId: opts.companyId,
       kind: 'payment_receipt',
       settings,
-      device,
+      readiness,
+      customer,
+      values: { ...baseValues(customer, opts.companyName), '{{amount}}': formatCurrency(opts.amount) },
+      text: { sms: settings.smsTemplates.payment_receipt, email: settings.emailTemplates.payment_receipt },
       dedupeKey: 'payment:' + opts.paymentId,
-      target: {
-        customerId: opts.customerId,
-        phone: customer.phone,
-        optedOut: Boolean(customer.sms_opted_out),
-        values: {
-          '{{name}}': [customer.first_name, customer.last_name].filter(Boolean).join(' '),
-          '{{first_name}}': customer.first_name ?? '',
-          '{{account}}': customer.account_number ?? '',
-          '{{amount}}': formatCurrency(opts.amount),
-          '{{balance}}': formatCurrency(customer.carried_balance ?? 0),
-          '{{company}}': opts.companyName,
-        },
-      },
+      attachment: { kind: 'receipt', id: opts.paymentId },
     })
   } catch (err) {
-    console.error('[sms] payment receipt not queued:', (err as Error).message)
+    console.error('[messaging] payment receipt not queued:', (err as Error).message)
   }
 }
 
 /**
- * Texts a customer that they have been cut off.
+ * Tells a customer that they have been cut off.
  *
  * The dedupe key carries the DATE, so disconnecting the same customer twice in
  * one day sends one message, while a genuine second disconnection next month
@@ -128,34 +140,25 @@ export async function notifyDisconnection(opts: {
   try {
     const ready = await prepare(opts.companyId, opts.customerId)
     if (!ready) return
-
-    const { settings, device, customer } = ready
+    const { settings, readiness, customer } = ready
+    if (!settings.disconnection) return
 
     const today = new Intl.DateTimeFormat('en-CA', {
       timeZone: opts.timezone || 'America/Jamaica',
       year: 'numeric', month: '2-digit', day: '2-digit',
     }).format(new Date())
 
-    await enqueueSms({
+    await enqueueForRoute({
       companyId: opts.companyId,
       kind: 'disconnection_notice',
       settings,
-      device,
+      readiness,
+      customer,
+      values: baseValues(customer, opts.companyName),
+      text: { sms: settings.smsTemplates.disconnection_notice, email: settings.emailTemplates.disconnection_notice },
       dedupeKey: 'disconnect:' + opts.customerId + ':' + today,
-      target: {
-        customerId: opts.customerId,
-        phone: customer.phone,
-        optedOut: Boolean(customer.sms_opted_out),
-        values: {
-          '{{name}}': [customer.first_name, customer.last_name].filter(Boolean).join(' '),
-          '{{first_name}}': customer.first_name ?? '',
-          '{{account}}': customer.account_number ?? '',
-          '{{balance}}': formatCurrency(customer.carried_balance ?? 0),
-          '{{company}}': opts.companyName,
-        },
-      },
     })
   } catch (err) {
-    console.error('[sms] disconnection notice not queued:', (err as Error).message)
+    console.error('[messaging] disconnection notice not queued:', (err as Error).message)
   }
 }

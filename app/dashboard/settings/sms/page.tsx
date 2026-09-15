@@ -1,16 +1,19 @@
 import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 
+import { NotificationRoutesForm } from '@/components/settings/NotificationRoutesForm'
 import { SmsSettingsForm } from '@/components/settings/SmsSettingsForm'
 import { loadEnrichedCustomers } from '@/lib/data/customers'
 import { getSmsDevice, getSmsSettings, stripSecret } from '@/lib/data/sms'
+import { isEmail } from '@/lib/email'
+import { emailConfigured } from '@/lib/messaging/adapters/email'
 import { summarisePhones } from '@/lib/phone'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { canOpenSetting } from '@/lib/settings-nav'
 import { relayConfigured } from '@/lib/sms/relay'
 
-export const metadata: Metadata = { title: 'SMS Notifications · ISPMan' }
+export const metadata: Metadata = { title: 'Notifications · ISPMan' }
 
 /** Same rule as the nav, so the URL cannot be used to bypass the menu. */
 async function guard() {
@@ -49,12 +52,27 @@ export default async function SmsSettingsPage() {
   // is the number this company can actually reach and not a platform average.
   const { sendable } = summarisePhones(customers, { allowForeign: settings.allowForeign })
 
+  const emailCount = customers.filter((c) => isEmail(String(c.email ?? '').trim())).length
+
   return (
     <div className="max-w-3xl space-y-4">
       <p className="text-sm text-gray-500">
-        Text your customers from your own number, using a phone in your office. Nothing
-        is sent until you pair a phone and switch a message type on.
+        Text your customers from your own number, using a phone in your office, or email
+        them{caps.messaging ? '' : ' (once migration 0022 is applied)'}. Nothing is sent
+        until you switch a message type on.
       </p>
+
+      {caps.messaging ? (
+        <NotificationRoutesForm
+          settings={settings}
+          emailConfigured={emailConfigured()}
+          sendingDomain={process.env.EMAIL_FROM_DOMAIN ?? null}
+          emailCount={emailCount}
+          totalCount={customers.length}
+        />
+      ) : null}
+
+      <h2 className="pt-2 text-sm font-semibold text-gray-200">SMS</h2>
 
       {/* stripSecret, not the device row. A server component hands every field it
           passes to a client component to the browser in the HTML payload, and the

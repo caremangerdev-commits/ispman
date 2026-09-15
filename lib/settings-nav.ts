@@ -58,10 +58,10 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     key: 'sms',
-    label: 'SMS Notifications',
+    label: 'Notifications',
     href: '/dashboard/settings/sms',
     icon: 'messageSquare',
-    description: 'Pair a phone, choose which messages send, and edit their wording.',
+    description: 'SMS and email: pair a phone, choose which messages send and by which channel, and edit their wording.',
     permission: 'manage_company_settings',
     needsSms: true,
   },

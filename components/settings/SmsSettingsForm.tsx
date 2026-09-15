@@ -244,13 +244,13 @@ export function SmsSettingsForm({
     saveSmsSettings, null
   )
 
-  const [enabled, setEnabled] = useState(settings.enabled)
+  const [enabled, setEnabled] = useState(settings.smsEnabled)
   const [types, setTypes] = useState({
     payment_receipt: settings.paymentReceipt,
     expiry_warning: settings.expiryWarning,
     disconnection_notice: settings.disconnection,
   })
-  const [templates, setTemplates] = useState(settings.templates)
+  const [templates, setTemplates] = useState(settings.smsTemplates)
   const [allowForeign, setAllowForeign] = useState(settings.allowForeign)
   const [throttle, setThrottle] = useState(String(settings.throttleSeconds))
 

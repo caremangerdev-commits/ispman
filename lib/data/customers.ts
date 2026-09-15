@@ -44,6 +44,7 @@ async function selectWithExtras(join = false) {
   if (caps.taxId) sel += ', tax_id'
   if (caps.accountNumbers) sel += ', account_number'
   if (caps.sms) sel += ', sms_opted_out'
+  if (caps.messaging) sel += ', email_opted_out'
   if (caps.billing) {
     sel += ', billing_type, carried_balance, account_credit, bill_date, last_billed_date'
   }
@@ -121,6 +122,8 @@ export type CustomerListRow = CustomerWithExpiry & {
   /** Migration 0021. Undefined until it is applied, which reads as "not opted
    *  out" — correct, because before that column existed nobody could opt out. */
   sms_opted_out?: boolean
+  /** Migration 0022. Same reading. */
+  email_opted_out?: boolean
 }
 
 export type CustomerListResult = {
@@ -203,6 +206,7 @@ export async function loadEnrichedCustomers(companyId: number): Promise<Customer
         misc_category_id?: number | null
         service_plan_id?: number | null
         sms_opted_out?: boolean
+        email_opted_out?: boolean
       }
       return {
         ...withExpiry(row),
@@ -214,6 +218,7 @@ export async function loadEnrichedCustomers(companyId: number): Promise<Customer
         misc_category_id: extra.misc_category_id ?? null,
         service_plan_id: extra.service_plan_id ?? null,
         sms_opted_out: extra.sms_opted_out ?? false,
+        email_opted_out: extra.email_opted_out ?? false,
       }
     })
 
@@ -327,6 +332,9 @@ export type CustomerDetail = CustomerWithExpiry & {
    *  out, so 'not opted out' is the truthful default rather than a guess. */
   smsOptedOut: boolean
   smsAvailable: boolean
+  /** Migration 0022. Same reading as the SMS pair. */
+  emailOptedOut: boolean
+  emailAvailable: boolean
   billingAvailable: boolean
   billingType: BillingType
   /** null when migration 0003 has not been applied. */
@@ -410,6 +418,10 @@ export async function getCustomer(
       ? Boolean((row as { sms_opted_out?: boolean }).sms_opted_out)
       : false,
     smsAvailable: caps.sms,
+    emailOptedOut: caps.messaging
+      ? Boolean((row as { email_opted_out?: boolean }).email_opted_out)
+      : false,
+    emailAvailable: caps.messaging,
     billingAvailable: caps.billing,
     billingType: toBillingType(caps.billing ? row.billing_type : 'prepaid'),
     customerType: caps.connectionTypes ? toCustomerType(row.customer_type) : null,

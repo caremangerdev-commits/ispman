@@ -7,12 +7,19 @@ import {
   applyFilters, describeFilters, explainNoMatch, type CustomerFilters, type FilterNames,
 } from '@/lib/customer-filter'
 import { listMiscCategories, listServicePlans } from '@/lib/data/catalog'
-import { loadEnrichedCustomers } from '@/lib/data/customers'
+import { loadEnrichedCustomers, type CustomerListRow } from '@/lib/data/customers'
 import {
-  canSend, DIRECT_AUDIENCE_PREFIX, enqueueSms, getSmsDevice, getSmsSettings,
+  DIRECT_AUDIENCE_PREFIX, getSmsSettings, type NotifyKind,
 } from '@/lib/data/sms'
+import { isEmail } from '@/lib/email'
 import { CURRENCY_SYMBOL, formatCurrency } from '@/lib/format'
-import { classifyPhone, PHONE_SKIP_REASON, sendablePhone, summarisePhones } from '@/lib/phone'
+import { channelReadiness, enqueueForRoute, enqueueMessage } from '@/lib/messaging/enqueue'
+import { adapterFor } from '@/lib/messaging/registry'
+import { describeSkip, resolveRoute } from '@/lib/messaging/route'
+import {
+  CHANNEL_LABELS, CHANNELS, channelsOf, toRoute, type Channel, type Route,
+} from '@/lib/messaging/routes'
+import { classifyPhone, PHONE_SKIP_REASON, sendablePhone } from '@/lib/phone'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { displayName, requirePermission } from '@/lib/session'
 import { refreshBatchCounts, syncDelivery } from '@/lib/sms/delivery'
@@ -91,23 +98,29 @@ export async function saveSmsSettings(
 
   const before = await getSmsSettings(company.id)
 
+  // The per-kind switches are named sms_* before 0022 and notify_* after —
+  // one switch per kind either way, under whichever name the schema has.
+  const prefix = caps.messaging ? 'notify_' : 'sms_'
+
+  const patch: Record<string, unknown> = {
+    sms_enabled: bool(formData, 'sms_enabled'),
+    // Empty means "use the built-in default", so it is stored as NULL rather
+    // than as an empty string that would send a blank message.
+    sms_payment_receipt_template: templates.sms_payment_receipt_template || null,
+    sms_expiry_warning_template: templates.sms_expiry_warning_template || null,
+    sms_disconnection_template: templates.sms_disconnection_template || null,
+    sms_expiry_warning_days: days,
+    sms_throttle_seconds: throttle,
+    sms_allow_foreign: bool(formData, 'sms_allow_foreign'),
+  }
+  patch[prefix + 'payment_receipt_enabled'] = bool(formData, 'sms_payment_receipt_enabled')
+  patch[prefix + 'expiry_warning_enabled'] = bool(formData, 'sms_expiry_warning_enabled')
+  patch[prefix + 'disconnection_enabled'] = bool(formData, 'sms_disconnection_enabled')
+
   const db = tenantClient()
   const { error } = await db
     .from('settings')
-    .update({
-      sms_enabled: bool(formData, 'sms_enabled'),
-      sms_payment_receipt_enabled: bool(formData, 'sms_payment_receipt_enabled'),
-      sms_expiry_warning_enabled: bool(formData, 'sms_expiry_warning_enabled'),
-      sms_disconnection_enabled: bool(formData, 'sms_disconnection_enabled'),
-      // Empty means "use the built-in default", so it is stored as NULL rather
-      // than as an empty string that would send a blank message.
-      sms_payment_receipt_template: templates.sms_payment_receipt_template || null,
-      sms_expiry_warning_template: templates.sms_expiry_warning_template || null,
-      sms_disconnection_template: templates.sms_disconnection_template || null,
-      sms_expiry_warning_days: days,
-      sms_throttle_seconds: throttle,
-      sms_allow_foreign: bool(formData, 'sms_allow_foreign'),
-    })
+    .update(patch)
     .eq('company_id', company.id)
 
   if (error) return { ok: false, error: 'Could not save: ' + error.message }
@@ -117,16 +130,90 @@ export async function saveSmsSettings(
   // The master switch is the one worth an audit row on its own: it is what an
   // owner reaches for when a SIM starts being flagged, and "when did messages
   // stop going out" is a question somebody will ask.
-  if (before.enabled !== after.enabled) {
+  if (before.smsEnabled !== after.smsEnabled) {
     await logEvent({
       type: 'sms_master_switch',
-      details: 'SMS ' + (after.enabled ? 'enabled' : 'disabled') + ' for the company',
+      details: 'SMS ' + (after.smsEnabled ? 'enabled' : 'disabled') + ' for the company',
       tag: '[sms]',
     })
   }
 
   revalidatePath('/dashboard/settings/sms')
   return { ok: true, message: 'SMS settings saved.' }
+}
+
+/**
+ * Saves the email sender and, per message kind, WHICH CHANNEL IT GOES BY and
+ * the email wording. The company's decision — see lib/messaging/routes.ts.
+ */
+export async function saveNotificationRoutes(
+  _prev: SmsActionResult | null,
+  formData: FormData
+): Promise<SmsActionResult> {
+  const { company } = await requirePermission('manage_company_settings')
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.messaging) return { ok: false, error: 'Email needs migration 0022. Ask your administrator.' }
+
+  const fieldErrors: Record<string, string> = {}
+
+  const replyTo = str(formData, 'email_reply_to').toLowerCase()
+  if (replyTo && !isEmail(replyTo)) fieldErrors.email_reply_to = 'Enter a valid email address.'
+
+  const kinds: NotifyKind[] = ['payment_receipt', 'expiry_warning', 'disconnection_notice']
+  const routes: Record<string, Route> = {}
+  for (const kind of [...kinds, 'bulk' as const]) {
+    const raw = str(formData, 'route_' + kind)
+    routes[kind] = toRoute(raw)
+    if (raw && routes[kind] !== raw) fieldErrors['route_' + kind] = 'Choose one of the listed options.'
+  }
+
+  const emailFields: Record<string, string | null> = {}
+  for (const kind of kinds) {
+    const col = kind === 'disconnection_notice' ? 'disconnection' : kind
+    for (const part of ['subject', 'body'] as const) {
+      const field = 'email_' + kind + '_' + part
+      const text = str(formData, field)
+      const unknown = unknownPlaceholders(text)
+      if (unknown.length > 0) fieldErrors[field] = 'Unknown placeholder: ' + unknown.join(', ')
+      emailFields['email_' + col + '_' + part] = text || null
+    }
+  }
+
+  if (Object.keys(fieldErrors).length > 0) {
+    return { ok: false, error: 'Please correct the highlighted fields.', fieldErrors }
+  }
+
+  const before = await getSmsSettings(company.id)
+
+  const { error } = await tenantClient()
+    .from('settings')
+    .update({
+      email_enabled: bool(formData, 'email_enabled'),
+      email_from_name: str(formData, 'email_from_name') || null,
+      email_reply_to: replyTo || null,
+      route_payment_receipt: routes.payment_receipt,
+      route_expiry_warning: routes.expiry_warning,
+      route_disconnection_notice: routes.disconnection_notice,
+      route_bulk: routes.bulk,
+      ...emailFields,
+    })
+    .eq('company_id', company.id)
+
+  if (error) return { ok: false, error: 'Could not save: ' + error.message }
+
+  const after = await getSmsSettings(company.id)
+  if (before.emailEnabled !== after.emailEnabled) {
+    await logEvent({
+      type: 'email_master_switch',
+      details: 'Email ' + (after.emailEnabled ? 'enabled' : 'disabled') + ' for the company',
+      tag: '[messaging]',
+    })
+  }
+
+  revalidatePath('/dashboard/settings/sms')
+  revalidatePath('/dashboard/messages')
+  return { ok: true, message: 'Notification settings saved.' }
 }
 
 /**
@@ -213,15 +300,24 @@ export async function unpairSmsDevice(): Promise<SmsActionResult> {
 // Bulk messaging
 // ---------------------------------------------------------------------------
 
+export type ChannelCount = { channel: Channel; label: string; count: number }
+
 export type AudiencePreview = {
   matched: number
+  /** Customers who get at least one message. */
   sendable: number
+  /** Messages per channel — a customer on a `both` route counts on each. */
+  byChannel: ChannelCount[]
   optedOut: number
   /** Reason -> how many, for the "who will be skipped and why" panel. */
   skipped: { reason: string; count: number }[]
-  /** Seconds, at this company's throttle. */
+  /** Seconds, at the slowest channel's throttle. */
   estimatedSeconds: number
   audience: string
+  /** The route this preview was computed for, in words. */
+  routeLabel: string
+  /** Channels the route wants that this company cannot send on right now, with why. */
+  unavailable: { channel: Channel; reason: string }[]
   /**
    * Why `matched` is zero, filter by filter. Empty unless it is zero and at
    * least one filter is active — see lib/customer-filter.ts#explainNoMatch.
@@ -232,88 +328,256 @@ export type AudiencePreview = {
   characters: number
 }
 
-/**
- * Who a batch would reach, and who it would not.
- *
- * READ-ONLY AND SEPARATE FROM SENDING, deliberately. This is what the operator
- * confirms; sendBulkSms recomputes it from the same filters rather than
- * trusting a list of ids posted back from the browser, so a stale tab cannot
- * message people who have since opted out.
- */
-export async function previewAudience(filters: CustomerFilters, body: string) {
-  const { company } = await requirePermission('send_bulk_sms')
-
-  const [settings, customers, categories, plans] = await Promise.all([
-    getSmsSettings(company.id),
-    loadEnrichedCustomers(company.id),
-    listMiscCategories(company.id).catch(() => []),
-    listServicePlans(company.id).catch(() => []),
+async function filterNames(companyId: number): Promise<FilterNames> {
+  const [categories, plans] = await Promise.all([
+    listMiscCategories(companyId).catch(() => []),
+    listServicePlans(companyId).catch(() => []),
   ])
-
-  const matched = applyFilters(customers, filters)
-
-  // Opt-out is counted before the phone check, so a customer who both opted out
-  // and has no phone is reported once, under the reason that is actually theirs
-  // to change.
-  const optedOut = matched.filter((c) => c.sms_opted_out)
-  const eligible = matched.filter((c) => !c.sms_opted_out)
-
-  const { sendable, skipped } = summarisePhones(eligible, {
-    allowForeign: settings.allowForeign,
-  })
-
-  const byReason = new Map<string, number>()
-  if (optedOut.length > 0) byReason.set('Opted out of SMS', optedOut.length)
-  for (const s of skipped) byReason.set(s.reason, (byReason.get(s.reason) ?? 0) + 1)
-
-  const seg = countSegments(body)
-
-  const names: FilterNames = {
+  return {
     status: (s) => STATUS_LABELS[s],
     miscCategory: (id) => categories.find((c) => c.id === id)?.name,
     servicePlan: (id) => plans.find((p) => p.id === id)?.name,
     currency: (n) => CURRENCY_SYMBOL + n.toLocaleString(),
   }
+}
 
-  const preview: AudiencePreview = {
+/** The route a send uses: the operator's choice if one was made, else the company's bulk route. */
+function bulkRoute(requested: string | null | undefined, stored: Route, channelsAvailable: boolean): Route {
+  if (!channelsAvailable) return 'sms'
+  return requested ? toRoute(requested) : stored
+}
+
+function recipientBits(c: CustomerListRow) {
+  return {
+    id: c.id, phone: c.phone, email: c.email,
+    sms_opted_out: c.sms_opted_out, email_opted_out: c.email_opted_out,
+  }
+}
+
+/**
+ * Who a batch would reach, and who it would not — PER CHANNEL, by the route.
+ *
+ * READ-ONLY AND SEPARATE FROM SENDING, deliberately. This is what the operator
+ * confirms; sendBulkSms recomputes it from the same filters and the same route
+ * resolver rather than trusting a list of ids posted back from the browser, so
+ * a stale tab cannot message people who have since opted out.
+ */
+export async function previewAudience(
+  filters: CustomerFilters,
+  body: string,
+  route?: string
+): Promise<AudiencePreview> {
+  const { company } = await requirePermission('send_bulk_sms')
+
+  const [settings, customers, names] = await Promise.all([
+    getSmsSettings(company.id),
+    loadEnrichedCustomers(company.id),
+    filterNames(company.id),
+  ])
+  const readiness = await channelReadiness(company.id, settings)
+  const chosen = bulkRoute(route, settings.routes.bulk, settings.channelsAvailable)
+
+  const matched = applyFilters(customers, filters)
+
+  const perChannel: Record<Channel, number> = { sms: 0, email: 0 }
+  const byReason = new Map<string, number>()
+  let sendable = 0
+  let optedOut = 0
+
+  for (const c of matched) {
+    const r = resolveRoute({ route: chosen, customer: recipientBits(c), settings, ready: readiness })
+    if (r.targets.length > 0) {
+      sendable += 1
+      for (const t of r.targets) perChannel[t.channel] += 1
+      continue
+    }
+    if (r.skipped.some((s) => s.reason.startsWith('Opted out'))) optedOut += 1
+    const reason = describeSkip(r)
+    byReason.set(reason, (byReason.get(reason) ?? 0) + 1)
+  }
+
+  const seg = countSegments(body)
+  const used = channelsOf(chosen).filter((ch) => perChannel[ch] > 0)
+  // The slowest channel decides how long the run takes; SMS segments multiply
+  // its own share only.
+  const estimatedSeconds = Math.max(0, ...used.map((ch) =>
+    perChannel[ch] * adapterFor(ch).throttleSeconds(settings) * (ch === 'sms' ? Math.max(1, seg.segments) : 1)
+  ))
+
+  return {
     matched: matched.length,
-    sendable: sendable.length,
-    optedOut: optedOut.length,
+    sendable,
+    byChannel: CHANNELS.filter((ch) => channelsOf(chosen).includes(ch))
+      .map((ch) => ({ channel: ch, label: CHANNEL_LABELS[ch], count: perChannel[ch] })),
+    optedOut,
     skipped: [...byReason.entries()]
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count),
-    // Segments matter: a two-segment message takes two sends' worth of time and
-    // of the tenant's credit, so the estimate multiplies by them.
-    estimatedSeconds:
-      sendable.length * settings.throttleSeconds * Math.max(1, seg.segments),
+    estimatedSeconds,
     audience: describeFilters(filters, names),
+    routeLabel: chosen,
+    unavailable: channelsOf(chosen)
+      .filter((ch) => !readiness[ch].ready)
+      .map((ch) => ({ channel: ch, reason: (readiness[ch] as { reason: string }).reason })),
     emptyReasons: explainNoMatch(customers, filters, names),
     segments: seg.segments,
     encoding: seg.encoding,
     characters: seg.characters,
   }
+}
 
-  return preview
+export type SendBulkResult =
+  | { ok: true; batchId: number; queued: number; skipped: number; message: string }
+  | { ok: false; error: string }
+
+async function startBatch(opts: {
+  companyId: number
+  profile: { id: number; first_name: string | null; last_name: string | null; email: string }
+  body: string
+  audience: string
+  total: number
+  skipped: number
+}): Promise<{ id: number } | { error: string }> {
+  const { data, error } = await tenantClient()
+    .from('sms_batches')
+    .insert({
+      company_id: opts.companyId,
+      sent_by: opts.profile.id,
+      // Stamped, not joined. A staff member who leaves and is deleted must not
+      // erase who sent a message to 400 customers.
+      sent_by_name: displayName(opts.profile),
+      body: opts.body,
+      audience: opts.audience,
+      total: opts.total,
+      sent: 0,
+      failed: 0,
+      skipped: opts.skipped,
+    })
+    .select('id')
+    .single()
+  if (error || !data) return { error: 'Could not start the batch: ' + (error?.message ?? '') }
+  return { id: (data as { id: number }).id }
 }
 
 /**
- * Queues one message to a typed-in number: a technician, a supplier, the
- * operator's own phone to check the relay is alive.
+ * Queues a message to everyone the filters select, by the chosen route.
  *
- * Same permission, same gates and the same write path as a bulk send — this
- * goes through enqueueSms like everything else, so the master switch, the
- * paired device and the phone rules all still apply. What it skips is the
- * customer lookup: the number is the recipient, not a record.
+ * RECOMPUTES THE AUDIENCE. The browser sends the filters and the route, never
+ * a list of customer ids or channels: the confirmation screen and this
+ * function ask the same resolver the same question, so what was confirmed is
+ * what is queued, as of now.
  *
- * It still gets a batch row. A message to a number that is not a customer is
- * exactly the one someone will later ask about — "who texted that supplier
- * and what did they say" — and the batch list is where that answer lives.
+ * NOTHING IS SENT HERE. Rows go into the outbox and the dispatcher drains them
+ * at each channel's throttle.
  */
-export async function sendDirectSms(phone: string, body: string): Promise<SendBulkResult> {
+export async function sendBulkSms(
+  filters: CustomerFilters,
+  body: string,
+  route?: string,
+  subject?: string
+): Promise<SendBulkResult> {
   const { company, profile } = await requirePermission('send_bulk_sms')
 
   const caps = await getSchemaCapabilities()
-  if (!caps.sms) return { ok: false, error: 'SMS is not set up on this system yet.' }
+  if (!caps.sms) return { ok: false, error: 'Messaging is not set up on this system yet.' }
+
+  const text = body.trim()
+  if (!text) return { ok: false, error: 'The message is empty.' }
+  const unknown = unknownPlaceholders(text)
+  if (unknown.length > 0) return { ok: false, error: 'Unknown placeholder: ' + unknown.join(', ') }
+
+  const settings = await getSmsSettings(company.id)
+  const readiness = await channelReadiness(company.id, settings)
+  const chosen = bulkRoute(route, settings.routes.bulk, settings.channelsAvailable)
+
+  if (!channelsOf(chosen).some((ch) => readiness[ch].ready)) {
+    const first = readiness[channelsOf(chosen)[0]]
+    return { ok: false, error: first.ready ? 'Nothing can be sent right now.' : first.reason }
+  }
+
+  const emailSubject = (subject ?? '').trim()
+  if (channelsOf(chosen).includes('email') && readiness.email.ready && !emailSubject) {
+    return { ok: false, error: 'An email needs a subject line.' }
+  }
+
+  const preview = await previewAudience(filters, text, chosen)
+  if (preview.sendable === 0) {
+    return { ok: false, error: 'No one in this selection can be reached by ' + chosen.replace(/_/g, ' ') + '.' }
+  }
+
+  const customers = applyFilters(await loadEnrichedCustomers(company.id), filters)
+
+  // The batch row first. If it fails, nothing is queued — better than messages
+  // going out with no record of who sent them or why.
+  const batch = await startBatch({
+    companyId: company.id, profile, body: text, audience: preview.audience,
+    total: preview.sendable, skipped: preview.matched - preview.sendable,
+  })
+  if ('error' in batch) return { ok: false, error: batch.error }
+
+  let queued = 0
+  let skipped = 0
+  for (const c of customers) {
+    const result = await enqueueForRoute({
+      companyId: company.id,
+      kind: 'bulk',
+      settings,
+      readiness,
+      route: chosen,
+      customer: recipientBits(c),
+      values: {
+        '{{name}}': [c.first_name, c.last_name].filter(Boolean).join(' '),
+        '{{first_name}}': c.first_name ?? '',
+        '{{account}}': c.account_number ?? '',
+        '{{balance}}': formatCurrency(c.carried_balance ?? 0),
+        '{{expiry}}': c.radiusExpiryDate ?? '',
+        '{{company}}': company.name,
+      },
+      text: { sms: text, email: { subject: emailSubject, body: text } },
+      // Null: two different messages to one customer on one day is the
+      // operator's business, and deduping bulk would silently drop the second.
+      dedupeKey: null,
+      batchId: batch.id,
+    })
+    if (result.queued.length > 0) queued += 1
+    else skipped += 1
+  }
+
+  await tenantClient().from('sms_batches').update({ total: queued, skipped }).eq('id', batch.id)
+
+  await logEvent({
+    type: 'sms_bulk_sent',
+    details:
+      'Bulk message queued | batch=' + batch.id + ' | route=' + chosen +
+      ' | recipients=' + queued + ' | skipped=' + skipped + ' | audience=' + preview.audience,
+    tag: '[messaging]',
+  })
+
+  revalidatePath('/dashboard/messages')
+
+  return {
+    ok: true,
+    batchId: batch.id,
+    queued,
+    skipped,
+    message: queued + ' customer' + (queued === 1 ? '' : 's') + ' queued.',
+  }
+}
+
+/**
+ * Queues one message to a typed-in number OR email address: a technician, a
+ * supplier, the operator's own phone or inbox to check a channel is alive.
+ *
+ * Same permission, same gates and the same write path as a bulk send. What it
+ * skips is the customer lookup: the address is the recipient, not a record.
+ * It still gets a batch row, because a message to someone who is not a
+ * customer is exactly the one someone will later ask about.
+ */
+export async function sendDirectSms(to: string, body: string, subject?: string): Promise<SendBulkResult> {
+  const { company, profile } = await requirePermission('send_bulk_sms')
+
+  const caps = await getSchemaCapabilities()
+  if (!caps.sms) return { ok: false, error: 'Messaging is not set up on this system yet.' }
 
   const text = body.trim()
   if (!text) return { ok: false, error: 'The message is empty.' }
@@ -333,255 +597,109 @@ export async function sendDirectSms(phone: string, body: string): Promise<SendBu
     }
   }
 
-  const [settings, device] = await Promise.all([
-    getSmsSettings(company.id), getSmsDevice(company.id),
-  ])
+  const settings = await getSmsSettings(company.id)
+  const readiness = await channelReadiness(company.id, settings)
 
-  if (!canSend(settings, device)) {
-    return {
-      ok: false,
-      error: settings.enabled
-        ? 'No phone is paired for this company.'
-        : 'SMS is switched off for this company.',
+  // An address with an @ is an email; anything else is judged as a phone.
+  const raw = to.trim()
+  const channel: Channel = raw.includes('@') ? 'email' : 'sms'
+  let recipient: string
+  if (channel === 'email') {
+    recipient = raw.toLowerCase()
+    if (!isEmail(recipient)) return { ok: false, error: 'That is not a valid email address.' }
+    if (!(subject ?? '').trim()) return { ok: false, error: 'An email needs a subject line.' }
+  } else {
+    const e164 = sendablePhone(raw, { allowForeign: settings.allowForeign })
+    if (!e164) {
+      const kind = classifyPhone(raw).kind
+      return { ok: false, error: (kind === 'jamaica' ? 'That number cannot be sent to' : PHONE_SKIP_REASON[kind]) + '.' }
     }
+    recipient = e164
   }
 
-  const e164 = sendablePhone(phone, { allowForeign: settings.allowForeign })
-  if (!e164) {
-    const kind = classifyPhone(phone).kind
-    return {
-      ok: false,
-      error: kind === 'jamaica'
-        ? 'That number cannot be sent to.'
-        : PHONE_SKIP_REASON[kind] + '.',
-    }
-  }
+  const ready = readiness[channel]
+  if (!ready.ready) return { ok: false, error: ready.reason }
 
-  const audience = DIRECT_AUDIENCE_PREFIX + e164
+  const audience = DIRECT_AUDIENCE_PREFIX + (channel === 'sms' ? recipient : '') + (channel === 'email' ? recipient : '')
   const rendered = renderTemplate(text, { '{{company}}': company.name })
 
-  const db = tenantClient()
-  const { data: batchRow, error: batchError } = await db
-    .from('sms_batches')
-    .insert({
-      company_id: company.id,
-      sent_by: profile.id,
-      sent_by_name: displayName(profile),
-      body: text,
-      audience,
-      total: 1,
-      sent: 0,
-      failed: 0,
-      skipped: 0,
-    })
-    .select('id')
-    .single()
+  const batch = await startBatch({
+    companyId: company.id, profile, body: text, audience, total: 1, skipped: 0,
+  })
+  if ('error' in batch) return { ok: false, error: batch.error }
 
-  if (batchError || !batchRow) {
-    return { ok: false, error: 'Could not start the batch: ' + (batchError?.message ?? '') }
-  }
-
-  const batchId = (batchRow as { id: number }).id
-
-  const result = await enqueueSms({
+  const result = await enqueueMessage({
     companyId: company.id,
+    channel,
     kind: 'bulk',
-    settings,
-    device,
-    dedupeKey: null,
-    batchId,
+    customerId: null,
+    recipient,
+    subject: channel === 'email' ? renderTemplate((subject ?? '').trim(), { '{{company}}': company.name }) : null,
     body: rendered,
-    target: { customerId: null, phone: e164, values: {} },
+    dedupeKey: null,
+    batchId: batch.id,
   })
 
   if (!result.queued) {
-    await db.from('sms_batches').update({ total: 0, skipped: 1 }).eq('id', batchId)
+    await tenantClient().from('sms_batches').update({ total: 0, skipped: 1 }).eq('id', batch.id)
     return { ok: false, error: result.reason }
   }
 
   await logEvent({
     type: 'sms_direct_sent',
     details:
-      'Direct SMS queued | batch=' + batchId + ' | to=+' + e164 +
-      ' | by=' + displayName(profile),
-    tag: '[sms]',
+      'Direct ' + CHANNEL_LABELS[channel] + ' queued | batch=' + batch.id + ' | to=' +
+      (channel === 'sms' ? '+' : '') + recipient + ' | by=' + displayName(profile),
+    tag: '[messaging]',
   })
 
   revalidatePath('/dashboard/messages')
 
   return {
     ok: true,
-    batchId,
+    batchId: batch.id,
     queued: 1,
     skipped: 0,
-    message: 'Message to +' + e164 + ' queued.',
+    message: 'Message to ' + (channel === 'sms' ? '+' : '') + recipient + ' queued.',
   }
 }
 
-export type SendBulkResult =
-  | { ok: true; batchId: number; queued: number; skipped: number; message: string }
-  | { ok: false; error: string }
-
-/**
- * Queues a message to everyone the filters select.
- *
- * RECOMPUTES THE AUDIENCE. The browser sends the filters, never a list of
- * customer ids: a tab left open while somebody opted out, changed their number
- * or was deleted would otherwise send to a set that no longer exists. The
- * confirmation screen and this function ask lib/customer-filter.ts the same
- * question, so what was confirmed is what is queued, as of now.
- *
- * NOTHING IS SENT HERE. Rows go into sms_outbox and the dispatcher drains them
- * at the tenant's throttle. A server action that tried to deliver 400 messages
- * would hold a request open for forty minutes and lose the lot on a deploy.
- */
-export async function sendBulkSms(
-  filters: CustomerFilters,
-  body: string
-): Promise<SendBulkResult> {
-  const { company, profile } = await requirePermission('send_bulk_sms')
-
-  const caps = await getSchemaCapabilities()
-  if (!caps.sms) return { ok: false, error: 'SMS is not set up on this system yet.' }
-
-  const text = body.trim()
-  if (!text) return { ok: false, error: 'The message is empty.' }
-  if (unknownPlaceholders(text).length > 0) {
-    return {
-      ok: false,
-      error: 'Unknown placeholder: ' + unknownPlaceholders(text).join(', '),
-    }
-  }
-
-  const [settings, device] = await Promise.all([
-    getSmsSettings(company.id), getSmsDevice(company.id),
-  ])
-
-  if (!canSend(settings, device)) {
-    return {
-      ok: false,
-      error: settings.enabled
-        ? 'No phone is paired for this company.'
-        : 'SMS is switched off for this company.',
-    }
-  }
-
-  const preview = await previewAudience(filters, text)
-  if (preview.sendable === 0) {
-    return { ok: false, error: 'No one in this selection has a usable phone number.' }
-  }
-
-  const customers = applyFilters(await loadEnrichedCustomers(company.id), filters)
-
-  // The batch row first. If it fails, nothing is queued — better than messages
-  // going out with no record of who sent them or why.
-  const db = tenantClient()
-  const { data: batchRow, error: batchError } = await db
-    .from('sms_batches')
-    .insert({
-      company_id: company.id,
-      sent_by: profile.id,
-      // Stamped, not joined. A staff member who leaves and is deleted must not
-      // erase who sent a message to 400 customers — the same reasoning as the
-      // payment segment in migration 0018.
-      sent_by_name: displayName(profile),
-      body: text,
-      audience: preview.audience,
-      total: preview.sendable,
-      sent: 0,
-      failed: 0,
-      skipped: preview.matched - preview.sendable,
-    })
-    .select('id')
-    .single()
-
-  if (batchError || !batchRow) {
-    return { ok: false, error: 'Could not start the batch: ' + (batchError?.message ?? '') }
-  }
-
-  const batchId = (batchRow as { id: number }).id
-
-  let queued = 0
-  let skipped = 0
-  for (const c of customers) {
-    const result = await enqueueSms({
-      companyId: company.id,
-      kind: 'bulk',
-      settings,
-      device,
-      // Null: two different messages to one customer on one day is the
-      // operator's business, and deduping bulk would silently drop the second.
-      dedupeKey: null,
-      batchId,
-      body: renderTemplate(text, {
-        '{{name}}': [c.first_name, c.last_name].filter(Boolean).join(' '),
-        '{{first_name}}': c.first_name ?? '',
-        '{{account}}': c.account_number ?? '',
-        '{{balance}}': formatCurrency(c.carried_balance ?? 0),
-        '{{expiry}}': c.radiusExpiryDate ?? '',
-        '{{company}}': company.name,
-      }),
-      target: {
-        customerId: c.id,
-        phone: c.phone,
-        optedOut: c.sms_opted_out,
-        values: {},
-      },
-    })
-    if (result.queued) queued += 1
-    else skipped += 1
-  }
-
-  await db.from('sms_batches')
-    .update({ total: queued, skipped })
-    .eq('id', batchId)
-
-  await logEvent({
-    type: 'sms_bulk_sent',
-    details:
-      'Bulk SMS queued | batch=' + batchId +
-      ' | recipients=' + queued +
-      ' | skipped=' + skipped +
-      ' | audience=' + preview.audience,
-    tag: '[sms]',
-  })
-
-  revalidatePath('/dashboard/messages')
-
-  return {
-    ok: true,
-    batchId,
-    queued,
-    skipped,
-    message: queued + ' message' + (queued === 1 ? '' : 's') + ' queued.',
-  }
-}
-
-/** A customer's own choice, from their record. Outranks every company switch. */
-export async function setSmsOptOut(customerId: number, optedOut: boolean) {
+/** A customer's own choice, per channel, from their record. Outranks every company switch. */
+export async function setOptOut(customerId: number, channel: Channel, optedOut: boolean) {
   const { company } = await requirePermission('edit_customer')
 
   const caps = await getSchemaCapabilities()
-  if (!caps.sms) return { ok: false as const, error: 'SMS is not set up on this system yet.' }
+  if (!caps.sms) return { ok: false as const, error: 'Messaging is not set up on this system yet.' }
+  if (channel === 'email' && !caps.messaging) {
+    return { ok: false as const, error: 'Email needs migration 0022.' }
+  }
 
-  const db = tenantClient()
-  const { error } = await db
+  const patch: Record<string, unknown> = {}
+  patch[channel === 'email' ? 'email_opted_out' : 'sms_opted_out'] = optedOut
+  const { error } = await tenantClient()
     .from('customers')
-    .update({ sms_opted_out: optedOut })
+    .update(patch)
     .eq('company_id', company.id)
     .eq('id', customerId)
 
   if (error) return { ok: false as const, error: 'Could not save: ' + error.message }
 
   await logEvent({
-    type: 'sms_opt_out',
-    details: optedOut ? 'Customer opted out of SMS' : 'Customer opted back in to SMS',
+    type: channel === 'email' ? 'email_opt_out' : 'sms_opt_out',
+    details: optedOut
+      ? 'Customer opted out of ' + CHANNEL_LABELS[channel]
+      : 'Customer opted back in to ' + CHANNEL_LABELS[channel],
     customerId,
-    tag: '[sms]',
+    tag: '[messaging]',
   })
 
   revalidatePath('/dashboard/customers/' + customerId)
   return { ok: true as const }
+}
+
+/** The SMS opt-out under its original name, for the existing caller. */
+export async function setSmsOptOut(customerId: number, optedOut: boolean) {
+  return setOptOut(customerId, 'sms', optedOut)
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +718,7 @@ async function ownBatch(companyId: number, batchId: number) {
 }
 
 /**
- * Asks the relay what the phone did with every message in a batch that ISPMan
+ * Asks the providers what became of every message in a batch that ISPMan
  * still has as merely 'sent'.
  *
  * The dispatcher does this on its own for recent rows, a few dozen a tick; this
@@ -624,51 +742,37 @@ export async function checkBatchDelivery(batchId: number): Promise<BatchActionRe
   return {
     ok: true,
     message:
-      'Checked ' + r.checked + ': ' + r.delivered + ' delivered, ' + r.failed + ' failed on the phone, ' +
-      r.pending + ' still in progress' + (r.unknown ? ', ' + r.unknown + ' the relay could not answer for' : '') + '.',
+      'Checked ' + r.checked + ': ' + r.delivered + ' delivered, ' + r.failed + ' failed, ' +
+      r.pending + ' still in progress' + (r.unknown ? ', ' + r.unknown + ' the provider could not answer for' : '') + '.',
   }
 }
 
 /**
  * Re-queues a batch's failed messages — and only those.
  *
- * NEW ROWS, NOT THE OLD ONES REOPENED. The outbox id is the idempotency key the
- * relay is given (lib/sms/relay.ts#sendMessage), and the relay treats a
- * repeated id as the same message. That is exactly right for the dispatcher's
- * own retries, where a timeout may have hidden an acceptance — but it means a
- * row the relay already holds and marked failed would be REFUSED as a
- * duplicate if sent again under its own id. So each failed row is copied to a
- * fresh row, which gets a fresh id, and the original is marked cancelled with
- * a pointer to its replacement. A message that actually went out is not among
- * them: only status 'failed' is copied, and a delivered or sent row is neither.
- *
- * The copies carry no dedupe key, like every bulk row, so the unique index does
- * not stand in their way. The batch's total is unchanged: the retry sends
- * within the number that was queued, not on top of it.
+ * NEW ROWS, NOT THE OLD ONES REOPENED. The outbox id is the idempotency key
+ * every provider is given, and a provider treats a repeated id as the same
+ * message. That is exactly right for the dispatcher's own retries, where a
+ * timeout may have hidden an acceptance — but it means a row the provider
+ * already holds and marked failed would be REFUSED as a duplicate if sent
+ * again under its own id. So each failed row is copied to a fresh row, which
+ * gets a fresh id, and the original is marked cancelled with a pointer to its
+ * replacement. A message that actually went out is not among them: only
+ * status 'failed' is copied, and a delivered or sent row is neither.
  */
 export async function retryFailedInBatch(batchId: number): Promise<BatchActionResult> {
   const { company, profile } = await requirePermission('send_bulk_sms')
 
   const caps = await getSchemaCapabilities()
-  if (!caps.sms) return { ok: false, error: 'SMS is not set up on this system yet.' }
+  if (!caps.sms) return { ok: false, error: 'Messaging is not set up on this system yet.' }
 
   const batch = await ownBatch(company.id, batchId)
   if (!batch) return { ok: false, error: 'That batch does not exist.' }
 
-  const [settings, device] = await Promise.all([
-    getSmsSettings(company.id), getSmsDevice(company.id),
-  ])
-  if (!canSend(settings, device)) {
-    return {
-      ok: false,
-      error: settings.enabled ? 'No phone is paired for this company.' : 'SMS is switched off for this company.',
-    }
-  }
-
   const db = tenantClient()
   const { data: failedRows, error: readError } = await db
     .from('sms_outbox')
-    .select('id, customer_id, kind, phone, body')
+    .select('id, customer_id, kind, phone, body' + (caps.messaging ? ', channel, recipient, subject, attachment' : ''))
     .eq('company_id', company.id)
     .eq('batch_id', batchId)
     .eq('status', 'failed')
@@ -676,7 +780,10 @@ export async function retryFailedInBatch(batchId: number): Promise<BatchActionRe
 
   if (readError) return { ok: false, error: 'Could not read the batch: ' + readError.message }
 
-  const failed = (failedRows ?? []) as { id: number; customer_id: number | null; kind: string; phone: string; body: string }[]
+  const failed = (failedRows ?? []) as unknown as {
+    id: number; customer_id: number | null; kind: string; phone: string | null; body: string
+    channel?: string; recipient?: string; subject?: string | null; attachment?: string | null
+  }[]
   if (failed.length === 0) return { ok: false, error: 'Nothing in this batch is marked failed. Check delivery first.' }
 
   let requeued = 0
@@ -684,20 +791,24 @@ export async function retryFailedInBatch(batchId: number): Promise<BatchActionRe
     // Insert the copy first, then cancel the original. If the insert fails the
     // original stays 'failed' and can be retried again; the other order could
     // cancel a row and then lose its replacement.
+    const copyRow: Record<string, unknown> = {
+      company_id: company.id,
+      customer_id: row.customer_id,
+      batch_id: batchId,
+      kind: row.kind,
+      phone: row.phone,
+      body: row.body,
+      status: 'queued',
+      dedupe_key: null,
+    }
+    if (caps.messaging) {
+      copyRow.channel = row.channel ?? 'sms'
+      copyRow.recipient = row.recipient ?? row.phone
+      copyRow.subject = row.subject ?? null
+      copyRow.attachment = row.attachment ?? null
+    }
     const { data: copy, error: insertError } = await db
-      .from('sms_outbox')
-      .insert({
-        company_id: company.id,
-        customer_id: row.customer_id,
-        batch_id: batchId,
-        kind: row.kind,
-        phone: row.phone,
-        body: row.body,
-        status: 'queued',
-        dedupe_key: null,
-      })
-      .select('id')
-      .single()
+      .from('sms_outbox').insert(copyRow).select('id').single()
 
     if (insertError || !copy) continue
 
@@ -714,7 +825,7 @@ export async function retryFailedInBatch(batchId: number): Promise<BatchActionRe
     details:
       'Retried ' + requeued + ' failed message' + (requeued === 1 ? '' : 's') +
       ' of batch #' + batchId + ' | by=' + displayName(profile),
-    tag: '[sms]',
+    tag: '[messaging]',
   })
 
   revalidatePath('/dashboard/messages/' + batchId)

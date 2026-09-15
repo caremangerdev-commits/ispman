@@ -1,99 +1,218 @@
 import 'server-only'
 
-import { sendablePhone } from '@/lib/phone'
+import { toRoute, type Channel, type Route } from '@/lib/messaging/routes'
 import { getSchemaCapabilities } from '@/lib/schema'
 import {
-  DEFAULT_TEMPLATES, renderTemplate, type PlaceholderValues, type SmsKind,
+  DEFAULT_EMAIL_BODIES, DEFAULT_EMAIL_SUBJECTS, DEFAULT_TEMPLATES, type SmsKind,
 } from '@/lib/sms/templates'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 /**
- * Reading and writing the SMS tables.
+ * Reading the messaging tables: settings, the paired SMS device, batches and
+ * their rows.
  *
- * THE ENQUEUE FUNCTION AT THE BOTTOM IS THE ONLY WRITE PATH INTO sms_outbox.
- * Every rule about whether a customer may be messaged — the master switch, the
- * per-type toggle, a paired device, the opt-out, a usable phone number — is
- * decided there and nowhere else. A second insert written by hand somewhere
- * would bypass all five, which is the same reasoning that makes logEvent the
+ * THE ONLY WRITE PATH INTO THE OUTBOX IS lib/messaging/enqueue.ts, for every
+ * channel. Every rule about whether a customer may be messaged is decided
+ * there and nowhere else; a second insert written by hand somewhere would
+ * bypass all of them, which is the same reasoning that makes logEvent the
  * sole writer of the `log` table.
  */
 
-export type SmsSettings = {
-  /** settings.sms_enabled — the MASTER SWITCH. Off kills everything for the
-   *  tenant regardless of the per-type toggles. */
-  enabled: boolean
+export type NotifyKind = Exclude<SmsKind, 'bulk'>
+export type RoutedKind = SmsKind
+
+/**
+ * A company's messaging configuration, every channel.
+ *
+ * The switches are in two layers on purpose. A MASTER SWITCH PER CHANNEL
+ * (`smsEnabled`, `emailEnabled`) is what an owner reaches for when a SIM
+ * starts being flagged or a mailbox starts bouncing; a SWITCH PER KIND
+ * (`paymentReceipt`, ...) says whether that message is sent at all; and a
+ * ROUTE PER KIND says by which channel, and what to do when a customer could
+ * be reached both ways. The route is the company's decision — see
+ * lib/messaging/routes.ts — and nothing here decides it for them.
+ */
+export type MessagingSettings = {
+  /** settings.sms_enabled — the SMS master switch. */
+  smsEnabled: boolean
+  /** settings.email_enabled — the email master switch (0007, gating since 0022). */
+  emailEnabled: boolean
   paymentReceipt: boolean
   expiryWarning: boolean
   disconnection: boolean
-  templates: Record<Exclude<SmsKind, 'bulk'>, string>
+  routes: Record<RoutedKind, Route>
+  smsTemplates: Record<NotifyKind, string>
+  emailTemplates: Record<NotifyKind, { subject: string; body: string }>
   expiryWarningDays: number
   throttleSeconds: number
   allowForeign: boolean
+  emailFromName: string | null
+  emailReplyTo: string | null
+  emailFromDomain: string | null
+  emailFromDomainVerified: boolean
+  /** For the email From header and reply-to fallbacks. */
+  companyName: string
+  companyEmail: string | null
+  /** Whether 0022 is applied, so a caller can tell "SMS only" from "chose SMS". */
+  channelsAvailable: boolean
+}
+
+/** Kept as a name: the SMS settings form and the SMS actions still say it. */
+export type SmsSettings = MessagingSettings
+
+const DEFAULT_ROUTES: Record<RoutedKind, Route> = {
+  payment_receipt: 'sms', expiry_warning: 'sms', disconnection_notice: 'sms', bulk: 'sms',
+}
+
+const DEFAULT_EMAIL_TEMPLATES: Record<NotifyKind, { subject: string; body: string }> = {
+  payment_receipt: { subject: DEFAULT_EMAIL_SUBJECTS.payment_receipt, body: DEFAULT_EMAIL_BODIES.payment_receipt },
+  expiry_warning: { subject: DEFAULT_EMAIL_SUBJECTS.expiry_warning, body: DEFAULT_EMAIL_BODIES.expiry_warning },
+  disconnection_notice: { subject: DEFAULT_EMAIL_SUBJECTS.disconnection_notice, body: DEFAULT_EMAIL_BODIES.disconnection_notice },
 }
 
 /** What a tenant looks like before they have configured anything. */
-export const SMS_SETTINGS_OFF: SmsSettings = {
-  enabled: false,
+export const SMS_SETTINGS_OFF: MessagingSettings = {
+  smsEnabled: false,
+  emailEnabled: false,
   paymentReceipt: false,
   expiryWarning: false,
   disconnection: false,
-  templates: DEFAULT_TEMPLATES,
+  routes: DEFAULT_ROUTES,
+  smsTemplates: DEFAULT_TEMPLATES,
+  emailTemplates: DEFAULT_EMAIL_TEMPLATES,
   expiryWarningDays: 3,
   throttleSeconds: 6,
   allowForeign: false,
+  emailFromName: null,
+  emailReplyTo: null,
+  emailFromDomain: null,
+  emailFromDomainVerified: false,
+  companyName: '',
+  companyEmail: null,
+  channelsAvailable: false,
 }
 
-const SETTING_COLS =
-  'sms_enabled, sms_payment_receipt_enabled, sms_expiry_warning_enabled, ' +
-  'sms_disconnection_enabled, sms_payment_receipt_template, ' +
+// 0021's columns. The per-kind switches are selected under whichever name the
+// schema has: sms_* before 0022, notify_* after — see the rename in 0022.
+const BASE_COLS =
+  'sms_enabled, sms_payment_receipt_template, ' +
   'sms_expiry_warning_template, sms_disconnection_template, ' +
   'sms_expiry_warning_days, sms_throttle_seconds, sms_allow_foreign'
+const SWITCH_COLS_0021 =
+  'sms_payment_receipt_enabled, sms_expiry_warning_enabled, sms_disconnection_enabled'
+const SWITCH_COLS_0022 =
+  'notify_payment_receipt_enabled, notify_expiry_warning_enabled, notify_disconnection_enabled'
+const MESSAGING_COLS =
+  'email_enabled, email_from_name, email_reply_to, email_from_domain, email_from_domain_verified, ' +
+  'route_payment_receipt, route_expiry_warning, route_disconnection_notice, route_bulk, ' +
+  'email_payment_receipt_subject, email_payment_receipt_body, ' +
+  'email_expiry_warning_subject, email_expiry_warning_body, ' +
+  'email_disconnection_subject, email_disconnection_body'
 
 type SettingRow = {
   sms_enabled: boolean | null
-  sms_payment_receipt_enabled: boolean | null
-  sms_expiry_warning_enabled: boolean | null
-  sms_disconnection_enabled: boolean | null
+  sms_payment_receipt_enabled?: boolean | null
+  sms_expiry_warning_enabled?: boolean | null
+  sms_disconnection_enabled?: boolean | null
+  notify_payment_receipt_enabled?: boolean | null
+  notify_expiry_warning_enabled?: boolean | null
+  notify_disconnection_enabled?: boolean | null
   sms_payment_receipt_template: string | null
   sms_expiry_warning_template: string | null
   sms_disconnection_template: string | null
   sms_expiry_warning_days: number | null
   sms_throttle_seconds: number | null
   sms_allow_foreign: boolean | null
+  email_enabled?: boolean | null
+  email_from_name?: string | null
+  email_reply_to?: string | null
+  email_from_domain?: string | null
+  email_from_domain_verified?: boolean | null
+  route_payment_receipt?: string | null
+  route_expiry_warning?: string | null
+  route_disconnection_notice?: string | null
+  route_bulk?: string | null
+  email_payment_receipt_subject?: string | null
+  email_payment_receipt_body?: string | null
+  email_expiry_warning_subject?: string | null
+  email_expiry_warning_body?: string | null
+  email_disconnection_subject?: string | null
+  email_disconnection_body?: string | null
 }
 
-function toSettings(s: SettingRow | null): SmsSettings {
+function toSettings(
+  s: SettingRow | null,
+  company: { name: string; email: string | null },
+  channelsAvailable: boolean
+): MessagingSettings {
   return {
-    enabled: Boolean(s?.sms_enabled),
-    paymentReceipt: Boolean(s?.sms_payment_receipt_enabled),
-    expiryWarning: Boolean(s?.sms_expiry_warning_enabled),
-    disconnection: Boolean(s?.sms_disconnection_enabled),
+    smsEnabled: Boolean(s?.sms_enabled),
+    emailEnabled: channelsAvailable && Boolean(s?.email_enabled),
+    paymentReceipt: Boolean(s?.notify_payment_receipt_enabled ?? s?.sms_payment_receipt_enabled),
+    expiryWarning: Boolean(s?.notify_expiry_warning_enabled ?? s?.sms_expiry_warning_enabled),
+    disconnection: Boolean(s?.notify_disconnection_enabled ?? s?.sms_disconnection_enabled),
+    routes: {
+      payment_receipt: toRoute(s?.route_payment_receipt),
+      expiry_warning: toRoute(s?.route_expiry_warning),
+      disconnection_notice: toRoute(s?.route_disconnection_notice),
+      bulk: toRoute(s?.route_bulk),
+    },
     // A NULL TEMPLATE MEANS "use the built-in", not "send an empty message".
     // A company that switches a type on without ever opening the template box
     // still gets a sensible message.
-    templates: {
+    smsTemplates: {
       payment_receipt: s?.sms_payment_receipt_template || DEFAULT_TEMPLATES.payment_receipt,
       expiry_warning: s?.sms_expiry_warning_template || DEFAULT_TEMPLATES.expiry_warning,
       disconnection_notice:
         s?.sms_disconnection_template || DEFAULT_TEMPLATES.disconnection_notice,
     },
+    emailTemplates: {
+      payment_receipt: {
+        subject: s?.email_payment_receipt_subject || DEFAULT_EMAIL_SUBJECTS.payment_receipt,
+        body: s?.email_payment_receipt_body || DEFAULT_EMAIL_BODIES.payment_receipt,
+      },
+      expiry_warning: {
+        subject: s?.email_expiry_warning_subject || DEFAULT_EMAIL_SUBJECTS.expiry_warning,
+        body: s?.email_expiry_warning_body || DEFAULT_EMAIL_BODIES.expiry_warning,
+      },
+      disconnection_notice: {
+        subject: s?.email_disconnection_subject || DEFAULT_EMAIL_SUBJECTS.disconnection_notice,
+        body: s?.email_disconnection_body || DEFAULT_EMAIL_BODIES.disconnection_notice,
+      },
+    },
     expiryWarningDays: Number(s?.sms_expiry_warning_days ?? 3),
     throttleSeconds: Number(s?.sms_throttle_seconds ?? 6),
     allowForeign: Boolean(s?.sms_allow_foreign),
+    emailFromName: s?.email_from_name || null,
+    emailReplyTo: s?.email_reply_to || null,
+    emailFromDomain: s?.email_from_domain || null,
+    emailFromDomainVerified: Boolean(s?.email_from_domain_verified),
+    companyName: company.name,
+    companyEmail: company.email,
+    channelsAvailable,
   }
 }
 
-export async function getSmsSettings(companyId: number): Promise<SmsSettings> {
+export async function getSmsSettings(companyId: number): Promise<MessagingSettings> {
   const caps = await getSchemaCapabilities()
   if (!caps.sms) return SMS_SETTINGS_OFF
 
-  const db = tenantClient()
-  const { data, error } = await db
-    .from('settings').select(SETTING_COLS).eq('company_id', companyId).maybeSingle()
+  const cols = BASE_COLS + ', ' +
+    (caps.messaging ? SWITCH_COLS_0022 + ', ' + MESSAGING_COLS : SWITCH_COLS_0021)
 
-  if (error) throw new Error('Failed to load SMS settings: ' + error.message)
-  return toSettings(data as unknown as SettingRow | null)
+  const db = tenantClient()
+  const [{ data, error }, { data: co }] = await Promise.all([
+    db.from('settings').select(cols).eq('company_id', companyId).maybeSingle(),
+    db.from('companies').select('name, email').eq('id', companyId).maybeSingle(),
+  ])
+
+  if (error) throw new Error('Failed to load messaging settings: ' + error.message)
+  const company = (co as { name: string; email: string | null } | null) ?? { name: '', email: null }
+  return toSettings(data as unknown as SettingRow | null, company, caps.messaging)
 }
+
+/** getSmsSettings under its channel-neutral name. Same function. */
+export const getMessagingSettings = getSmsSettings
 
 export type SmsDevice = {
   companyId: number
@@ -181,122 +300,13 @@ export function isDirectAudience(audience: string | null | undefined): boolean {
   return (audience ?? '').startsWith(DIRECT_AUDIENCE_PREFIX)
 }
 
-/** Whether the tenant could send anything at all right now. */
+/** Whether the tenant could send SMS at all right now. Email readiness is the email adapter's. */
 export function canSend(settings: SmsSettings, device: SmsDevice | null): boolean {
-  return settings.enabled && Boolean(device?.apiUsername && device?.apiPassword)
+  return settings.smsEnabled && Boolean(device?.apiUsername && device?.apiPassword)
 }
 
-// ---------------------------------------------------------------------------
-// Enqueue — the only write path into sms_outbox
-// ---------------------------------------------------------------------------
-
-export type EnqueueTarget = {
-  customerId: number | null
-  phone: string | null
-  /** Migration 0021. Undefined reads as "not opted out". */
-  optedOut?: boolean
-  values: PlaceholderValues
-}
-
-export type EnqueueOutcome =
-  | { queued: true; id: number }
-  | { queued: false; reason: string }
-
-/**
- * Queues one message, or explains why it did not.
- *
- * THE FIVE GATES, in the order they are cheapest to check:
- *   1. the migration is applied at all
- *   2. the master switch (settings.sms_enabled) is on
- *   3. a device is paired with usable credentials
- *   4. the customer has not opted out
- *   5. the customer has a phone this app is willing to text
- *
- * `dedupeKey` is what makes "no customer gets a message twice for the same
- * event" a guarantee: the unique index on (company_id, dedupe_key) rejects the
- * second insert, so a re-run of the daily sweep or a double-submitted form
- * cannot produce a second message. A rejected duplicate is NOT an error — it is
- * the mechanism working — so it comes back as `queued: false` with a reason,
- * and callers must not treat it as a failure.
- */
-export async function enqueueSms(opts: {
-  companyId: number
-  kind: SmsKind
-  target: EnqueueTarget
-  settings: SmsSettings
-  device: SmsDevice | null
-  /** Null for bulk, where two messages to one customer in a day is the
-   *  operator's business and not a bug. */
-  dedupeKey: string | null
-  batchId?: number | null
-  /** Overrides the template. Used by the messaging page, which composes its own
-   *  body rather than reading one from settings. */
-  body?: string
-}): Promise<EnqueueOutcome> {
-  const { companyId, kind, target, settings, device, dedupeKey } = opts
-
-  const caps = await getSchemaCapabilities()
-  if (!caps.sms) return { queued: false, reason: 'SMS is not set up on this system.' }
-
-  if (!settings.enabled) return { queued: false, reason: 'SMS is switched off for this company.' }
-
-  if (!device?.apiUsername || !device?.apiPassword) {
-    return { queued: false, reason: 'No phone is paired.' }
-  }
-
-  // The per-type switch. Bulk has no toggle of its own: sending it is already
-  // gated by the send_bulk_sms permission and a confirmation screen, and a
-  // manager who has been shown exactly who will receive a message has made a
-  // more deliberate decision than any checkbox represents.
-  if (kind === 'payment_receipt' && !settings.paymentReceipt) {
-    return { queued: false, reason: 'Payment receipt messages are off.' }
-  }
-  if (kind === 'expiry_warning' && !settings.expiryWarning) {
-    return { queued: false, reason: 'Expiry warning messages are off.' }
-  }
-  if (kind === 'disconnection_notice' && !settings.disconnection) {
-    return { queued: false, reason: 'Disconnection notices are off.' }
-  }
-
-  if (target.optedOut) return { queued: false, reason: 'Customer has opted out of SMS.' }
-
-  const phone = sendablePhone(target.phone, { allowForeign: settings.allowForeign })
-  if (!phone) return { queued: false, reason: 'No usable phone number.' }
-
-  const body = opts.body ?? renderTemplate(
-    settings.templates[kind as Exclude<SmsKind, 'bulk'>] ?? '',
-    target.values
-  )
-  if (!body.trim()) return { queued: false, reason: 'The message is empty.' }
-
-  const db = tenantClient()
-  const { data, error } = await db
-    .from('sms_outbox')
-    .insert({
-      company_id: companyId,
-      customer_id: target.customerId,
-      batch_id: opts.batchId ?? null,
-      kind,
-      phone,
-      body,
-      status: 'queued',
-      dedupe_key: dedupeKey,
-    })
-    .select('id')
-    .maybeSingle()
-
-  if (error) {
-    // 23505 is the unique index on dedupe_key doing its job. Reported as a
-    // skip, not an error: the message was already queued, which is the correct
-    // outcome and not something for a caller to retry or surface as a fault.
-    if (error.code === '23505') {
-      return { queued: false, reason: 'Already queued for this event.' }
-    }
-    return { queued: false, reason: 'Could not queue the message: ' + error.message }
-  }
-
-  return { queued: true, id: (data as { id: number }).id }
-}
+// Enqueue lives in lib/messaging/enqueue.ts — the only write path into the
+// outbox, for every channel.
 
 // ---------------------------------------------------------------------------
 // Batch history
@@ -372,7 +382,10 @@ export async function listSmsBatches(
 export type SmsOutboxRow = {
   id: number
   customerId: number | null
-  phone: string
+  channel: Channel
+  /** The address on the wire: E.164 for SMS, an address for email. */
+  recipient: string
+  subject: string | null
   status: string
   attempts: number
   error: string | null
@@ -385,10 +398,14 @@ export async function getSmsBatchMessages(
   companyId: number,
   batchId: number
 ): Promise<SmsOutboxRow[]> {
+  const caps = await getSchemaCapabilities()
   const db = tenantClient()
   const { data, error } = await db
     .from('sms_outbox')
-    .select('id, customer_id, phone, status, attempts, error, created_at, sent_at')
+    .select(
+      'id, customer_id, phone, status, attempts, error, created_at, sent_at' +
+      (caps.messaging ? ', channel, recipient, subject' : '')
+    )
     .eq('company_id', companyId)
     .eq('batch_id', batchId)
     .order('id', { ascending: true })
@@ -399,7 +416,10 @@ export async function getSmsBatchMessages(
     const m = r as unknown as {
       id: number
       customer_id: number | null
-      phone: string
+      phone: string | null
+      channel?: string
+      recipient?: string
+      subject?: string | null
       status: string
       attempts: number
       error: string | null
@@ -409,7 +429,9 @@ export async function getSmsBatchMessages(
     return {
       id: m.id,
       customerId: m.customer_id,
-      phone: m.phone,
+      channel: (m.channel === 'email' ? 'email' : 'sms') as Channel,
+      recipient: m.recipient ?? m.phone ?? '',
+      subject: m.subject ?? null,
       status: m.status,
       attempts: m.attempts,
       error: m.error,

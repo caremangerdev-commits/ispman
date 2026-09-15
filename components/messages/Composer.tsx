@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertTriangle, Clock, Filter, Globe, Phone, Send, Users } from 'lucide-react'
+import { AlertTriangle, AtSign, Clock, Filter, Globe, Send, Users } from 'lucide-react'
 import { useState, useTransition } from 'react'
 
 import {
@@ -8,6 +8,10 @@ import {
 } from '@/app/actions/sms'
 import type { CustomerFilters } from '@/lib/customer-filter'
 import { NO_FILTERS } from '@/lib/customer-filter'
+import { isEmail } from '@/lib/email'
+import {
+  CHANNEL_LABELS, ROUTE_LABELS, ROUTES, routeUses, type Channel, type Route,
+} from '@/lib/messaging/routes'
 import { classifyPhone, PHONE_SKIP_REASON } from '@/lib/phone'
 import {
   DEFAULT_TEMPLATES, KIND_LABELS, PLACEHOLDERS, countSegments, customerPlaceholders,
@@ -28,10 +32,10 @@ export type Option = { id: number; name: string }
  * `all` and `filters` are the same server call with different inputs — every
  * filter empty IS "everyone" — but they are separate choices here because
  * "clear every box and know that empty means all" is not a thing to work out
- * during an outage. `number` is a different call: one typed-in phone, no
- * customer record behind it.
+ * during an outage. `direct` is a different call: one typed-in number or
+ * address, no customer record behind it.
  */
-type Audience = 'all' | 'filters' | 'number'
+type Audience = 'all' | 'filters' | 'direct'
 
 /** "about 4 minutes" — a duration a person can plan around. */
 function humanise(seconds: number): string {
@@ -46,7 +50,8 @@ function humanise(seconds: number): string {
 
 export function Composer({
   miscCategories, servicePlans, addresses, accessPoints, cutOffDates,
-  hasBothConnectionTypes, templates, allowForeign, canSendNow, blockedReason,
+  hasBothConnectionTypes, templates, allowForeign, defaultRoute, channelsAvailable,
+  readyChannels, canSendNow, blockedReason,
 }: {
   miscCategories: Option[]
   servicePlans: Option[]
@@ -58,12 +63,20 @@ export function Composer({
   /** The company's overseas-sending switch, so a typed number is judged by the
    *  same rule the server will apply. */
   allowForeign: boolean
+  /** The company's route for messages from this page, preselected. */
+  defaultRoute: Route
+  /** False before migration 0022: SMS is the only channel and no choice is offered. */
+  channelsAvailable: boolean
+  /** Channels this company can send on right now. */
+  readyChannels: Channel[]
   canSendNow: boolean
   blockedReason: string | null
 }) {
   const [audience, setAudience] = useState<Audience>('all')
   const [filters, setFilters] = useState<CustomerFilters>(NO_FILTERS)
-  const [phone, setPhone] = useState('')
+  const [route, setRoute] = useState<Route>(channelsAvailable ? defaultRoute : 'sms')
+  const [to, setTo] = useState('')
+  const [subject, setSubject] = useState('')
   const [body, setBody] = useState('')
   const [preview, setPreview] = useState<AudiencePreview | null>(null)
   const [result, setResult] = useState<string | null>(null)
@@ -72,22 +85,34 @@ export function Composer({
 
   const seg = countSegments(body)
   const unknown = unknownPlaceholders(body)
-  const needsCustomer = audience === 'number' ? customerPlaceholders(body) : []
+  const needsCustomer = audience === 'direct' ? customerPlaceholders(body) : []
 
-  // The same classification the server runs, so what the button says it will
-  // send to is what sendDirectSms will accept.
-  const verdict = classifyPhone(phone)
-  const phoneUsable =
-    verdict.kind === 'jamaica' || (verdict.kind === 'foreign' && allowForeign)
-  const phoneProblem =
-    phone.trim() === '' ? null
-      : phoneUsable ? null
-        : verdict.kind === 'jamaica' ? null
-          : PHONE_SKIP_REASON[verdict.kind]
+  // A typed-in address: an @ makes it an email, anything else is judged as a
+  // phone — the same split the server makes.
+  const directIsEmail = to.includes('@')
+  const verdict = classifyPhone(to)
+  const phoneUsable = verdict.kind === 'jamaica' || (verdict.kind === 'foreign' && allowForeign)
+  const directChannel: Channel = directIsEmail ? 'email' : 'sms'
+  const directUsable = directIsEmail
+    ? isEmail(to.trim()) && readyChannels.includes('email')
+    : phoneUsable && readyChannels.includes('sms')
+  const directProblem =
+    to.trim() === '' ? null
+      : directIsEmail
+        ? !isEmail(to.trim()) ? 'That is not a valid email address'
+          : !readyChannels.includes('email') ? 'Email is not available for this company' : null
+        : !readyChannels.includes('sms') ? 'SMS is not available for this company'
+          : phoneUsable ? null
+            : verdict.kind === 'jamaica' ? null
+              : PHONE_SKIP_REASON[verdict.kind]
 
-  // ANY change to the audience or the message invalidates a preview that was
-  // already confirmed. Leaving a stale count on screen next to a Send button
-  // is how somebody messages the wrong 400 people.
+  // Whether the message needs a subject: an email route on a customer send,
+  // or a typed-in email address.
+  const wantsSubject = audience === 'direct' ? directIsEmail : channelsAvailable && routeUses(route, 'email')
+
+  // ANY change to the audience, the route or the message invalidates a preview
+  // that was already confirmed. Leaving a stale count on screen next to a Send
+  // button is how somebody messages the wrong 400 people.
   const patch = (p: Partial<CustomerFilters>) => {
     setFilters({ ...filters, ...p })
     setPreview(null)
@@ -102,15 +127,13 @@ export function Composer({
     if (next === 'all') setFilters(NO_FILTERS)
   }
 
-  // Everyone is a filter set with nothing in it. Kept as one call so the
-  // server never has a second idea of what "all customers" means.
   const effectiveFilters = audience === 'all' ? NO_FILTERS : filters
 
   function check() {
     setError(null)
     startTransition(async () => {
       try {
-        setPreview(await previewAudience(effectiveFilters, body))
+        setPreview(await previewAudience(effectiveFilters, body, route))
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not work out who this would go to.')
       }
@@ -120,15 +143,16 @@ export function Composer({
   function send() {
     setError(null)
     startTransition(async () => {
-      const res = audience === 'number'
-        ? await sendDirectSms(phone, body)
-        : await sendBulkSms(effectiveFilters, body)
+      const res = audience === 'direct'
+        ? await sendDirectSms(to, body, subject)
+        : await sendBulkSms(effectiveFilters, body, route, subject)
       if (res.ok) {
         setResult(res.message)
         setPreview(null)
         setBody('')
+        setSubject('')
         setFilters(NO_FILTERS)
-        setPhone('')
+        setTo('')
       } else {
         setError(res.error)
       }
@@ -138,7 +162,7 @@ export function Composer({
   const num = (v: number | null) => (v === null ? '' : String(v))
   const toNum = (v: string) => (v.trim() === '' ? null : Number(v))
 
-  const messageReady = Boolean(body.trim()) && unknown.length === 0
+  const messageReady = Boolean(body.trim()) && unknown.length === 0 && (!wantsSubject || Boolean(subject.trim()))
 
   const audienceChoice = (
     value: Audience, Icon: typeof Users, title: string, hint: string
@@ -198,26 +222,37 @@ export function Composer({
         <div className="flex flex-col gap-2 sm:flex-row">
           {audienceChoice(
             'all', Globe, 'All customers',
-            'Everyone with a phone number this system can text.'
+            'Everyone this company can reach.'
           )}
           {audienceChoice(
             'filters', Filter, 'Some customers',
             'Pick them by access point, address, status or plan.'
           )}
           {audienceChoice(
-            'number', Phone, 'One phone number',
+            'direct', AtSign, channelsAvailable ? 'One number or email' : 'One phone number',
             'A technician, a supplier, or your own phone to test.'
           )}
         </div>
+
+        {audience !== 'direct' && channelsAvailable ? (
+          // THE COMPANY'S CHOICE, preselected from its settings and changeable
+          // per send. The preview says how many each channel reaches.
+          <div className="border-t border-gray-800 pt-3">
+            <label htmlFor="f-route" className={label}>Send by</label>
+            <select
+              id="f-route" className={input + ' mt-1 max-w-md'}
+              value={route}
+              onChange={(e) => { setRoute(e.target.value as Route); setPreview(null) }}
+            >
+              {ROUTES.map((r) => <option key={r} value={r}>{ROUTE_LABELS[r]}</option>)}
+            </select>
+          </div>
+        ) : null}
 
         {audience === 'filters' ? (
           // The same filters as the customer list, from the same module. A
           // selection made here means exactly what it means there.
           <div className="grid gap-3 border-t border-gray-800 pt-3 sm:grid-cols-2 lg:grid-cols-3">
-            {/* The AP outage case first: everyone behind one tower loses
-                service at once, and they are exactly who should be told.
-                Hidden when no customer has one recorded — and then the
-                address filter is the nearest thing. */}
             {accessPoints.length > 0 ? (
               <div>
                 <label htmlFor="f-ap" className={label}>Access point</label>
@@ -364,27 +399,31 @@ export function Composer({
           </div>
         ) : null}
 
-        {audience === 'number' ? (
+        {audience === 'direct' ? (
           <div className="border-t border-gray-800 pt-3">
-            <label htmlFor="d-phone" className={label}>Phone number</label>
+            <label htmlFor="d-to" className={label}>
+              {channelsAvailable ? 'Phone number or email address' : 'Phone number'}
+            </label>
             <input
-              id="d-phone" type="tel" inputMode="tel" autoComplete="off"
-              className={input + ' mt-1 max-w-xs font-mono'}
-              placeholder="876-555-1234"
-              value={phone}
-              onChange={(e) => { setPhone(e.target.value); setError(null) }}
+              id="d-to" type="text" inputMode={channelsAvailable ? 'email' : 'tel'} autoComplete="off"
+              className={input + ' mt-1 max-w-sm font-mono'}
+              placeholder={channelsAvailable ? '876-555-1234 or name@example.com' : '876-555-1234'}
+              value={to}
+              onChange={(e) => { setTo(e.target.value); setError(null) }}
             />
-            {phoneProblem ? (
-              <p className="mt-1 text-xs text-amber-300/90">{phoneProblem}.</p>
-            ) : phoneUsable && verdict.e164 ? (
+            {directProblem ? (
+              <p className="mt-1 text-xs text-amber-300/90">{directProblem}.</p>
+            ) : directUsable ? (
               <p className="mt-1 text-xs text-gray-500">
-                Will be sent to <span className="font-mono text-gray-300">+{verdict.e164}</span>
-                {verdict.recovered ? ' — the first of the two numbers you typed' : ''}.
+                Will be sent by {CHANNEL_LABELS[directChannel]} to{' '}
+                <span className="font-mono text-gray-300">
+                  {directIsEmail ? to.trim().toLowerCase() : '+' + verdict.e164}
+                </span>
+                {!directIsEmail && verdict.recovered ? ' — the first of the two numbers you typed' : ''}.
               </p>
             ) : (
               <p className="mt-1 text-[11px] text-gray-600">
-                A Jamaican number{allowForeign ? ', or an overseas one' : ''}. Not looked up
-                against your customers — it goes to exactly this number.
+                Not looked up against your customers — it goes to exactly this address.
               </p>
             )}
           </div>
@@ -412,12 +451,27 @@ export function Composer({
           </div>
         </div>
 
+        {wantsSubject ? (
+          <div>
+            <label htmlFor="m-subject" className={label}>Email subject</label>
+            <input
+              id="m-subject" className={input + ' mt-1'}
+              placeholder="Service interruption tonight"
+              value={subject}
+              onChange={(e) => { setSubject(e.target.value); setPreview(null) }}
+            />
+            <p className="mt-1 text-[11px] text-gray-600">
+              Only the email gets a subject. The message below is the text of both.
+            </p>
+          </div>
+        ) : null}
+
         <textarea
           rows={4}
           value={body}
           onChange={(e) => { setBody(e.target.value); setPreview(null) }}
           placeholder={
-            audience === 'number'
+            audience === 'direct'
               ? 'Type your message.'
               : 'Type your message. Use {{first_name}} to personalise it.'
           }
@@ -427,11 +481,11 @@ export function Composer({
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
           <span className="text-gray-600">
             {seg.characters} characters · {seg.segments} SMS
-            {audience === 'number' ? '' : ' per customer'}
+            {audience === 'direct' ? '' : ' per customer'}
             {seg.encoding === 'UCS2' ? ' · unicode (70 per SMS)' : ''}
           </span>
           <span className="text-gray-600">
-            {audience === 'number'
+            {audience === 'direct'
               ? '{{company}}'
               : Object.keys(PLACEHOLDERS).slice(0, 4).join('  ')}
           </span>
@@ -447,15 +501,15 @@ export function Composer({
         {needsCustomer.length > 0 ? (
           <p className="rounded-lg bg-amber-950/30 px-3 py-2 text-xs text-amber-300/90">
             {needsCustomer.join(', ')} can only be filled in from a customer record, and a
-            typed-in number has none. Remove it, or choose a customer audience.
+            typed-in address has none. Remove it, or choose a customer audience.
           </p>
         ) : null}
 
         {seg.encoding === 'UCS2' ? (
           <p className="rounded-lg bg-amber-950/30 px-3 py-2 text-xs text-amber-300/90">
             This contains a character outside the standard SMS set — usually a curly
-            apostrophe pasted from Word. It cuts each message from 160 characters to 70
-            and will cost more to send.
+            apostrophe pasted from Word. It cuts each SMS from 160 characters to 70
+            and will cost more to send. Email is unaffected.
           </p>
         ) : null}
       </section>
@@ -464,15 +518,15 @@ export function Composer({
       {/* Confirm. NOTHING SENDS until this has been seen.                  */}
       {/* ---------------------------------------------------------------- */}
       <section className="space-y-3 rounded-xl border border-gray-800 bg-gray-900 p-4">
-        {audience === 'number' ? (
-          // One number needs no headcount: the recipient is already on screen,
-          // normalised, and the button repeats it. That IS the confirmation.
+        {audience === 'direct' ? (
+          // One address needs no headcount: the recipient is already on screen
+          // and the button repeats it. That IS the confirmation.
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={send}
               disabled={
-                pending || !canSendNow || !messageReady || !phoneUsable ||
+                pending || !canSendNow || !messageReady || !directUsable ||
                 needsCustomer.length > 0
               }
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:opacity-50"
@@ -480,10 +534,12 @@ export function Composer({
               <Send className="h-4 w-4" aria-hidden />
               {pending
                 ? 'Queueing…'
-                : phoneUsable && verdict.e164 ? 'Send to +' + verdict.e164 : 'Send'}
+                : directUsable
+                  ? 'Send to ' + (directIsEmail ? to.trim().toLowerCase() : '+' + verdict.e164)
+                  : 'Send'}
             </button>
             <span className="text-xs text-gray-600">
-              {seg.segments > 1 ? seg.segments + ' SMS. ' : ''}
+              {!directIsEmail && seg.segments > 1 ? seg.segments + ' SMS. ' : ''}
               Goes out with the next dispatch, usually within a minute.
             </span>
           </div>
@@ -510,7 +566,12 @@ export function Composer({
               </div>
               <div className="rounded-lg bg-gray-950 p-3">
                 <p className="text-2xl font-semibold text-green-400">{preview.sendable}</p>
-                <p className="text-[11px] text-gray-500">will receive it</p>
+                <p className="text-[11px] text-gray-500">
+                  will receive it
+                  {preview.byChannel.length > 1 || channelsAvailable
+                    ? ' — ' + preview.byChannel.map((c) => c.count + ' by ' + c.label).join(', ')
+                    : ''}
+                </p>
               </div>
               <div className="rounded-lg bg-gray-950 p-3">
                 <p className="text-2xl font-semibold text-amber-400">
@@ -522,7 +583,23 @@ export function Composer({
 
             <p className="text-xs text-gray-500">
               <span className="text-gray-400">Audience:</span> {preview.audience}
+              {channelsAvailable ? (
+                <>
+                  <span className="mx-2 text-gray-700">·</span>
+                  <span className="text-gray-400">Send by:</span> {ROUTE_LABELS[route]}
+                </>
+              ) : null}
             </p>
+
+            {preview.unavailable.length > 0 ? (
+              <div className="rounded-lg border border-amber-900/50 bg-amber-950/30 px-3 py-2.5">
+                {preview.unavailable.map((u) => (
+                  <p key={u.channel} className="text-xs text-amber-300/90">
+                    {CHANNEL_LABELS[u.channel]}: {u.reason}
+                  </p>
+                ))}
+              </div>
+            ) : null}
 
             {/* Nobody matched, and a filter is why. Named, so the fix is one
                 change and not a guess across nine boxes. */}
@@ -567,7 +644,7 @@ export function Composer({
                 <Clock className="h-3.5 w-3.5" aria-hidden />
                 Sending will take {humanise(preview.estimatedSeconds)} at your configured
                 rate{preview.segments > 1
-                  ? ' (each message is ' + preview.segments + ' SMS)'
+                  ? ' (each SMS is ' + preview.segments + ' parts)'
                   : ''}.
               </p>
             ) : null}
@@ -576,7 +653,7 @@ export function Composer({
               <div className="flex flex-wrap items-center gap-3">
                 {preview.matched > 0 ? (
                   <p className="rounded-lg bg-amber-950/30 px-3 py-2 text-xs text-amber-300/90">
-                    Nobody in this selection has a phone number this system can text.
+                    Nobody in this selection can be reached this way.
                   </p>
                 ) : null}
                 <button

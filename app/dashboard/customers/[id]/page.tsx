@@ -103,6 +103,8 @@ export default async function CustomerDetailPage({
           accountNumber: customer.accountNumber,
           smsAvailable: customer.smsAvailable,
           smsOptedOut: customer.smsOptedOut,
+          emailAvailable: customer.emailAvailable,
+          emailOptedOut: customer.emailOptedOut,
           billingAvailable: customer.billingAvailable,
           billingType: customer.billingType,
           bill_date: customer.bill_date,

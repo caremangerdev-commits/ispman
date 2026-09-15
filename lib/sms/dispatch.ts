@@ -1,33 +1,39 @@
 import 'server-only'
 
 import { loadEnrichedCustomers } from '@/lib/data/customers'
-import {
-  canSend, enqueueSms, getSmsDevice, getSmsSettings,
-  type SmsDevice, type SmsSettings,
-} from '@/lib/data/sms'
+import { getSmsSettings, type MessagingSettings } from '@/lib/data/sms'
 import { daysUntilDateOnly, formatCurrency } from '@/lib/format'
+import type { ChannelAdapter, OutboundMessage } from '@/lib/messaging/adapter'
+import { parseAttachmentRef, renderAttachment } from '@/lib/messaging/attachments'
+import { channelReadiness, enqueueForRoute, type Readiness } from '@/lib/messaging/enqueue'
+import { allAdapters } from '@/lib/messaging/registry'
+import { CHANNELS, type Channel } from '@/lib/messaging/routes'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { refreshBatchCounts, syncDelivery } from '@/lib/sms/delivery'
-import { sendMessage, relayConfigured, type RelayCredentials } from '@/lib/sms/relay'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 /**
- * The dispatcher: produces the scheduled messages, then drains the queue.
+ * The dispatcher: produces the scheduled messages, then drains the queue —
+ * ONE CHANNEL AT A TIME, EACH THROUGH ITS ADAPTER.
  *
  * HOW IT RUNS. A small ticker process under pm2 (worker/sms-ticker.mjs) POSTs
  * to /api/sms/dispatch on a loop. The logic lives here, inside the app, so it
- * reads the same settings, the same customer filters and the same phone rules
- * as every page — a standalone worker would have needed its own copy of all
- * three, and this codebase already has three separate stories about what
+ * reads the same settings, the same customer filters and the same recipient
+ * rules as every page — a standalone worker would have needed its own copy of
+ * all three, and this codebase already has three separate stories about what
  * happens when one rule gets written twice.
  *
+ * WHAT IT KNOWS ABOUT CHANNELS: nothing. It asks the registry for every
+ * adapter, asks each whether this company is ready on it, and drains that
+ * channel's rows at that adapter's throttle. A third channel changes nothing
+ * in this file.
+ *
  * WHY THERE IS NO SCHEDULE. The sweep below is IDEMPOTENT because of the unique
- * index on (company_id, dedupe_key): an expiry warning for customer 4471 on
- * 2026-09-14 can only ever be inserted once, no matter how many times the sweep
- * runs. So it simply runs every tick and the database decides what is new. That
- * removes the entire class of bug where a scheduler fires twice, or misses a
- * day, or forgets which tenants it has already done — none of which can be
- * tested easily and all of which are only noticed by a customer.
+ * index on (company_id, channel, dedupe_key): an expiry warning for customer
+ * 4471 on 2026-09-14 can only ever be inserted once per channel, no matter how
+ * many times the sweep runs. So it simply runs every tick and the database
+ * decides what is new. That removes the entire class of bug where a scheduler
+ * fires twice, or misses a day, or forgets which tenants it has already done.
  */
 
 /** A row that has been 'sending' longer than this had its worker die. */
@@ -41,18 +47,24 @@ const TICK_BUDGET_MS = 50_000
 
 /**
  * The hours, in the COMPANY'S OWN timezone, during which automated messages may
- * be created. Nothing is queued outside them.
- *
- * A disconnection notice that arrives at 03:00 is worse than one that arrives
- * at 09:00, and the sweep runs continuously, so this is the only thing standing
- * between a tenant and a phone buzzing in the middle of the night.
+ * be created. Nothing is queued outside them: a disconnection notice that
+ * arrives at 03:00 is worse than one that arrives at 09:00.
  */
 const QUIET_START_HOUR = 8
 const QUIET_END_HOUR = 20
 
+/**
+ * How many 'sent' rows one tick asks the providers about. Each is one HTTP
+ * call, and the tick has a time budget; 60 a minute clears a 291-row batch in
+ * five ticks without crowding out the sending.
+ */
+const DELIVERY_CHECKS_PER_TICK = 60
+
 export type DispatchSummary = {
   companyId: number
   companyName: string
+  /** The channels this company was drained on. */
+  channels: Channel[]
   enqueued: number
   sent: number
   failed: number
@@ -78,20 +90,18 @@ function localDate(timeZone: string): string {
 }
 
 /**
- * Creates the expiry warnings that are due today.
+ * Creates the expiry warnings that are due today, by the company's route.
  *
  * DISCONNECTION NOTICES ARE NOT HERE. Being disconnected is an event, not a
- * state discovered by scanning — app/actions/customers.ts enqueues one at the
- * moment it cuts a customer off, where it knows the act was deliberate. A sweep
- * would have to infer it from a status, and could not tell a deliberate cut-off
- * from an ordinary lapse.
+ * state discovered by scanning — lib/sms/notify.ts enqueues one at the moment
+ * a customer is cut off, where it knows the act was deliberate.
  */
 async function sweepExpiryWarnings(
   companyId: number,
   companyName: string,
   timezone: string,
-  settings: SmsSettings,
-  device: SmsDevice | null
+  settings: MessagingSettings,
+  readiness: Readiness
 ): Promise<number> {
   if (!settings.expiryWarning) return 0
 
@@ -110,32 +120,31 @@ async function sweepExpiryWarnings(
 
     // Exactly the configured day, not "within N days". A window would send a
     // warning every day of that window, and the dedupe key — which is per day
-    // of the CUT-OFF, not per day of sending — would not stop it because each
-    // day's key differs.
+    // of the CUT-OFF, not per day of sending — would not stop it.
     if (days !== settings.expiryWarningDays) continue
 
-    const result = await enqueueSms({
+    const result = await enqueueForRoute({
       companyId,
       kind: 'expiry_warning',
       settings,
-      device,
-      dedupeKey: 'expiry:' + c.id + ':' + (c.radiusExpiryDate ?? today),
-      target: {
-        customerId: c.id,
-        phone: c.phone,
-        optedOut: c.sms_opted_out,
-        values: {
-          '{{name}}': [c.first_name, c.last_name].filter(Boolean).join(' '),
-          '{{first_name}}': c.first_name ?? '',
-          '{{account}}': c.account_number ?? '',
-          '{{balance}}': formatCurrency(c.carried_balance ?? 0),
-          '{{expiry}}': c.radiusExpiryDate ?? '',
-          '{{days}}': String(days),
-          '{{company}}': companyName,
-        },
+      readiness,
+      customer: {
+        id: c.id, phone: c.phone, email: c.email,
+        sms_opted_out: c.sms_opted_out, email_opted_out: c.email_opted_out,
       },
+      values: {
+        '{{name}}': [c.first_name, c.last_name].filter(Boolean).join(' '),
+        '{{first_name}}': c.first_name ?? '',
+        '{{account}}': c.account_number ?? '',
+        '{{balance}}': formatCurrency(c.carried_balance ?? 0),
+        '{{expiry}}': c.radiusExpiryDate ?? '',
+        '{{days}}': String(days),
+        '{{company}}': companyName,
+      },
+      text: { sms: settings.smsTemplates.expiry_warning, email: settings.emailTemplates.expiry_warning },
+      dedupeKey: 'expiry:' + c.id + ':' + (c.radiusExpiryDate ?? today),
     })
-    if (result.queued) queued += 1
+    queued += result.queued.length
   }
 
   return queued
@@ -166,25 +175,32 @@ async function recoverStale(companyId: number): Promise<number> {
 }
 
 /**
- * How many more messages this company may send in the next minute.
+ * How many more messages this company may send on one channel in the next
+ * minute.
  *
  * COUNTED FROM WHAT WAS ACTUALLY SENT, not held in memory. Two overlapping
  * ticks, a restarted worker, or a manual run all see the same number, because
- * it is derived from rows rather than from a counter someone has to remember to
- * reset. The compare-and-swap claim already stops a row going twice; this stops
- * the SIM going too fast.
+ * it is derived from rows rather than from a counter someone has to remember
+ * to reset.
  */
-async function remainingBudget(companyId: number, throttleSeconds: number): Promise<number> {
+async function remainingBudget(
+  companyId: number,
+  channel: Channel,
+  throttleSeconds: number,
+  channelColumn: boolean
+): Promise<number> {
   const perMinute = Math.max(1, Math.floor(60 / Math.max(1, throttleSeconds)))
   const db = tenantClient()
   const since = new Date(Date.now() - 60_000).toISOString()
 
-  const { count, error } = await db
+  let query = db
     .from('sms_outbox')
     .select('id', { count: 'exact', head: true })
     .eq('company_id', companyId)
     .gte('sent_at', since)
+  if (channelColumn) query = query.eq('channel', channel)
 
+  const { count, error } = await query
   if (error) return perMinute
   return Math.max(0, perMinute - (count ?? 0))
 }
@@ -212,67 +228,79 @@ async function claim(id: number, attempts: number): Promise<boolean> {
   return !error && Boolean(data)
 }
 
-/** Drains one company's queue, within the throttle and the time budget. */
+type QueuedRow = {
+  id: number
+  attempts: number
+  phone: string | null
+  recipient?: string
+  subject?: string | null
+  attachment?: string | null
+  body: string
+  kind: string
+}
+
+/** Drains one company's queue on one channel, within its throttle and the time budget. */
 async function drain(
   companyId: number,
-  settings: SmsSettings,
-  device: SmsDevice,
-  deadline: number
+  adapter: ChannelAdapter,
+  context: unknown,
+  settings: MessagingSettings,
+  deadline: number,
+  channelColumn: boolean
 ): Promise<{ sent: number; failed: number }> {
   const db = tenantClient()
   let sent = 0
   let failed = 0
 
-  const creds: RelayCredentials = {
-    username: device.apiUsername as string,
-    password: device.apiPassword as string,
-    deviceId: device.deviceId,
-    simNumber: device.simNumber,
-  }
-
-  let budget = await remainingBudget(companyId, settings.throttleSeconds)
+  const throttle = adapter.throttleSeconds(settings)
+  let budget = await remainingBudget(companyId, adapter.channel, throttle, channelColumn)
 
   while (budget > 0 && Date.now() < deadline) {
     // PAYMENT RECEIPTS FIRST. A customer standing at a counter must not wait
-    // behind a 400-message blast. The relay priority below is the second half
-    // of the same promise.
-    //
-    // DESCENDING, and this relies on the kind names: payment_receipt >
-    // expiry_warning > disconnection_notice > bulk alphabetically, so Z-to-A
-    // is receipts first and bulk last. This was ascending for a while, which
-    // is the exact opposite — bulk first, receipts last — and nobody noticed
-    // until an outage blast was about to go out. PostgREST cannot express a
-    // CASE ordering, so if a kind is ever added whose name breaks this order,
-    // sort in memory here instead of renaming it.
-    const { data, error } = await db
+    // behind a 400-message blast. DESCENDING, and this relies on the kind
+    // names: payment_receipt > expiry_warning > disconnection_notice > bulk
+    // alphabetically, so Z-to-A is receipts first and bulk last. PostgREST
+    // cannot express a CASE ordering; if a kind is ever added whose name
+    // breaks this order, sort in memory here instead of renaming it.
+    let query = db
       .from('sms_outbox')
-      .select('id, attempts, phone, body, kind')
+      .select('id, attempts, phone, body, kind' + (channelColumn ? ', recipient, subject, attachment' : ''))
       .eq('company_id', companyId)
       .eq('status', 'queued')
       .lt('attempts', MAX_ATTEMPTS)
       .order('kind', { ascending: false })
       .order('created_at', { ascending: true })
       .limit(1)
+    if (channelColumn) query = query.eq('channel', adapter.channel)
 
+    const { data, error } = await query
     if (error || !data || data.length === 0) break
 
-    const row = data[0] as unknown as {
-      id: number; attempts: number; phone: string; body: string; kind: string
-    }
-
+    const row = data[0] as unknown as QueuedRow
     if (!(await claim(row.id, row.attempts))) continue
 
-    const result = await sendMessage(creds, {
-      id: String(row.id),
-      text: row.body,
-      phone: row.phone,
-      // 100+ bypasses the relay's own rate limiting. ONLY for a payment
-      // receipt, and never for bulk — using it everywhere would defeat the
-      // throttle that protects the SIM.
-      priority: row.kind === 'payment_receipt' ? 100 : 0,
-      // Six hours. A disconnection notice that could not be delivered today is
-      // not worth delivering tomorrow.
-      ttlSeconds: 6 * 60 * 60,
+    // The attachment is rendered now, from the record it names. A record that
+    // has gone is a terminal failure with a reason, not a stale copy sent.
+    let attachment: OutboundMessage['attachment'] = null
+    const ref = parseAttachmentRef(row.attachment)
+    if (ref) {
+      const rendered = await renderAttachment(companyId, ref)
+      if ('error' in rendered) {
+        await db.from('sms_outbox').update({ status: 'failed', error: 'Attachment: ' + rendered.error }).eq('id', row.id)
+        failed += 1
+        continue
+      }
+      attachment = rendered
+    }
+
+    const result = await adapter.send(context, {
+      id: row.id,
+      kind: row.kind,
+      recipient: row.recipient ?? row.phone ?? '',
+      subject: row.subject ?? null,
+      body: row.body,
+      urgent: row.kind === 'payment_receipt',
+      attachment,
     })
 
     if (result.ok) {
@@ -285,8 +313,8 @@ async function drain(
       sent += 1
     } else {
       // Retryable failures go back to 'queued' so the next tick tries again;
-      // terminal ones (bad credentials, a rejected number) stop here with the
-      // reason visible on the settings page rather than blocking the queue.
+      // terminal ones stop here with the reason visible rather than blocking
+      // the queue.
       await db.from('sms_outbox').update({
         status: result.retryable && row.attempts + 1 < MAX_ATTEMPTS ? 'queued' : 'failed',
         error: result.error,
@@ -296,7 +324,7 @@ async function drain(
 
     budget -= 1
     if (budget > 0 && Date.now() < deadline) {
-      await sleep(settings.throttleSeconds * 1000)
+      await sleep(throttle * 1000)
     }
   }
 
@@ -304,19 +332,8 @@ async function drain(
 }
 
 /**
- * How many 'sent' rows one tick asks the relay about. Each is one HTTP call,
- * and the tick has a time budget; 60 a minute clears a 291-row batch in five
- * ticks without crowding out the sending.
- */
-const DELIVERY_CHECKS_PER_TICK = 60
-
-/**
- * Learns what the phone did with recently sent messages, then keeps the batch
- * tallies in step with the rows.
- *
- * The delivery sync is what makes "failed" a state a row can actually reach
- * after the relay accepted it — see lib/sms/delivery.ts for why it was
- * missing and what that cost.
+ * Learns what the providers did with recently sent messages, then keeps the
+ * batch tallies in step with the rows. See lib/sms/delivery.ts.
  */
 async function settleRecent(companyId: number): Promise<void> {
   await syncDelivery({ companyId, limit: DELIVERY_CHECKS_PER_TICK })
@@ -335,14 +352,14 @@ async function settleRecent(companyId: number): Promise<void> {
 /**
  * One tick: every company, or one if named.
  *
- * A company that cannot send is not an error. It is the overwhelmingly common
- * case — nine of ten tenants have SMS off — and the summary says so rather than
- * logging a failure every minute for each of them.
+ * A company that cannot send on any channel is not an error. It is the
+ * overwhelmingly common case, and the summary says so rather than logging a
+ * failure every minute for each of them.
  */
 export async function runDispatch(only?: number): Promise<DispatchSummary[]> {
   const caps = await getSchemaCapabilities()
   if (!caps.sms) return []
-  if (!relayConfigured()) return []
+  if (!allAdapters().some((a) => a.configured())) return []
 
   const db = tenantClient()
   const { data: companies, error } = await db
@@ -356,15 +373,26 @@ export async function runDispatch(only?: number): Promise<DispatchSummary[]> {
   const out: DispatchSummary[] = []
 
   for (const co of targets) {
-    const [settings, device] = await Promise.all([
-      getSmsSettings(co.id), getSmsDevice(co.id),
-    ])
+    const settings = await getSmsSettings(co.id)
+    const readiness = await channelReadiness(co.id, settings)
 
-    if (!canSend(settings, device)) {
+    // Resolved once per company per tick: the context an adapter's send()
+    // needs, for each channel this company can send on.
+    const live: { adapter: ChannelAdapter; context: unknown }[] = []
+    for (const adapter of allAdapters()) {
+      if (!readiness[adapter.channel].ready) continue
+      const r = await adapter.tenantReady(co.id, settings)
+      if (r.ready) live.push({ adapter, context: r.context })
+    }
+
+    if (live.length === 0) {
       out.push({
-        companyId: co.id, companyName: co.name,
+        companyId: co.id, companyName: co.name, channels: [],
         enqueued: 0, sent: 0, failed: 0, recovered: 0,
-        skipped: !settings.enabled ? 'SMS off' : 'no device paired',
+        skipped: CHANNELS.map((c) => {
+          const r = readiness[c]
+          return c + ': ' + (r.ready ? 'ready' : r.reason)
+        }).join('; '),
       })
       continue
     }
@@ -374,11 +402,19 @@ export async function runDispatch(only?: number): Promise<DispatchSummary[]> {
     const timezone = (setting as { timezone?: string } | null)?.timezone || 'America/Jamaica'
 
     const recovered = await recoverStale(co.id)
-    const enqueued = await sweepExpiryWarnings(co.id, co.name, timezone, settings, device)
-    const { sent, failed } = await drain(co.id, settings, device as SmsDevice, deadline)
+    const enqueued = await sweepExpiryWarnings(co.id, co.name, timezone, settings, readiness)
+
+    let sent = 0
+    let failed = 0
+    for (const { adapter, context } of live) {
+      const r = await drain(co.id, adapter, context, settings, deadline, caps.messaging)
+      sent += r.sent
+      failed += r.failed
+    }
 
     out.push({
       companyId: co.id, companyName: co.name,
+      channels: live.map((l) => l.adapter.channel),
       enqueued, sent, failed, recovered, skipped: null,
     })
   }

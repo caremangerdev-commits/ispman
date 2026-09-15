@@ -1,31 +1,38 @@
 'use client'
 
-import { BellOff, BellRing } from 'lucide-react'
+import { BellOff, BellRing, MailX, Mail } from 'lucide-react'
 import { useState, useTransition } from 'react'
 
-import { setSmsOptOut } from '@/app/actions/sms'
+import { setOptOut } from '@/app/actions/sms'
+import { CHANNEL_LABELS, type Channel } from '@/lib/messaging/routes'
 
 /**
- * The customer's own choice about being texted.
+ * The customer's own choice about being messaged, PER CHANNEL.
  *
- * OUTRANKS EVERY COMPANY SWITCH. A tenant with SMS on, a paired phone and every
- * message type enabled still sends nothing to a customer who has opted out —
- * see the gate order in lib/data/sms.ts#enqueueSms.
+ * OUTRANKS EVERY COMPANY SWITCH. A tenant with a channel on, credentials in
+ * place and every message type enabled still sends nothing on that channel to
+ * a customer who has opted out of it — see lib/messaging/adapters, where each
+ * adapter's recipientFor() checks its own opt-out first.
  *
  * Deliberately not part of the edit form. It is not a field a member of staff
  * fills in from a spreadsheet; it is a request a customer made, and it should
  * take one click to honour on the phone while they are asking.
  */
-export function SmsOptOut({
-  customerId, optedOut, canEdit,
+export function ChannelOptOut({
+  customerId, channel, optedOut, canEdit,
 }: {
   customerId: number
+  channel: Channel
   optedOut: boolean
   canEdit: boolean
 }) {
   const [on, setOn] = useState(optedOut)
   const [pending, start] = useTransition()
   const [error, setError] = useState<string | null>(null)
+
+  const noun = channel === 'sms' ? 'text messages' : 'emails'
+  const OnIcon = channel === 'sms' ? BellOff : MailX
+  const OffIcon = channel === 'sms' ? BellRing : Mail
 
   function toggle() {
     const next = !on
@@ -34,7 +41,7 @@ export function SmsOptOut({
     // control that appears not to respond while the round trip happens.
     setOn(next)
     start(async () => {
-      const res = await setSmsOptOut(customerId, next)
+      const res = await setOptOut(customerId, channel, next)
       if (!res.ok) {
         setOn(!next)
         setError(res.error)
@@ -46,14 +53,14 @@ export function SmsOptOut({
     <div className="flex items-start justify-between gap-3 px-4 py-2.5">
       <div className="flex items-start gap-2">
         {on
-          ? <BellOff className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" aria-hidden />
-          : <BellRing className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />}
+          ? <OnIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" aria-hidden />
+          : <OffIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />}
         <div>
-          <p className="text-xs font-medium text-gray-400">SMS notifications</p>
+          <p className="text-xs font-medium text-gray-400">{CHANNEL_LABELS[channel]} notifications</p>
           <p className="mt-0.5 text-[11px] text-gray-600">
             {on
-              ? 'This customer has asked not to receive text messages.'
-              : 'This customer can receive text messages.'}
+              ? 'This customer has asked not to receive ' + noun + '.'
+              : 'This customer can receive ' + noun + '.'}
           </p>
           {error ? <p className="mt-0.5 text-[11px] text-red-400">{error}</p> : null}
         </div>
@@ -71,9 +78,14 @@ export function SmsOptOut({
               : 'border-amber-900/60 text-amber-400 hover:bg-amber-950/40')
           }
         >
-          {pending ? '…' : on ? 'Allow SMS' : 'Opt out'}
+          {pending ? '…' : on ? 'Allow ' + CHANNEL_LABELS[channel] : 'Opt out'}
         </button>
       ) : null}
     </div>
   )
+}
+
+/** The SMS toggle under its original name, for the existing caller. */
+export function SmsOptOut(props: { customerId: number; optedOut: boolean; canEdit: boolean }) {
+  return <ChannelOptOut channel="sms" {...props} />
 }

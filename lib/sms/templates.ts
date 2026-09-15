@@ -77,6 +77,44 @@ export const DEFAULT_TEMPLATES: Record<Exclude<SmsKind, 'bulk'>, string> = {
 }
 
 /**
+ * The built-in EMAIL templates: a subject and a body per kind.
+ *
+ * Separate from the SMS ones on purpose. 160 characters is the wrong shape
+ * for an email, a subject has no SMS meaning, and an email can afford to say
+ * how to pay. Plain text: it renders everywhere, and nothing here needs a
+ * layout. NULL in the database means "use these", exactly as for SMS.
+ */
+export const DEFAULT_EMAIL_SUBJECTS: Record<Exclude<SmsKind, 'bulk'>, string> = {
+  payment_receipt: 'Payment received — {{company}}',
+  expiry_warning: 'Your internet service expires on {{expiry}}',
+  disconnection_notice: 'Your internet service has been disconnected',
+}
+
+export const DEFAULT_EMAIL_BODIES: Record<Exclude<SmsKind, 'bulk'>, string> = {
+  payment_receipt:
+    'Hi {{first_name}},\n\n' +
+    'We received your payment of {{amount}}. Thank you.\n\n' +
+    'Account: {{account}}\n' +
+    'Balance now: {{balance}}\n\n' +
+    'Your receipt is attached.\n\n' +
+    '{{company}}',
+  expiry_warning:
+    'Hi {{first_name}},\n\n' +
+    'Your internet service expires in {{days}} day(s), on {{expiry}}.\n\n' +
+    'Account: {{account}}\n' +
+    'Amount due: {{balance}}\n\n' +
+    'Please pay before then to stay connected.\n\n' +
+    '{{company}}',
+  disconnection_notice:
+    'Hi {{first_name}},\n\n' +
+    'Your internet service has been disconnected for non-payment.\n\n' +
+    'Account: {{account}}\n' +
+    'Amount due: {{balance}}\n\n' +
+    'Please pay {{balance}} to be reconnected.\n\n' +
+    '{{company}}',
+}
+
+/**
  * Substitutes placeholders into a template.
  *
  * AN UNKNOWN PLACEHOLDER IS LEFT ALONE, not blanked. If someone types

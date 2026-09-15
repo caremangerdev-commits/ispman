@@ -1,29 +1,25 @@
 import 'server-only'
 
-import { getSmsDevice, type SmsDevice } from '@/lib/data/sms'
-import { getMessageState, type RelayCredentials } from '@/lib/sms/relay'
+import { getSmsSettings } from '@/lib/data/sms'
+import { adapterFor, allAdapters } from '@/lib/messaging/registry'
+import type { Channel } from '@/lib/messaging/routes'
+import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 /**
- * Delivery reporting: what the PHONE did with a message the relay accepted.
+ * Delivery reporting: what the PROVIDER did with a message after accepting it.
  *
- * WHY THIS EXISTS. An outbox row reads 'sent' the moment the relay accepts it
- * (lib/sms/dispatch.ts#drain). That is the end of what the dispatcher can see
- * — but not the end of the message. The phone can still fail to send it: no
- * signal, a SIM the carrier has started throttling, a number the network
- * rejects. The relay records that per message, and getMessageState() in
- * lib/sms/relay.ts has read it back since the relay module was written — but
- * nothing ever called it. So a batch of 291 read "291 sent" in ISPMan while
- * the relay showed 196 of them failed on the handset, and the operator had no
+ * WHY THIS EXISTS. An outbox row reads 'sent' the moment the provider accepts
+ * it (lib/sms/dispatch.ts#drain). That is the end of what the dispatcher can
+ * see — but not the end of the message. A phone can fail to send an SMS; a
+ * mailbox can bounce an email. Each provider records that per message, and
+ * for a while nothing read it back: a batch of 291 read "291 sent" in ISPMan
+ * while the relay showed 196 failed on the handset, and the operator had no
  * row to retry because, as far as ISPMan knew, nothing had failed.
  *
- * This is the missing call. It moves a 'sent' row to 'delivered' or 'failed'
- * from the relay's account, so the batch page tells the truth and a failed row
- * exists to be retried.
- *
- * The relay's states, from the SMSGate server: Pending, Processed, Sent,
- * Delivered, Failed. Only the last two are final. Everything else is left as
- * 'sent' and asked about again next time.
+ * This is the missing call, per channel through the adapter registry. It moves
+ * a 'sent' row to 'delivered' or 'failed' from the provider's account, so the
+ * batch page tells the truth and a failed row exists to be retried.
  */
 
 /** Rows still worth asking about: sent this recently, never resolved. */
@@ -33,23 +29,16 @@ export type DeliverySyncResult = {
   checked: number
   delivered: number
   failed: number
-  /** Still in flight at the relay. */
+  /** Still in flight at the provider. */
   pending: number
-  /** The relay could not be asked, or did not know the message. */
+  /** The provider could not be asked, or did not know the message. */
   unknown: number
 }
 
-function credsOf(device: SmsDevice): RelayCredentials {
-  return {
-    username: device.apiUsername as string,
-    password: device.apiPassword as string,
-    deviceId: device.deviceId,
-    simNumber: device.simNumber,
-  }
-}
+const EMPTY: DeliverySyncResult = { checked: 0, delivered: 0, failed: 0, pending: 0, unknown: 0 }
 
 /**
- * Resolves 'sent' rows against the relay.
+ * Resolves 'sent' rows against their providers.
  *
  * Bounded by `limit` because every row is one HTTP call: the dispatcher runs
  * this every tick with a small cap, and the batch page runs it on demand for
@@ -61,51 +50,45 @@ export async function syncDelivery(opts: {
   batchId?: number
   limit: number
 }): Promise<DeliverySyncResult> {
-  const empty: DeliverySyncResult = { checked: 0, delivered: 0, failed: 0, pending: 0, unknown: 0 }
-
-  const device = await getSmsDevice(opts.companyId)
-  if (!device?.apiUsername || !device?.apiPassword) return empty
-  const creds = credsOf(device)
-
+  const caps = await getSchemaCapabilities()
+  const settings = await getSmsSettings(opts.companyId)
   const db = tenantClient()
   const since = new Date(Date.now() - LOOKBACK_HOURS * 3_600_000).toISOString()
+  const result = { ...EMPTY }
 
-  let query = db
-    .from('sms_outbox')
-    .select('id, provider_message_id')
-    .eq('company_id', opts.companyId)
-    .eq('status', 'sent')
-    .not('provider_message_id', 'is', null)
-    .order('sent_at', { ascending: true })
-    .limit(opts.limit)
+  for (const adapter of allAdapters()) {
+    if (adapter.channel !== 'sms' && !caps.messaging) continue
+    const readiness = await adapter.tenantReady(opts.companyId, settings)
+    if (!readiness.ready) continue
 
-  // A named batch is asked about regardless of age: the operator is standing
-  // on its page. The sweep only looks back so far, so an old batch does not
-  // cost a tick's worth of calls every minute forever.
-  query = opts.batchId ? query.eq('batch_id', opts.batchId) : query.gte('sent_at', since)
+    let query = db
+      .from('sms_outbox')
+      .select('id, provider_message_id')
+      .eq('company_id', opts.companyId)
+      .eq('status', 'sent')
+      .not('provider_message_id', 'is', null)
+      .order('sent_at', { ascending: true })
+      .limit(opts.limit)
+    if (caps.messaging) query = query.eq('channel', adapter.channel)
 
-  const { data, error } = await query
-  if (error || !data) return empty
+    // A named batch is asked about regardless of age: the operator is standing
+    // on its page. The sweep only looks back so far, so an old batch does not
+    // cost a tick's worth of calls every minute forever.
+    query = opts.batchId ? query.eq('batch_id', opts.batchId) : query.gte('sent_at', since)
 
-  const result = { ...empty }
-  for (const row of data as { id: number; provider_message_id: string }[]) {
-    result.checked += 1
-    const state = await getMessageState(creds, row.provider_message_id)
-    if (!state?.state) { result.unknown += 1; continue }
+    const { data, error } = await query
+    if (error || !data) continue
 
-    const s = state.state.toLowerCase()
-    if (s === 'delivered') {
-      await db.from('sms_outbox').update({ status: 'delivered', error: null }).eq('id', row.id)
-      result.delivered += 1
-    } else if (s === 'failed') {
-      // The phone's reason, when the relay has one, so the batch page can say
-      // "no service" rather than just "failed".
+    for (const row of data as { id: number; provider_message_id: string }[]) {
+      result.checked += 1
+      const verdict = await adapter.deliveryState(readiness.context, row.provider_message_id)
+      if (verdict.state === 'unknown') { result.unknown += 1; continue }
+      if (verdict.state === 'pending') { result.pending += 1; continue }
       await db.from('sms_outbox')
-        .update({ status: 'failed', error: 'Phone could not send: ' + (state.error ?? 'no reason given by the relay') })
+        .update({ status: verdict.state, error: verdict.state === 'failed' ? verdict.error : null })
         .eq('id', row.id)
-      result.failed += 1
-    } else {
-      result.pending += 1
+      if (verdict.state === 'delivered') result.delivered += 1
+      else result.failed += 1
     }
   }
 
@@ -129,4 +112,9 @@ export async function refreshBatchCounts(batchId: number): Promise<void> {
     sent: list.filter((r) => r.status === 'sent' || r.status === 'delivered').length,
     failed: list.filter((r) => r.status === 'failed').length,
   }).eq('id', batchId)
+}
+
+/** The label an adapter gives its channel, for pages that show one. */
+export function channelLabel(channel: Channel): string {
+  return adapterFor(channel).label
 }

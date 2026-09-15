@@ -5,6 +5,7 @@ import { notFound } from 'next/navigation'
 
 import { BatchActions } from '@/components/messages/BatchActions'
 import { getSmsBatchMessages, isDirectAudience, listSmsBatches } from '@/lib/data/sms'
+import { CHANNEL_LABELS } from '@/lib/messaging/routes'
 import { formatDateTime } from '@/lib/format'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { requirePermission } from '@/lib/session'
@@ -122,7 +123,7 @@ export default async function BatchPage({ params }: PageProps<'/dashboard/messag
             <thead>
               <tr className="border-b border-gray-800 text-[11px] uppercase tracking-wider text-gray-500">
                 <th scope="col" className="px-4 py-2.5 font-semibold">Customer</th>
-                <th scope="col" className="px-4 py-2.5 font-semibold">Number</th>
+                <th scope="col" className="px-4 py-2.5 font-semibold">Sent to</th>
                 <th scope="col" className="px-4 py-2.5 font-semibold">Status</th>
                 <th scope="col" className="px-4 py-2.5 font-semibold">Detail</th>
               </tr>
@@ -145,7 +146,11 @@ export default async function BatchPage({ params }: PageProps<'/dashboard/messag
                     )}
                   </td>
                   <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-gray-500">
-                    +{m.phone}
+                    {/* The channel first, then the address as the provider saw it. */}
+                    <span className="mr-1.5 rounded bg-gray-800 px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
+                      {CHANNEL_LABELS[m.channel]}
+                    </span>
+                    {m.channel === 'sms' ? '+' : ''}{m.recipient}
                   </td>
                   <td className="px-4 py-2.5">
                     <span

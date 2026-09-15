@@ -4,11 +4,12 @@ import Link from 'next/link'
 import { Composer } from '@/components/messages/Composer'
 import { listMiscCategories, listServicePlans } from '@/lib/data/catalog'
 import { loadEnrichedCustomers } from '@/lib/data/customers'
-import { canSend, getSmsDevice, getSmsSettings, listSmsBatches } from '@/lib/data/sms'
+import { getSmsSettings, listSmsBatches } from '@/lib/data/sms'
 import { timeAgo } from '@/lib/format'
+import { channelReadiness } from '@/lib/messaging/enqueue'
+import { CHANNELS } from '@/lib/messaging/routes'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { requirePermission } from '@/lib/session'
-import { relayConfigured } from '@/lib/sms/relay'
 
 export const metadata: Metadata = { title: 'Send a Message · ISPMan' }
 
@@ -32,9 +33,8 @@ export default async function MessagesPage() {
     )
   }
 
-  const [settings, device, customers, categories, plans, batches] = await Promise.all([
+  const [settings, customers, categories, plans, batches] = await Promise.all([
     getSmsSettings(company.id),
-    getSmsDevice(company.id),
     loadEnrichedCustomers(company.id),
     listMiscCategories(company.id).catch(() => []),
     listServicePlans(company.id).catch(() => []),
@@ -68,14 +68,16 @@ export default async function MessagesPage() {
   const hasBothConnectionTypes =
     new Set(customers.map((c) => c.connection_type).filter(Boolean)).size > 1
 
-  // Why sending is not possible, in the order the operator would fix them.
-  const blockedReason = !relayConfigured()
-    ? 'This server has no SMS relay configured. Ask your administrator.'
-    : !settings.enabled
-      ? 'SMS is switched off for this company. Turn it on under Settings → SMS Notifications.'
-      : !device
-        ? 'No phone is paired. Pair one under Settings → SMS Notifications.'
-        : null
+  // Which channels this company can send on right now, from the adapters. If
+  // none, the reasons are shown in the order the operator would fix them.
+  const readiness = await channelReadiness(company.id, settings)
+  const ready = CHANNELS.filter((c) => readiness[c].ready)
+  const blockedReason = ready.length > 0
+    ? null
+    : CHANNELS.map((c) => {
+        const r = readiness[c]
+        return r.ready ? '' : r.reason
+      }).filter(Boolean).join(' ') + ' See Settings → Notifications.'
 
   return (
     <div className="max-w-4xl space-y-5">
@@ -91,9 +93,12 @@ export default async function MessagesPage() {
         accessPoints={accessPoints}
         cutOffDates={cutOffDates}
         hasBothConnectionTypes={hasBothConnectionTypes}
-        templates={settings.templates}
+        templates={settings.smsTemplates}
         allowForeign={settings.allowForeign}
-        canSendNow={canSend(settings, device)}
+        defaultRoute={settings.routes.bulk}
+        channelsAvailable={settings.channelsAvailable}
+        readyChannels={ready}
+        canSendNow={ready.length > 0}
         blockedReason={blockedReason}
       />
 

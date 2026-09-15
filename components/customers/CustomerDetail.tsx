@@ -22,7 +22,7 @@ import { GpsLink } from '@/components/ui/GpsLink'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
 import { daysUntilDateOnly, formatCurrency, formatDateOnly, timeAgo } from '@/lib/format'
 import { can, type Role } from '@/lib/permissions'
-import { SmsOptOut } from '@/components/customers/SmsOptOut'
+import { ChannelOptOut, SmsOptOut } from '@/components/customers/SmsOptOut'
 // From format.ts, not client.ts: this is a client component and client.ts
 // pulls in mysql2.
 import { formatBytes, type RadiusStatus } from '@/lib/radius/format'
@@ -63,6 +63,9 @@ export type DetailCustomer = {
   /** migration 0021 */
   smsAvailable: boolean
   smsOptedOut: boolean
+  /** migration 0022 */
+  emailAvailable: boolean
+  emailOptedOut: boolean
   /** migration 0011 */
   billingAvailable: boolean
   billingType: BillingType
@@ -545,6 +548,14 @@ export function CustomerDetail({
             <SmsOptOut
               customerId={c.id}
               optedOut={c.smsOptedOut}
+              canEdit={can(role, 'edit_customer')}
+            />
+          ) : null}
+          {c.emailAvailable ? (
+            <ChannelOptOut
+              customerId={c.id}
+              channel="email"
+              optedOut={c.emailOptedOut}
               canEdit={can(role, 'edit_customer')}
             />
           ) : null}

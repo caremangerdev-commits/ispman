@@ -102,6 +102,13 @@ export type SchemaCapabilities = {
    * hidden and nothing enqueues.
    */
   sms: boolean
+  /**
+   * Migration 0022: the outbox's channel and recipient columns, the routes
+   * and email settings, and customers.email_opted_out. Required together, for
+   * the same reason as `sms`. Without it the queue is SMS-shaped and only the
+   * SMS adapter is offered; nothing about email is shown.
+   */
+  messaging: boolean
 }
 
 /**
@@ -130,6 +137,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     taxIdCustomerRes, taxIdSettingRes, accountNumberRes, accountCounterRes,
     accountPrefixRes,
     smsOutboxRes, smsSettingRes, smsOptOutRes,
+    messagingOutboxRes, messagingSettingRes, messagingOptOutRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -173,17 +181,23 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('account_counters').select('company_id').limit(1),
     db.from('settings').select('account_number_prefix').limit(1),
     db.from('sms_outbox').select('id').limit(1),
+    // The per-kind switches are NOT probed here: 0022 renames them (sms_ to
+    // notify_), and a probe on either name would flip `sms` off on the other
+    // side of that migration. The columns below are 0021's and stay.
     db
       .from('settings')
-      .select(
-        'sms_payment_receipt_enabled, sms_expiry_warning_enabled, ' +
-        'sms_disconnection_enabled, sms_expiry_warning_days, ' +
-        'sms_throttle_seconds, sms_allow_foreign'
-      )
+      .select('sms_expiry_warning_days, sms_throttle_seconds, sms_allow_foreign')
       .limit(1),
     db.from('customers').select('sms_opted_out').limit(1),
+    // 0022: channel-neutral outbox, routes and email settings, email opt-out.
+    db.from('sms_outbox').select('channel, recipient').limit(1),
+    db
+      .from('settings')
+      .select('route_bulk, email_from_name, notify_payment_receipt_enabled')
+      .limit(1),
+    db.from('customers').select('email_opted_out').limit(1),
   ])
-  console.log('[perf]     schema probe: 23 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -234,6 +248,13 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     smsOptOutRes.error?.code === '42703'
   const missingPaymentCategories =
     paymentCategoryRes.error?.code === 'PGRST205' || paymentCategoryRes.error?.code === '42P01'
+  // 0022 likewise: any missing piece reads as absent.
+  const missingMessaging =
+    messagingOutboxRes.error?.code === 'PGRST205' ||
+    messagingOutboxRes.error?.code === '42P01' ||
+    messagingOutboxRes.error?.code === '42703' ||
+    messagingSettingRes.error?.code === '42703' ||
+    messagingOptOutRes.error?.code === '42703'
 
   if (typeRes.error && !missingType) {
     throw new Error('Schema probe failed for customer_type: ' + typeRes.error.message)
@@ -318,6 +339,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     'settings.account_number_prefix': accountPrefixRes,
     'settings SMS columns': smsSettingRes,
     'customers.sms_opted_out': smsOptOutRes,
+    'settings messaging columns': messagingSettingRes,
+    'customers.email_opted_out': messagingOptOutRes,
   })) {
     if (res.error && res.error.code !== '42703') {
       throw new Error('Schema probe failed for ' + what + ': ' + res.error.message)
@@ -329,6 +352,14 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     smsOutboxRes.error.code !== '42P01'
   ) {
     throw new Error('Schema probe failed for sms_outbox: ' + smsOutboxRes.error.message)
+  }
+  if (
+    messagingOutboxRes.error &&
+    messagingOutboxRes.error.code !== 'PGRST205' &&
+    messagingOutboxRes.error.code !== '42P01' &&
+    messagingOutboxRes.error.code !== '42703'
+  ) {
+    throw new Error('Schema probe failed for sms_outbox.channel: ' + messagingOutboxRes.error.message)
   }
   if (
     accountCounterRes.error &&
@@ -361,6 +392,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     taxId: !missingTaxId,
     accountNumbers: !missingAccountNumbers,
     sms: !missingSms,
+    messaging: !missingSms && !missingMessaging,
   }
 })
 
