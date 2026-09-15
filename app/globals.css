@@ -171,7 +171,21 @@ body {
        glyph. Smaller than 9pt degrades into noise. Fixed in pt, never rem or
        em, so nothing upstream can scale it. */
     font-size: 10pt !important;
-    font-weight: normal;
+    /* BOLD, FOR THE INK. A thermal head burns one dot or none, and Courier
+       New's regular stems are about 0.4pt — one dot at 203 dpi, and a dot the
+       head does not always fully burn. Every printer at every company printed
+       faint, which is the glyph and not the hardware. The bold face has stems
+       around 1pt, three dots, and THE SAME 0.6em ADVANCE: the 32 columns still
+       measure 67.73mm, verified in the printed PDF, so the layout is untouched.
+       !important because a Tailwind weight class on the element must not win
+       over what reaches the paper. */
+    font-weight: bold !important;
+    /* NO TEXT STROKE. `-webkit-text-stroke` was tried as a second lever and
+       measured: Chromium does not emit it as a text render mode, it converts
+       every glyph into outline paths — the print job went from 8 objects to
+       128 — and path text is what cheap thermal drivers rasterise worst. A
+       fraction of a dot was not worth that. Colour, opacity and filters are
+       already forced solid below; antialiasing is the driver's, not CSS's. */
     line-height: 1.3;
     letter-spacing: 0;
     white-space: pre;

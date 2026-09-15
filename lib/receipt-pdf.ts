@@ -2,8 +2,8 @@
  * An 80mm receipt as a PDF, written by hand.
  *
  * There is no PDF library in this project and this does not justify adding one.
- * A thermal receipt is a single page of monospace text, and Courier is one of
- * the PDF base-14 fonts every reader ships with — so no font has to be
+ * A thermal receipt is a single page of monospace text, and Courier-Bold is one
+ * of the PDF base-14 fonts every reader ships with — so no font has to be
  * embedded, no glyph widths have to be measured, and the whole file is a few
  * hundred bytes.
  *
@@ -74,7 +74,12 @@ export function receiptPdf(lines: string[]): Uint8Array {
       2
     )}] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>`,
     `<< /Length ${content.length} >>\nstream\n${content}endstream`,
-    '<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>',
+    // Courier-Bold, not Courier, and for the same reason the print stylesheet
+    // sets the receipt bold (app/globals.css): regular Courier's stems are one
+    // dot on a 203 dpi thermal head and print faint on every printer. Both
+    // weights are base-14 fonts with a 600-unit advance, so nothing has to be
+    // embedded and the 32-column layout is exactly as wide as before.
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold /Encoding /WinAnsiEncoding >>',
   ]
 
   // The xref table needs each object's byte offset, so the file is assembled in
