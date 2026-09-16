@@ -97,6 +97,14 @@ export type Receipt = {
   creditCarried: number | null
   /** Service only. Omitted when the payment set no expiry. */
   activeUntil: string | null
+  /**
+   * Service only. True when the payment bought no months: the expiry printed
+   * as "Service active until" is the one the customer already held, and the
+   * money went to credit. Printed as "Access unchanged" and the credit line
+   * relabelled "Held as credit", so the receipt says what happened rather than
+   * leaving a date that reads as a grant. See lib/billing.ts#monthsCovered.
+   */
+  accessUnchanged: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -264,12 +272,20 @@ export function renderReceipt(r: Receipt): string[] {
   // Below the balance, because it is not part of settling it: the balance went
   // to zero and THEN there was money left over.
   if (r.creditCarried !== null && r.creditCarried > 0) {
-    out.push(columns('Credit c/fwd', receiptMoney(r.creditCarried)))
+    out.push(columns(
+      r.accessUnchanged ? 'Held as credit' : 'Credit c/fwd',
+      receiptMoney(r.creditCarried)
+    ))
   }
 
   if (r.activeUntil) {
     out.push('')
+    // The same words the till showed before the money was taken.
+    if (r.accessUnchanged) out.push(centre('Access unchanged'))
     out.push(columns('Service active until', r.activeUntil))
+  } else if (r.accessUnchanged) {
+    out.push('')
+    out.push(centre('Access unchanged'))
   }
 
   out.push('')

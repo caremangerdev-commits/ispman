@@ -211,6 +211,25 @@ export const MAX_PREPAY_MONTHS = 6
 export const PREPAY_MONTH_OPTIONS = [1, 2, 3, 4, 5, 6]
 
 /**
+ * Whether a payment against `carriedBalance` is SETTLING a month.
+ *
+ * The one place the "renewal month" is decided, shared by the seed
+ * (amountDueForMonths) and the pricing (monthsCovered) so the two cannot
+ * disagree about it. A bill run charged a month that has passed; paying any of
+ * it buys the next one, which is the month the cut-off walk has always bought.
+ * With nothing owed there is no such month: every whole charge in the money is
+ * a month paid forward, and none of it is a renewal.
+ *
+ * This used to be an unconditional 1, and the difference reached production:
+ * a customer holding 1 Oct with nothing owed handed over one month's charge and
+ * was written 1 Dec — the floor counted a renewal month that did not exist,
+ * and then the credit arithmetic counted the same money again as prepayment.
+ */
+function settledMonths(carriedBalance: number): number {
+  return safe(carriedBalance) > 0 ? 1 : 0
+}
+
+/**
  * What the till should ask for when the cashier picks `months`.
  *
  * The FIRST month is what the customer already owes — their carried balance —
@@ -218,15 +237,18 @@ export const PREPAY_MONTH_OPTIONS = [1, 2, 3, 4, 5, 6]
  * asks for the balance alone, which is what the form did before prepayment
  * existed.
  *
- * With nothing owed, one month asks for nothing: a customer who is square and
- * wants to pay ahead picks two or more.
+ * WITH NOTHING OWED, EVERY MONTH IS A CHARGE. A customer who is square and
+ * picks one month is asked for one month's charge, not J$0 — an empty Amount
+ * field is what sent cashiers typing a figure over a seed that had told them
+ * nothing, and the first version of this asked exactly that. What is asked for
+ * here is what monthsCovered reads back as bought when it is the amount paid.
  */
 export function amountDueForMonths(
   carriedBalance: number,
   monthlyCharge: number,
   months: number
 ): number {
-  const extra = Math.max(0, Math.floor(months) - 1)
+  const extra = Math.max(0, Math.floor(months) - settledMonths(carriedBalance))
   return round2(safe(carriedBalance) + safe(monthlyCharge) * extra)
 }
 
@@ -249,16 +271,31 @@ export function prepaymentCredit(carriedBalance: number, amountPaid: number): nu
  * must not buy three months of access, and the two agree exactly whenever the
  * seeded amount is the amount paid — which is the ordinary case.
  *
- * The first month is always included and is the one the cut-off walk already
- * bought, whether or not there was a balance to settle. Each further whole
- * monthly charge on top buys one more.
+ * THE RULE: a payment buys the month it settles, plus one month for every
+ * whole monthly charge beyond what was owed. If nothing was owed there is no
+ * month being settled, so the count is just the whole charges in the money.
  *
- *   rate 3,500, owes 3,500, pays 10,500 -> credit 7,000 -> 1 + 2 = 3 months
- *   rate 3,500, owes 3,500, pays  3,500 -> credit     0 -> 1 month
- *   rate 3,500, owes     0, pays 10,500 -> credit 10,500 -> 1 + 3 = 4 months
+ *   rate 3,500, owes 3,500, pays 10,500 -> settles 1, credit 7,000  -> 3 months
+ *   rate 3,500, owes 3,500, pays  3,500 -> settles 1, credit     0  -> 1 month
+ *   rate 3,500, owes 4,500, pays  2,000 -> settles 1, credit     0  -> 1 month
+ *   rate 3,500, owes     0, pays  3,500 -> settles 0, credit 3,500  -> 1 month
+ *   rate 3,500, owes     0, pays 10,500 -> settles 0, credit 10,500 -> 3 months
+ *   rate 3,500, owes     0, pays  1,500 -> settles 0, credit 1,500  -> 0 months
  *
- * A short payment yields 1: the partial-payment machinery decides that expiry,
- * exactly as it did before prepayment existed.
+ * The third line is what the settled month protects: a short payment on a real
+ * balance still yields 1, and the partial-payment machinery decides that
+ * expiry exactly as it did before prepayment existed.
+ *
+ * THE LAST LINE IS ZERO, AND CALLERS MUST HANDLE IT. serviceExpiry floors its
+ * months at 1, so a caller that passes 0 through gets a month the customer did
+ * not pay for. Zero means access is unchanged: the expiry stays where it is and
+ * the money is held as credit for the next bill run to draw down. Take that
+ * branch before calling serviceExpiry — app/actions/payments.ts and the
+ * record-payment form both do.
+ *
+ * A first payment (migration 0017) does not come through here. Its period is
+ * already held and never billed, so it is priced on its own branch in
+ * app/actions/payments.ts from the excess alone.
  */
 export function monthsCovered(
   carriedBalance: number,
@@ -266,10 +303,11 @@ export function monthsCovered(
   amountPaid: number
 ): number {
   const charge = safe(monthlyCharge)
-  if (charge <= 0) return 1
+  const settled = safe(amountPaid) > 0 ? settledMonths(carriedBalance) : 0
+  if (charge <= 0) return settled
 
   const extra = Math.floor(prepaymentCredit(carriedBalance, amountPaid) / charge)
-  return Math.min(MAX_PREPAY_MONTHS, 1 + Math.max(0, extra))
+  return Math.min(MAX_PREPAY_MONTHS, settled + Math.max(0, extra))
 }
 
 /**

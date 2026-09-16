@@ -64,7 +64,10 @@ const fmtDate = (d: Date) =>
  *
  * One month is the carried balance alone — what the bill run charged and the
  * only thing actually owed. Each further month adds a whole monthly charge,
- * which is prepayment: money for periods that have not been billed yet.
+ * which is prepayment: money for periods that have not been billed yet. With
+ * nothing owed there is no balance month, so one month is one charge: the seed
+ * used to ask a square customer for J$0, and the figure the cashier then typed
+ * over it was priced as a renewal AND a month of prepayment.
  *
  * Only a seed. The cashier can type over it, and what they take is what the
  * server prices the access from — see lib/billing.ts#monthsCovered.
@@ -388,6 +391,16 @@ export function RecordPaymentForm({
           </p>
         ) : null}
 
+        {/* Bought no months: said in the same words the preview and the
+            receipt use, so nobody reads a saved payment as an extension. */}
+        {state.accessUnchanged ? (
+          <p className="mt-1 text-sm text-amber-300">
+            Access unchanged
+            {state.newExpiryIso ? ': expiry stays ' + fmtDate(new Date(state.newExpiryIso)) : ''}
+            {state.creditHeld ? '. ' + money(state.creditHeld) + ' held as credit' : ''}
+          </p>
+        ) : null}
+
         {/* A short payment leaves money owing, so the cashier is told the
             figure they need to repeat back to the customer. */}
         {state.carriedBalance ? (
@@ -482,8 +495,10 @@ export function RecordPaymentForm({
   //
   // A first payment buys NO months forward on its own: the expiry it is paying
   // for is the one the customer already holds. Only money beyond the period
-  // buys anything further, which is why this cannot go through monthsCovered —
-  // that has a floor of 1, correct for a renewal and wrong here.
+  // buys anything further, which is why this cannot go through monthsCovered.
+  // Everyone else does, and for them too the answer can be ZERO — nothing owed
+  // and less than a month's money — which is previewed below as access
+  // unchanged and the money held as credit.
   const monthsBought =
     selected && Number.isFinite(paid)
       ? firstPeriod
@@ -499,8 +514,12 @@ export function RecordPaymentForm({
 
   // Full payment, and the "Full Period" branch of a short one, land on the
   // same date — the period the customer would have got had they paid in full.
+  //
+  // ZERO MONTHS MOVES NOTHING. serviceExpiry floors its months at 1, so the
+  // branch is taken here rather than by passing it a zero it would ignore —
+  // the same rule app/actions/payments.ts applies before it writes.
   const fullPeriodExpiry = selected
-    ? firstPeriod && monthsBought === 0
+    ? monthsBought === 0
       ? currentExpiry
       : serviceExpiry({
         // cut_off_date, not bill_date — the bill day raises the charge, the
@@ -537,6 +556,14 @@ export function RecordPaymentForm({
   )
 
   const newExpiry = dateChosen ? parseYmd(accessDate) : fullPeriodExpiry
+
+  // The money bought no months, so the preview must say so BEFORE the cashier
+  // commits: the expiry stays where it is and the money is held as credit. A
+  // payment of nothing is not this — there is nothing to hold. Nor is a first
+  // payment: it buys no months either, but its money settles the period the
+  // customer already holds, so the ordinary preview below is the right one.
+  const accessUnchanged =
+    selected !== null && !firstPeriod && monthsBought === 0 && paid > 0
 
   return (
     <form action={formAction} className="space-y-4">
@@ -992,7 +1019,9 @@ export function RecordPaymentForm({
             {/* Applies to EVERY customer — there is one billing model, so
                 there is no type to gate this on. One month collects the
                 balance; more than one is prepayment, and the excess becomes
-                account credit that later bill runs draw down.
+                account credit that later bill runs draw down. With nothing
+                owed there is no balance month, so every month picked is a
+                charge paid forward — one month asks for one charge.
 
                 The dropdown seeds the amount. It does not decide what the
                 customer gets: the server prices access off the money actually
@@ -1015,9 +1044,14 @@ export function RecordPaymentForm({
                   </option>
                 ))}
               </select>
-              {months > 1 ? (
+              {/* Months paid forward = months picked less the one the balance
+                  settles, which is none when nothing is owed. The caption
+                  tracks lib/billing.ts#amountDueForMonths so it never claims
+                  a prepaid month the seed did not ask for. */}
+              {selected && months - (owed > 0 ? 1 : 0) > 0 ? (
                 <p className="text-[11px] text-gray-600">
-                  {money(carried)} owed + {months - 1}&times; {money(monthlyCharge)} prepaid
+                  {owed > 0 ? money(owed) + ' owed + ' : 'Nothing owed. '}
+                  {months - (owed > 0 ? 1 : 0)}&times; {money(monthlyCharge)} prepaid
                 </p>
               ) : null}
             </div>
@@ -1219,7 +1253,22 @@ export function RecordPaymentForm({
           ) : null}
 
           {/* ---------------- New expiry preview ---------------- */}
-          {newExpiry ? (
+          {accessUnchanged ? (
+            // Amber, not green: the cashier is about to take money that moves
+            // no expiry, and has to be able to say so to the customer before
+            // committing. The words here are the words on the receipt.
+            <div className="mt-4 rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2.5">
+              <p className="flex items-center gap-2 text-sm font-semibold text-amber-300">
+                <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden />
+                Access unchanged
+                {currentExpiry ? ': expiry stays ' + fmtDate(currentExpiry) : ''}
+              </p>
+              <p className="mt-0.5 text-xs text-amber-300/80">
+                {money(creditAdded)} held as credit against the next bill.
+                Less than one month&apos;s charge ({money(monthlyCharge)}) buys no access.
+              </p>
+            </div>
+          ) : newExpiry ? (
             <div className="mt-4 rounded-lg border border-green-900/50 bg-green-950/20 px-3 py-2.5">
               <p className="text-sm font-semibold text-green-400">
                 {dateChosen ? 'Access granted until: ' : 'New expiry will be: '}

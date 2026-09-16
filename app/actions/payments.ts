@@ -41,6 +41,14 @@ export type PaymentResult =
       /** Shortfall carried to the customer's next bill; 0 when fully paid. */
       carriedBalance?: number
       /**
+       * True when the payment bought no months, so the expiry was left where
+       * it was and nothing was written to the network. The money is held as
+       * credit (`creditHeld`) for the next bill run to draw down.
+       */
+      accessUnchanged?: boolean
+      /** Credit this payment created, for the panel to say where the money went. */
+      creditHeld?: number
+      /**
        * The row just written. The receipt modal re-reads the payment by this
        * id rather than being handed a receipt built here, so the receipt shown
        * after a payment and a reprint of it months later come from the same
@@ -503,10 +511,13 @@ export async function recordPayment(
   // A FIRST PAYMENT BUYS NONE BY DEFAULT, and that is the whole difference.
   // The customer already holds access to the end of the first period — that is
   // what provisioning wrote and what they are now paying for — so settling it
-  // moves nothing. monthsCovered has a floor of 1 because for a renewal that is
-  // right: the bill run charged a month that has passed, and paying it buys the
-  // next one. Here the period being paid for is the one still running, and only
-  // money BEYOND it buys anything further.
+  // moves nothing. Only money BEYOND it buys anything further.
+  //
+  // Everybody else goes through monthsCovered: the month being settled, if
+  // there is one, plus a month per whole charge beyond what was owed. That can
+  // be ZERO — nothing owed and less than a month's money — and zero is handled
+  // below as "access unchanged, money held as credit", never passed to
+  // serviceExpiry, which would floor it to a month nobody paid for.
   const excess = Math.max(0, round2(paidAmount - due))
   const monthsPaid = firstPeriod
     ? monthlyCharge > 0
@@ -539,14 +550,17 @@ export async function recordPayment(
   // a short one. One calculation for everybody now — the months-from-expiry
   // walk went with the prepaid arm and its months-to-pay selector.
   //
-  // A FIRST PAYMENT THAT BUYS NO FURTHER MONTHS DOES NOT MOVE THE EXPIRY. It
-  // stays exactly where provisioning put it, because that is the end of the
-  // period the money is paying for. serviceExpiry cannot say this — it floors
-  // months at 1, which is right for a renewal and wrong here — so the branch is
-  // taken before the call rather than by passing it a zero it would ignore.
-  const fullPeriodExpiry =
-    firstPeriod && monthsPaid === 0
-      ? firstPeriod.expiry
+  // A PAYMENT THAT BUYS NO MONTHS DOES NOT MOVE THE EXPIRY. For a first payment
+  // it stays exactly where provisioning put it, because that is the end of the
+  // period the money is paying for. For anyone else it is a short prepayment
+  // on a clear balance: the expiry stays where the registry holds it (null when
+  // the customer is not on the network) and the money is credit. serviceExpiry
+  // cannot say either — it floors months at 1, which is right for a renewal
+  // and wrong here — so the branch is taken before the call rather than by
+  // passing it a zero it would ignore.
+  const fullPeriodExpiry: Date | null =
+    monthsPaid === 0
+      ? firstPeriod ? firstPeriod.expiry : registryExpiry
       : serviceExpiry({
           // cut_off_date, not bill_date: the bill day says when the charge is
           // raised, the cut-off day says when access ends. Anchored on the
@@ -562,8 +576,14 @@ export async function recordPayment(
           months: monthsPaid,
         })
 
-  const newExpiry =
+  const newExpiry: Date | null =
     decision === 'date_selected' && chosenDate ? chosenDate : fullPeriodExpiry
+
+  // Nothing was bought, so nothing moves and nothing is written to the
+  // network. Decided here, once, so the row, the log and the panel all say the
+  // same thing. Zero months cannot be partial: a partial payment is short of a
+  // balance, and the settled month that balance carries is never zero.
+  const accessUnchanged = monthsPaid === 0
 
   // Recomputed rather than trusted, so the log records the real proportional
   // date even if the form sent a stale one.
@@ -577,7 +597,8 @@ export async function recordPayment(
     : null
 
   const beyondProportional = Boolean(
-    decision === 'date_selected' && proportional && ymd(newExpiry) > ymd(proportional)
+    decision === 'date_selected' && proportional && newExpiry &&
+    ymd(newExpiry) > ymd(proportional)
   )
 
   // --- Record the payment ---------------------------------------------------
@@ -621,7 +642,10 @@ export async function recordPayment(
     const period = billingPeriod(paymentDate, customer.bill_date ?? null)
     insertRow.billing_period_start = period.start
     insertRow.billing_period_end = period.end
-    insertRow.access_granted_until = ymd(newExpiry)
+    // The expiry this payment leaves the customer with. For a payment that
+    // bought nothing that is the one they already held, stamped so the receipt
+    // can print it as unchanged; null when there is no registry expiry to keep.
+    insertRow.access_granted_until = newExpiry ? ymd(newExpiry) : null
     insertRow.carried_balance_before = carriedBefore
     insertRow.carried_balance_after = carriedAfter
     // Null for a payment that cleared the bill: there was no decision to make.
@@ -654,6 +678,14 @@ export async function recordPayment(
     // the two are different facts.
     insertRow.first_period_discount =
       firstPeriod?.discountApplied ? firstPeriod.discount : 0
+  }
+
+  // A payment that bought nothing still stamps the expiry the customer holds,
+  // because the receipt prints "Service active until" from this column and has
+  // to say access is unchanged rather than say nothing. The extend path below
+  // stamps it after the write for every other payment.
+  if (caps.otherPayments && accessUnchanged && newExpiry) {
+    insertRow.service_active_until = ymd(newExpiry)
   }
 
   if (caps.creditReversal) {
@@ -723,16 +755,14 @@ export async function recordPayment(
         'not extended. Try again once the connection is restored.'
     } else if (!canExtend(registered.status)) {
       warning = NOT_ACTIVATED
-    } else if (
-      firstPeriod &&
-      monthsPaid === 0 &&
-      newExpiry.getTime() === firstPeriod.expiry.getTime()
-    ) {
+    } else if (accessUnchanged || !newExpiry) {
       // DELIBERATELY NOT A WARNING. This is the correct and expected outcome of
-      // a first payment: the customer already holds access to the end of the
-      // period they have just paid for, so there is nothing to move. Writing
-      // the same date back would put an extend through the backwards-write
-      // guard for no reason and log an extension that extended nothing.
+      // a payment that bought no months: a first payment, where the customer
+      // already holds access to the end of the period they have just paid for,
+      // or a short prepayment on a clear balance, where the money is held as
+      // credit and the expiry stays put. Writing the same date back would put
+      // an extend through the backwards-write guard for no reason and log an
+      // extension that extended nothing.
     } else {
       // extendInRadius still refuses to move an expiry backwards. A cashier who
       // picks a date earlier than the customer already holds lands here and is
@@ -875,8 +905,13 @@ export async function recordPayment(
     customerName: fullName,
     // Only surfaced when access actually moved, so the panel never promises an
     // extension that did not happen.
-    newExpiryIso: networkExtended && newExpiry ? newExpiry.toISOString() : null,
+    // Surfaced when access moved, and when it deliberately did not — the panel
+    // then says which date it stayed at. Null when there is no date to give.
+    newExpiryIso:
+      (networkExtended || accessUnchanged) && newExpiry ? newExpiry.toISOString() : null,
     networkExtended,
+    accessUnchanged,
+    creditHeld: creditAdded,
     warning,
     carriedBalance: caps.billing ? carriedAfter : 0,
     paymentId,

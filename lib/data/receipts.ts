@@ -31,7 +31,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
   // Columns from migrations that may not be applied are only requested once the
   // probe confirms them, matching how the rest of the data layer reads.
   const cols =
-    'id, amount, payment_date, created_at, agent, payment_type, notes' +
+    'id, amount, payment_date, created_at, agent, payment_type, notes, months_paid' +
     (caps.checkoff ? ', payment_method' : '') +
     (caps.billing ? ', carried_balance_before, carried_balance_after' : '') +
     (caps.creditReversal ? ', credit_applied' : '') +
@@ -64,6 +64,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     payment_type: string | null
     payment_method?: string | null
     notes: string | null
+    months_paid: number | null
     carried_balance_before?: number | string | null
     carried_balance_after?: number | string | null
     credit_applied?: number | string | null
@@ -125,6 +126,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
   let balance: number | null = null
   let activeUntil: string | null = null
   let creditCarried: number | null = null
+  let accessUnchanged = false
 
   if (kind === 'other') {
     // The line item is the category name. No balance, no expiry, no brought
@@ -209,6 +211,12 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
 
     // Also a DATE column, and the one the off-by-one was reported against.
     if (r.service_active_until) activeUntil = receiptDate(r.service_active_until)
+
+    // A service payment that bought no months (lib/billing.ts#monthsCovered)
+    // is stamped months_paid 0, and the expiry it left the customer with is
+    // the one they already held. The receipt has to say that in so many words:
+    // "Service active until" alone reads as a grant.
+    accessUnchanged = Number(r.months_paid ?? 1) === 0
   }
 
   return {
@@ -233,5 +241,6 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     balance,
     creditCarried,
     activeUntil,
+    accessUnchanged,
   }
 }
