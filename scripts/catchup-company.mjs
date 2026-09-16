@@ -7,9 +7,44 @@
  * in the legacy app; this brings across what they took while ISPMan was being
  * set up, once. Delete it after the cut-over.
  *
- *   node scripts/catchup-company.mjs <schema> <company_id> --cld=<id> [--dry-run]
+ *   node scripts/catchup-company.mjs <schema> <company_id> --cld=<id> [--until=YYYY-MM-DD] [--dry-run]
  *
  *   node scripts/catchup-company.mjs COMPANY_wcnetjagmail_com 26 --cld=1 --dry-run
+ *   node scripts/catchup-company.mjs COMPANY_kevinvernon11yahoo_com 31 --cld=3 --until=2026-09-14 --dry-run
+ *
+ * --until is the cut-off, inclusive to the end of that day in the company's
+ * timezone: legacy rows dated later are left for the next run and reported.
+ *
+ * HOW STAFF ARE MATCHED — BY LEGACY ID, NOT BY EMAIL
+ *   The original migration stamped user_id on every payment it imported. That
+ *   is the durable record of "legacy agent #68 is ISPMan user 139", and it is
+ *   what STEP 1 reads back: for each legacy agent id, the user_id its migrated
+ *   payments carry. Email is only consulted for an agent with no migrated
+ *   payments to learn from.
+ *
+ *   This used to match on email first and it failed silently: Chloe Graham
+ *   Vernon's legacy address had a "1" appended ON PURPOSE, to stop her logging
+ *   into the legacy system, so her twelve catch-up rows were about to import
+ *   as "Agent #68" with no user link while her 3,451 migrated rows sat linked
+ *   to user 139. Any address edited since migration would do the same.
+ *
+ * WHAT A CATCH-UP PAYMENT DOES TO THE CUSTOMER
+ *   SETTLES THE BALANCE, by the migration's own rule: a payment since
+ *   PAID_SINCE means the customer is square, so carried_balance goes to 0 and
+ *   the row stamps carried_balance_before/after. Without this the customer
+ *   keeps the opening balance the migration charged for a bill they have now
+ *   paid, and the next bill run chases money the legacy till already took.
+ *
+ *   HOLDS THE SURPLUS AS CREDIT. Money beyond the balance becomes
+ *   account_credit (stamped as credit_applied), which the bill run draws down
+ *   before charging — the same thing ISPMan does for a prepayment at its own
+ *   till. The migration zeroed flat and held nothing; that was a decision for
+ *   history, not for money taken last week.
+ *
+ *   NEVER TOUCHES radcheck. The legacy app moved the expiry when it took the
+ *   money; the expiry it holds is read and printed so nobody has to trust
+ *   that, and a customer with no Expiration row is reported as unprovisioned
+ *   and still recorded.
  *
  * HOW AN ALREADY-IMPORTED PAYMENT IS TOLD FROM A NEW ONE
  *   By the legacy id the migration wrote into `notes`:
@@ -37,6 +72,8 @@ import mysql from 'mysql2/promise'
 // ---------------------------------------------------------------------------
 
 const PAYMENTS_SINCE = '2026-03-04'
+/** A payment on or after this date means the customer is square (migration STEP 2). */
+const PAID_SINCE = '2026-08-20'
 const HISTORICAL_MONTHS_PAID = 1
 const PAYMENT_CHUNK = 200
 const CONCURRENCY = 12
@@ -100,10 +137,17 @@ const SCHEMA = positional[0]
 const COMPANY_ID = Number(positional[1])
 const CLD_COMPANY_ID = Number(opts.cld)
 const DRY_RUN = flags.has('--dry-run')
+const UNTIL = opts.until ?? null
 
 if (!SCHEMA || !Number.isInteger(COMPANY_ID) || !Number.isInteger(CLD_COMPANY_ID)) {
-  console.error('Usage: node scripts/catchup-company.mjs <schema> <company_id> --cld=<id> [--dry-run]')
+  console.error('Usage: node scripts/catchup-company.mjs <schema> <company_id> --cld=<id> [--until=YYYY-MM-DD] [--dry-run]')
   process.exit(1)
+}
+if (UNTIL !== null && !/^\d{4}-\d{2}-\d{2}$/.test(UNTIL)) {
+  console.error('--until must be YYYY-MM-DD'); process.exit(1)
+}
+for (const k of Object.keys(opts)) {
+  if (!['cld', 'until'].includes(k)) { console.error('Unknown option --' + k); process.exit(1) }
 }
 for (const f of flags) {
   if (f !== '--dry-run') { console.error('Unknown flag ' + f); process.exit(1) }
@@ -205,6 +249,42 @@ async function main() {
   const { data: existingUsers } = await supabase
     .from('users').select('id, first_name, last_name, email').eq('company_id', COMPANY_ID)
   const byEmail = new Map((existingUsers ?? []).map((u) => [String(u.email).toLowerCase(), u]))
+  const userById = new Map((existingUsers ?? []).map((u) => [u.id, u]))
+
+  // THE LINK THE MIGRATION WROTE. Every migrated payment carries the ISPMan
+  // user_id of its legacy agent, and the legacy row still carries the agent
+  // id, so joining the two on the legacy payment id says which ISPMan user
+  // each legacy agent id IS. Read before the loop so it decides first.
+  const allPayments = await page('payments', 'id, agent, user_id, notes')
+  const importedByLegacyId = new Map()
+  for (const p of allPayments) {
+    const m = LEGACY_NOTE.exec(String(p.notes ?? ''))
+    if (m) importedByLegacyId.set(Number(m[1]), p)
+  }
+  const [legacyAgentRows] = await my.query(
+    'SELECT id, agent FROM `' + SCHEMA + '`.payments WHERE date >= ? AND agent REGEXP ?',
+    [PAYMENTS_SINCE, '^[0-9]+$']
+  )
+  /** legacy agent id -> { user_id -> count of migrated payments stamped with it }. */
+  const seen = new Map()
+  for (const lp of legacyAgentRows) {
+    const isp = importedByLegacyId.get(Number(lp.id))
+    if (!isp || !isp.user_id) continue
+    const agentId = Number(lp.agent)
+    const tally = seen.get(agentId) ?? new Map()
+    tally.set(isp.user_id, (tally.get(isp.user_id) ?? 0) + 1)
+    seen.set(agentId, tally)
+  }
+  const linkedByLegacyId = new Map()
+  for (const [agentId, tally] of seen) {
+    const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1])
+    if (ranked.length > 1) {
+      skip('user', 'legacy agent #' + agentId,
+        'migrated payments point at more than one ISPMan user: ' +
+        ranked.map(([id, n]) => '#' + id + ' x' + n).join(', ') + ' — using the majority')
+    }
+    linkedByLegacyId.set(agentId, ranked[0][0])
+  }
 
   /** legacy cld id -> { ispmanId, name }. Also keyed by name for the re-link. */
   const userMap = new Map()
@@ -219,21 +299,36 @@ async function main() {
       skip('user', '#' + u.id + ' ' + name, 'platform operator account — not recreated')
       continue
     }
+
+    // 1. By legacy id, from what the migration stamped. Email is not looked at:
+    //    it may have been edited on either side since, deliberately or not.
+    const linked = linkedByLegacyId.get(Number(u.id))
+    if (linked !== undefined) {
+      const isp = userById.get(linked)
+      userMap.set(Number(u.id), { ispmanId: linked, name })
+      skip('user', '#' + u.id + ' ' + name,
+        'linked by legacy id to ISPMan user #' + linked + (isp ? ' ' + isp.email : '') +
+        (isp && String(isp.email).toLowerCase() !== email ? ' (legacy email differs: ' + u.email + ')' : ''))
+      continue
+    }
+
+    // 2. No migrated payments to learn from: fall back to email, then create.
     if (!role) { skip('user', '#' + u.id + ' ' + name, 'unmapped role "' + u.role + '"'); continue }
     if (!EMAIL_RE.test(email)) {
-      skip('user', '#' + u.id + ' ' + name, 'malformed email "' + u.email + '"'); continue
+      skip('user', '#' + u.id + ' ' + name, 'malformed email "' + u.email + '" and no migrated payments to link by'); continue
     }
     if (byEmail.has(email)) {
       const hit = byEmail.get(email)
       userMap.set(Number(u.id), { ispmanId: hit.id, name })
-      skip('user', '#' + u.id + ' ' + name, 'already in ISPMan — reused')
+      skip('user', '#' + u.id + ' ' + name, 'no migrated payments; matched by email — reused')
       continue
     }
     plan.push({ legacyId: Number(u.id), name, email, role })
   }
 
   console.log('  legacy staff rows : ' + legacyUsers.length)
-  console.log('  already in ISPMan : ' + userMap.size)
+  console.log('  already in ISPMan : ' + userMap.size +
+    ' (' + linkedByLegacyId.size + ' linked by legacy id from migrated payments)')
   console.log('  to create         : ' + plan.length)
   for (const p of plan) {
     console.log('    #' + String(p.legacyId).padEnd(5) + p.name.padEnd(24) + p.role.padEnd(15) + p.email)
@@ -296,7 +391,7 @@ async function main() {
   // -------------------------------------------------------------------------
   rule('STEP 2  re-link existing payments')
 
-  const existingPayments = await page('payments', 'id, agent, user_id, notes')
+  const existingPayments = allPayments
   const migrated = existingPayments.filter((p) => LEGACY_NOTE.test(String(p.notes ?? '')))
   const native = existingPayments.filter((p) => !LEGACY_NOTE.test(String(p.notes ?? '')))
 
@@ -348,12 +443,16 @@ async function main() {
   const alreadyHave = new Set(migrated.map((p) => Number(LEGACY_NOTE.exec(p.notes)[1])))
   console.log('  legacy ids already imported : ' + alreadyHave.size)
 
-  // The customer map. Legacy id lives in the customer's notes, same key.
-  const customers = await page('customers', 'id, notes')
+  // The customer map. Legacy id lives in the customer's notes, same key. The
+  // balance columns are what a catch-up payment settles; the identity is what
+  // radcheck is read by, for the report only.
+  const customers = await page('customers',
+    'id, notes, first_name, last_name, carried_balance, account_credit, monthly_rate, ' +
+    'customer_type, mac_address, pppoe_username')
   const customerByLegacy = new Map()
   for (const c of customers) {
     const m = /legacy\s*#\s*(\d+)/i.exec(String(c.notes ?? ''))
-    if (m) customerByLegacy.set(Number(m[1]), c.id)
+    if (m) customerByLegacy.set(Number(m[1]), c)
   }
   console.log('  customers keyed by legacy id: ' + customerByLegacy.size + ' of ' + customers.length)
 
@@ -361,18 +460,30 @@ async function main() {
     'SELECT id, customer, amount, type, date, agent FROM `' + SCHEMA + '`.payments ' +
     'WHERE date >= ? ORDER BY date ASC, id ASC', [PAYMENTS_SINCE]
   )
-  const missing = legacyPayments.filter((p) => !alreadyHave.has(Number(p.id)))
+  const notImported = legacyPayments.filter((p) => !alreadyHave.has(Number(p.id)))
+  // The cut-off is inclusive to the end of the day. Legacy `date` is
+  // 'YYYY-MM-DD HH:MM', so a string compare against 'YYYY-MM-DD 23:59' holds.
+  const beyond = UNTIL ? notImported.filter((p) => String(p.date) > UNTIL + ' 23:59') : []
+  const missing = UNTIL ? notImported.filter((p) => String(p.date) <= UNTIL + ' 23:59') : notImported
   console.log('  legacy rows in window       : ' + legacyPayments.length)
-  console.log('  not yet in ISPMan           : ' + missing.length)
+  console.log('  not yet in ISPMan           : ' + notImported.length)
+  if (UNTIL) {
+    console.log('  cut-off                     : end of ' + UNTIL + '  (' + beyond.length + ' later row(s) left for next time' +
+      (beyond.length ? ', J$' + beyond.reduce((s, p) => s + Number(p.amount), 0).toLocaleString() : '') + ')')
+  }
 
   const rows = []
   let noCustomer = 0
   const methodCounts = {}
   const catchAgents = {}
+  /** ISPMan customer id -> the balance and credit as this run leaves them. */
+  const ledger = new Map()
+  let settledTotal = 0
+  let creditTotal = 0
 
   for (const p of missing) {
-    const customerId = customerByLegacy.get(Number(p.customer))
-    if (customerId === undefined) { noCustomer += 1; continue }
+    const customer = customerByLegacy.get(Number(p.customer))
+    if (customer === undefined) { noCustomer += 1; continue }
 
     const dates = toPaymentDates(p.date, tz)
     if (!dates) { skip('payment', 'legacy #' + p.id, 'unreadable date "' + p.date + '"'); continue }
@@ -389,9 +500,30 @@ async function main() {
     const agent = hit ? hit.name : (/^\d+$/.test(raw) ? 'Agent #' + raw : raw || 'Legacy import')
     catchAgents[agent] = (catchAgents[agent] ?? 0) + 1
 
+    // THE MIGRATION'S RULE, APPLIED TO THE ROWS IT DID NOT SEE. A payment on or
+    // after PAID_SINCE means the customer is square: the balance goes to 0.
+    // Money beyond the balance is held as credit, which is where ISPMan's own
+    // till puts a prepayment. A second row for the same customer in this run
+    // starts from where the first left them, not from the stored column.
+    const state = ledger.get(customer.id) ?? {
+      balance: Number(customer.carried_balance ?? 0),
+      credit: Number(customer.account_credit ?? 0),
+      openingBalance: Number(customer.carried_balance ?? 0),
+      openingCredit: Number(customer.account_credit ?? 0),
+    }
+    const before = state.balance
+    const square = dates.paidOn >= PAID_SINCE
+    const after = square ? 0 : Math.max(0, before - amount)
+    const credit = Math.max(0, amount - before)
+    state.balance = after
+    state.credit += credit
+    ledger.set(customer.id, state)
+    settledTotal += before - after
+    creditTotal += credit
+
     rows.push({
       company_id: COMPANY_ID,
-      customer_id: customerId,
+      customer_id: customer.id,
       amount,
       months_paid: HISTORICAL_MONTHS_PAID,
       paid_on: dates.paidOn,
@@ -404,8 +536,33 @@ async function main() {
       user_id: hit ? hit.ispmanId : null,
       agent,
       notes: 'Migrated from legacy payment #' + p.id,
+      // What this payment did, stamped the way app/actions/payments.ts stamps
+      // it, so the receipt and a later correction read the same columns.
+      amount_due: before,
+      carried_balance_before: before,
+      carried_balance_after: after,
+      credit_applied: credit,
+      // access_granted_until stays null: the legacy till moved the expiry and
+      // this script does not restate what it did not do.
+      _legacyId: Number(p.id),
+      _legacyDate: String(p.date),
+      _customerName: [customer.first_name, customer.last_name].filter(Boolean).join(' '),
+      _identity: customer.customer_type === 'pppoe' ? customer.pppoe_username : customer.mac_address,
     })
   }
+
+  // What the legacy till already did to access, read for the report and never
+  // written. A customer with no Expiration row is recorded and reported.
+  const identities = [...new Set(rows.map((r) => r._identity).filter(Boolean))]
+  const radcheck = new Map()
+  if (identities.length) {
+    const [rc] = await my.query(
+      'SELECT username, value FROM `' + need('RADIUS_DB_NAME') + '`.radcheck ' +
+      'WHERE attribute = ? AND username IN (?)', ['Expiration', identities]
+    )
+    for (const r of rc) radcheck.set(r.username, r.value)
+  }
+  const unprovisioned = rows.filter((r) => !r._identity || !radcheck.has(r._identity))
 
   console.log('  customer not in ISPMan      : ' + noCustomer)
   console.log('  to insert                   : ' + rows.length)
@@ -416,12 +573,42 @@ async function main() {
   if (rows.length > 0) {
     console.log('  date range                  : ' + rows[0].paid_on + ' .. ' + rows[rows.length - 1].paid_on)
   }
+  console.log('  balance settled             : J$' + settledTotal.toLocaleString() +
+    ' across ' + [...ledger.values()].filter((s) => s.openingBalance !== s.balance).length + ' customers')
+  console.log('  credit held                 : J$' + creditTotal.toLocaleString() +
+    ' across ' + [...ledger.values()].filter((s) => s.credit !== s.openingCredit).length + ' customers')
+  console.log('  unprovisioned (no radcheck) : ' + unprovisioned.length)
+
+  if (rows.length) {
+    console.log('\n  every row:')
+    console.log('  ' + ['legacy', 'date', 'amount', 'collector', 'cust', 'name', 'before', 'after', 'credit', 'radcheck expiry'].join(' | '))
+    for (const r of rows) {
+      console.log('  ' + [
+        '#' + r._legacyId, r._legacyDate, r.amount,
+        r.agent + (r.user_id ? ' (#' + r.user_id + ')' : ' (NO USER LINK)'),
+        r.customer_id, r._customerName,
+        r.carried_balance_before, r.carried_balance_after, r.credit_applied,
+        r._identity ? (radcheck.get(r._identity) ?? 'NOT PROVISIONED') : 'NO IDENTITY',
+      ].join(' | '))
+    }
+  }
+  for (const r of unprovisioned) {
+    skip('payment', 'legacy #' + r._legacyId + ' ' + r._customerName,
+      'recorded, but no Expiration row in radcheck — customer is not provisioned')
+  }
+
+  // The customer writes this run would make: one per customer, from the ledger.
+  const customerPatches = [...ledger.entries()]
+    .filter(([, s]) => s.balance !== s.openingBalance || s.credit !== s.openingCredit)
+    .map(([id, s]) => ({ id, carried_balance: s.balance, account_credit: s.credit, openingBalance: s.openingBalance, openingCredit: s.openingCredit }))
 
   let inserted = 0
+  let settled = 0
   if (DRY_RUN) {
-    if (rows.length) console.log('\n  sample:\n    ' + JSON.stringify(rows[0], null, 2).replace(/\n/g, '\n    '))
+    console.log('\n  would insert ' + rows.length + ' payment row(s) and update ' + customerPatches.length + ' customer balance(s) (nothing written)')
   } else {
-    for (const batch of chunk(rows, PAYMENT_CHUNK)) {
+    const clean = rows.map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !k.startsWith('_'))))
+    for (const batch of chunk(clean, PAYMENT_CHUNK)) {
       const { error } = await supabase.from('payments').insert(batch)
       if (error) {
         for (const row of batch) {
@@ -433,6 +620,20 @@ async function main() {
       inserted += batch.length
     }
     console.log('  inserted                    : ' + inserted)
+
+    // Guarded by the opening values, so a balance that moved between the read
+    // above and this write (a till payment, a bill run) is not overwritten.
+    for (const c of customerPatches) {
+      const { error, count } = await supabase
+        .from('customers')
+        .update({ carried_balance: c.carried_balance, account_credit: c.account_credit }, { count: 'exact' })
+        .eq('company_id', COMPANY_ID).eq('id', c.id)
+        .eq('carried_balance', c.openingBalance).eq('account_credit', c.openingCredit)
+      if (error) skip('settle', 'customer #' + c.id, error.message)
+      else if ((count ?? 0) !== 1) skip('settle', 'customer #' + c.id, 'balance moved since it was read — not settled; check by hand')
+      else settled += 1
+    }
+    console.log('  customers settled           : ' + settled + ' of ' + customerPatches.length)
   }
 
   // -------------------------------------------------------------------------
@@ -511,9 +712,11 @@ async function main() {
   console.log('  users created       : ' + (DRY_RUN ? plan.length + ' (would be)' : issued.length))
   console.log('  payments re-linked  : ' + (DRY_RUN ? relink.length + ' (would be)' : relinked))
   console.log('  payments imported   : ' + (DRY_RUN ? rows.length + ' (would be)' : inserted))
+  console.log('  balances settled    : ' + (DRY_RUN ? customerPatches.length + ' customers (would be)' : settled) +
+    ', J$' + settledTotal.toLocaleString() + ' cleared, J$' + creditTotal.toLocaleString() + ' held as credit')
   console.log('  handovers imported  : ' + (DRY_RUN ? coRows.length + ' (would be)' : coInserted))
   console.log('  native payments     : ' + native.length + ' — untouched')
-  console.log('  radcheck            : NOT TOUCHED')
+  console.log('  radcheck            : NOT TOUCHED (read for the report only)')
 
   if (issued.length) {
     console.log('\n  ' + '!'.repeat(66))
