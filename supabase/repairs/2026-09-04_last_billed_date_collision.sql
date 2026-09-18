@@ -14,6 +14,23 @@
 -- RUN THIS BY HAND IN THE SUPABASE SQL EDITOR. Nothing applies it for you, and
 -- it deliberately does NOT live in supabase/migrations/ — it is a one-off data
 -- repair scoped to a single company, not a schema change.
+--
+-- WHAT ACTUALLY HAPPENED, AND WHY THIS FILE WAS CORRECTED (2026-09-18)
+--   This file shipped with 2026-09-30 filled in at STEP 3 — the value "as
+--   briefed" — and STEP 1, which exists to check that brief, contradicted it:
+--   the only bulk_bill row (log #313, 3 Sep 13:03Z) reads "Bulk bill for August
+--   2026 ... Last billed date set to 2026-08-31". On 4 Sep the repair was run
+--   with 2026-09-30 anyway, and without the `= 2026-09-03` predicate: it hit
+--   all 952 customers the company then had, not 71. Every one of them then read
+--   as already billed for September, a month that had not ended.
+--
+--   Corrected on 2026-09-18 by scripts/correct-last-billed-date-ezmze.mjs, which
+--   proves each of the 952 was billed for August from its balance history and
+--   sets 2026-08-31. That script is the record; re-run it dry to see the proof.
+--
+--   STEP 3 below now carries 2026-08-31, so this file can no longer write the
+--   wrong value. It is also now a NO-OP: no row holds 2026-09-03 any more. It is
+--   kept as the history of the repair, not as something left to run.
 -- ===========================================================================
 
 
@@ -63,11 +80,10 @@ where  company_id = 27
 -- ---------------------------------------------------------------------------
 -- STEP 3 — REPAIR.
 --
--- >>> SET THIS TO WHAT STEP 1 TOLD YOU. <<<
---   date '2026-09-30'  — the run billed SEPTEMBER 2026   (as briefed)
---   date '2026-08-31'  — the run billed AUGUST 2026      (what bill_date = 1
---                        in arrears implies: a run on 1 Sep bills the month
---                        that just ended)
+-- STEP 1 ANSWERED THIS: the run billed AUGUST 2026 and stamped 2026-08-31
+-- (log #313). That is also what bill_date = 1 in arrears implies — a run in
+-- early September bills the month that just ended. The value below is that
+-- answer. The original brief said September / 2026-09-30, and it was wrong.
 --
 -- Getting this backwards is not cosmetic. Stamping 2026-09-30 on customers who
 -- were really billed for August makes the 1 October run skip them for September
@@ -78,7 +94,7 @@ where  company_id = 27
 -- Re-running is a no-op: the WHERE clause no longer matches once it has run.
 -- ---------------------------------------------------------------------------
 update customers
-set    last_billed_date = date '2026-09-30'   -- <<< the value from STEP 1
+set    last_billed_date = date '2026-08-31'   -- the value STEP 1 gives: log #313
 where  company_id = 27
   and  billing_type = 'postpaid'
   and  last_billed_date = date '2026-09-03'
