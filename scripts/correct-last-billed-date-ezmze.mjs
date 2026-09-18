@@ -29,12 +29,20 @@
  *   Every customer row is created with carried_balance = 0 — app/actions/
  *   customers.ts and app/actions/import.ts both write 0. In the code as it
  *   stood on 3 Sep the only writers of that column were the bill run, which
- *   adds monthly_rate, and recordPayment, which only ever reduces it. So the
- *   balance standing immediately after the run is the run's charge and nothing
+ *   adds monthly_rate, and recordPayment. So the balance standing after the run
+ *   and BEFORE THE CUSTOMER'S FIRST PAYMENT is the run's charge and nothing
  *   else. It is read from the first thing that touched the row afterwards:
  *     - payments.carried_balance_before on the customer's earliest payment, or
  *     - old= on their earliest balance_adjusted log row, or
  *     - customers.carried_balance today, when nothing has touched the row.
+ *
+ *   ONLY THE FIRST EVENT IS EVIDENCE, and that is not caution for its own sake.
+ *   The 3 Sep recordPayment could RAISE a balance: a short payment wrote
+ *   carried_balance = rate - paid whatever was owed (lib/billing.ts
+ *   #carriedBalanceAfter at b69741f), so J$1,000 on a clear account left
+ *   J$5,000 "owing" — customer 1239, payment #653. A balance read after any
+ *   payment therefore proves nothing about the run. The first event's `before`
+ *   is safe because no payment can precede it.
  *
  *   BILLED    that balance equals the monthly rate (the rate at the run, where
  *             a customer_updated row records a later change).
