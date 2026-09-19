@@ -81,8 +81,13 @@ export const DEFAULT_TEMPLATES: Record<Exclude<SmsKind, 'bulk'>, string> = {
  *
  * Separate from the SMS ones on purpose. 160 characters is the wrong shape
  * for an email, a subject has no SMS meaning, and an email can afford to say
- * how to pay. Plain text: it renders everywhere, and nothing here needs a
- * layout. NULL in the database means "use these", exactly as for SMS.
+ * how to pay. NULL in the database means "use these", exactly as for SMS.
+ *
+ * PLAIN TEXT IS STILL THE SOURCE. These are the words; the layout is the
+ * platform's one HTML shell (lib/messaging/email-shell.ts), put around them at
+ * send time in the company's logo and colour. Blank lines separate paragraphs,
+ * and a run of "Label: value" lines — like Account and Balance below — is
+ * drawn as a table. The same text, with a footer, is the text/plain part.
  */
 export const DEFAULT_EMAIL_SUBJECTS: Record<Exclude<SmsKind, 'bulk'>, string> = {
   payment_receipt: 'Payment received — {{company}}',

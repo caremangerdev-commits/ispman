@@ -1,11 +1,14 @@
 import 'server-only'
 
+import type { Brand } from '@/lib/brand'
+import { brandFor } from '@/lib/data/brand'
 import { loadEnrichedCustomers } from '@/lib/data/customers'
 import { getSmsSettings, type MessagingSettings } from '@/lib/data/sms'
 import { daysUntilDateOnly, formatCurrency } from '@/lib/format'
 import type { ChannelAdapter, OutboundMessage } from '@/lib/messaging/adapter'
 import { parseAttachmentRef, renderAttachment } from '@/lib/messaging/attachments'
 import { channelReadiness, enqueueForRoute, type Readiness } from '@/lib/messaging/enqueue'
+import { presentMessage } from '@/lib/messaging/present'
 import { allAdapters } from '@/lib/messaging/registry'
 import { CHANNELS, type Channel } from '@/lib/messaging/routes'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -255,6 +258,11 @@ async function drain(
   const throttle = adapter.throttleSeconds(settings)
   let budget = await remainingBudget(companyId, adapter.channel, throttle, channelColumn)
 
+  // The company's brand, for a channel that carries HTML. Loaded on the first
+  // row that needs it and once per drain: a tick with nothing queued downloads
+  // no logo, and a 400-message send downloads it once.
+  let brand: Brand | null = null
+
   while (budget > 0 && Date.now() < deadline) {
     // PAYMENT RECEIPTS FIRST. A customer standing at a counter must not wait
     // behind a 400-message blast. DESCENDING, and this relies on the kind
@@ -293,12 +301,22 @@ async function drain(
       attachment = rendered
     }
 
+    // The stored body is words. Where the channel takes HTML it is dressed in
+    // the company's shell now — see lib/messaging/present.ts. brandFor() does
+    // not throw for a missing logo or colour, so this cannot fail a send.
+    let presented: Pick<OutboundMessage, 'body' | 'html' | 'inlineImages'> =
+      { body: row.body, html: null, inlineImages: [] }
+    if (adapter.supportsHtml) {
+      brand ??= await brandFor(companyId)
+      presented = presentMessage(brand, { kind: row.kind, subject: row.subject ?? null, body: row.body })
+    }
+
     const result = await adapter.send(context, {
       id: row.id,
       kind: row.kind,
       recipient: row.recipient ?? row.phone ?? '',
       subject: row.subject ?? null,
-      body: row.body,
+      ...presented,
       urgent: row.kind === 'payment_receipt',
       attachment,
     })

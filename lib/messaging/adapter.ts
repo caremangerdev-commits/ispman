@@ -38,7 +38,20 @@ export type OutboundMessage = {
   recipient: string
   /** Email only. */
   subject: string | null
+  /** The message as plain text. For a channel that takes HTML, the text/plain part. */
   body: string
+  /**
+   * The same message as HTML, or null. Only ever set for an adapter that
+   * declares supportsHtml; rendered by lib/messaging/present.ts, never by the
+   * adapter — templates are not an adapter's business.
+   */
+  html: string | null
+  /**
+   * Images the HTML refers to as cid:<contentId>, carried inside the message.
+   * The company's logo travels this way because its bucket is private: there
+   * is no URL for a mail client to fetch.
+   */
+  inlineImages: { contentId: string; filename: string; bytes: Uint8Array; contentType: string }[]
   /**
    * A payment receipt is urgent: a customer at a counter must not queue
    * behind a bulk send. Each adapter maps this onto whatever its provider
@@ -84,6 +97,13 @@ export interface ChannelAdapter<C = unknown> {
 
   /** Whether documents may be attached on this channel. */
   readonly supportsAttachments: boolean
+
+  /**
+   * Whether this channel carries HTML. The dispatcher presents a message in
+   * the company's branded shell only for adapters that say so; for the rest,
+   * `html` is null and `inlineImages` is empty.
+   */
+  readonly supportsHtml: boolean
 
   send(context: C, message: OutboundMessage): Promise<SendOutcome>
 

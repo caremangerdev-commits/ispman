@@ -83,6 +83,7 @@ export const emailAdapter: ChannelAdapter<EmailContext> = {
   channel: 'email',
   label: 'Email',
   supportsAttachments: true,
+  supportsHtml: true,
 
   configured: () => emailConfigured(),
 
@@ -110,6 +111,26 @@ export const emailAdapter: ChannelAdapter<EmailContext> = {
   throttleSeconds: () => THROTTLE_SECONDS,
 
   async send(context, message) {
+    // Documents and inline images are both `attachments` to Resend; what makes
+    // an image inline is its content_id, which the HTML names as cid:<id>.
+    // Field names are from Resend's "Embed Inline Images" reference. The batch
+    // endpoint does not take inline images; this adapter never uses it.
+    const attachments = [
+      ...(message.attachment
+        ? [{
+            filename: message.attachment.filename,
+            content: base64(message.attachment.bytes),
+            content_type: message.attachment.contentType,
+          }]
+        : []),
+      ...message.inlineImages.map((image) => ({
+        filename: image.filename,
+        content: base64(image.bytes),
+        content_type: image.contentType,
+        content_id: image.contentId,
+      })),
+    ]
+
     let res
     try {
       res = await call(context.apiKey, '/emails', {
@@ -120,16 +141,12 @@ export const emailAdapter: ChannelAdapter<EmailContext> = {
           to: [message.recipient],
           ...(context.replyTo ? { reply_to: context.replyTo } : {}),
           subject: message.subject ?? '',
+          // ALWAYS the text part, with the HTML beside it when there is one.
+          // A client that refuses HTML shows this, and a spam filter scores a
+          // message with both parts better than one with HTML alone.
           text: message.body,
-          ...(message.attachment
-            ? {
-                attachments: [{
-                  filename: message.attachment.filename,
-                  content: base64(message.attachment.bytes),
-                  content_type: message.attachment.contentType,
-                }],
-              }
-            : {}),
+          ...(message.html ? { html: message.html } : {}),
+          ...(attachments.length ? { attachments } : {}),
         }),
       })
     } catch (err) {

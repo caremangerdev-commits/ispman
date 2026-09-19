@@ -109,6 +109,16 @@ export type SchemaCapabilities = {
    * SMS adapter is offered; nothing about email is shown.
    */
   messaging: boolean
+  /**
+   * Migration 0023: `settings.logo_path` and `settings.brand_color`. The
+   * private `company-assets` bucket lands in the same file and cannot be
+   * probed through PostgREST; an upload against a missing bucket says so.
+   *
+   * Absent, every company is unbranded — a wordmark in the default colour —
+   * which is also what a company that never opens the Branding card gets, so
+   * the fallback is the ordinary path and not a degraded one.
+   */
+  branding: boolean
 }
 
 /**
@@ -138,6 +148,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     accountPrefixRes,
     smsOutboxRes, smsSettingRes, smsOptOutRes,
     messagingOutboxRes, messagingSettingRes, messagingOptOutRes,
+    brandingRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -196,6 +207,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
       .select('route_bulk, email_from_name, notify_payment_receipt_enabled')
       .limit(1),
     db.from('customers').select('email_opted_out').limit(1),
+    // 0023: one ALTER adds both, so one probe decides them.
+    db.from('settings').select('logo_path, brand_color').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -341,6 +354,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     'customers.sms_opted_out': smsOptOutRes,
     'settings messaging columns': messagingSettingRes,
     'customers.email_opted_out': messagingOptOutRes,
+    'settings branding columns': brandingRes,
   })) {
     if (res.error && res.error.code !== '42703') {
       throw new Error('Schema probe failed for ' + what + ': ' + res.error.message)
@@ -393,6 +407,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     accountNumbers: !missingAccountNumbers,
     sms: !missingSms,
     messaging: !missingSms && !missingMessaging,
+    branding: brandingRes.error?.code !== '42703',
   }
 })
 

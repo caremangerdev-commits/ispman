@@ -24,6 +24,7 @@ export const smsAdapter: ChannelAdapter<SmsContext> = {
   channel: 'sms',
   label: 'SMS',
   supportsAttachments: false,
+  supportsHtml: false,
 
   configured: () => relayConfigured(),
 

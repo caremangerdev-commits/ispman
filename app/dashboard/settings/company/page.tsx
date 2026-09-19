@@ -1,14 +1,18 @@
 import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 
+import { BrandingCard } from '@/components/settings/BrandingCard'
 import { GeneralSettingsForm } from '@/components/settings/GeneralSettingsForm'
+import { brandFor, getBrandColor } from '@/lib/data/brand'
 import {
   CURRENCIES, DATE_FORMATS, getGeneralSettings, TIMEZONES,
 } from '@/lib/data/company'
+import { getMessagingSettings } from '@/lib/data/sms'
 import { currencySymbol } from '@/lib/format'
 import { GENERAL_SETTINGS_HINT, getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { canOpenSetting } from '@/lib/settings-nav'
+import { renderTemplate } from '@/lib/sms/templates'
 
 export const metadata: Metadata = { title: 'General Settings · ISPMan' }
 
@@ -25,12 +29,31 @@ async function guard() {
   return session
 }
 
+/** A customer nobody has, for the Branding card's email preview. */
+const SAMPLE_VALUES = {
+  '{{name}}': 'Margaret Williams',
+  '{{first_name}}': 'Margaret',
+  '{{account}}': '10122',
+  '{{amount}}': '4,500.00',
+  '{{balance}}': '4,500.00',
+  '{{expiry}}': '30 September 2026',
+  '{{days}}': '3',
+}
+
 export default async function GeneralSettingsPage() {
   const { company } = await guard()
-  const [settings, caps] = await Promise.all([
+  const [settings, caps, brand, color, messaging] = await Promise.all([
     getGeneralSettings(company.id),
     getSchemaCapabilities(),
+    brandFor(company.id),
+    getBrandColor(company.id),
+    getMessagingSettings(company.id),
   ])
+
+  // The preview uses the company's OWN expiry warning wording, so a template
+  // they have edited is what they see dressed in the shell.
+  const sample = messaging.emailTemplates.expiry_warning
+  const sampleValues = { ...SAMPLE_VALUES, '{{company}}': brand.name }
 
   return (
     <div className="space-y-4">
@@ -61,6 +84,24 @@ export default async function GeneralSettingsPage() {
         taxIdAvailable={caps.taxId}
         accountNumbersAvailable={caps.accountNumbers}
         currencySymbol={currencySymbol(settings.currency)}
+      />
+
+      <BrandingCard
+        available={caps.branding}
+        companyName={brand.name}
+        contact={brand.contact}
+        // The stored file itself, inline: the bucket is private and stays
+        // private, so the page is handed bytes rather than a link.
+        logo={brand.logo
+          ? {
+              dataUri: 'data:image/png;base64,' + Buffer.from(brand.logo.png).toString('base64'),
+              width: brand.logo.width,
+              height: brand.logo.height,
+            }
+          : null}
+        color={color}
+        sampleSubject={renderTemplate(sample.subject, sampleValues)}
+        sampleBody={renderTemplate(sample.body, sampleValues)}
       />
     </div>
   )

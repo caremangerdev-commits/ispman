@@ -32,8 +32,12 @@ const MARGIN_Y = 14
  * Backslash first, or the escapes this adds get escaped in turn. Anything
  * outside WinAnsi's printable range becomes an octal escape rather than raw
  * bytes, so a company name with an accent cannot corrupt the stream.
+ *
+ * Exported for lib/letterhead-pdf.ts: one escaper for every PDF this app
+ * writes, because this is precisely the kind of function that goes wrong when
+ * it exists twice.
  */
-function pdfString(text: string): string {
+export function pdfString(text: string): string {
   let out = ''
   for (const ch of text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)')) {
     const code = ch.charCodeAt(0)
