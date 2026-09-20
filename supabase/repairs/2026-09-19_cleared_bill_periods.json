@@ -1,0 +1,450 @@
+[
+ {
+  "payment_id": 1877,
+  "company_id": 26,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.793Z"
+ },
+ {
+  "payment_id": 1880,
+  "company_id": 26,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 792,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 1408,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 1443,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 1574,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 1757,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 1875,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 7344,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13324,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13570,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13622,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13657,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13681,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13690,
+  "company_id": 27,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13592,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13593,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13594,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13624,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13659,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13663,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13707,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13708,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13709,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13711,
+  "company_id": 31,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13299,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13306,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13316,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13319,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13386,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13446,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13494,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13534,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13575,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13605,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13609,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13626,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13629,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13632,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13676,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13691,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13692,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13697,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13698,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13704,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13717,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13718,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13719,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13720,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13721,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13722,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13724,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13727,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13729,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13730,
+  "company_id": 32,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13418,
+  "company_id": 33,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13579,
+  "company_id": 33,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13580,
+  "company_id": 33,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13588,
+  "company_id": 33,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13607,
+  "company_id": 33,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13683,
+  "company_id": 33,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13725,
+  "company_id": 33,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13733,
+  "company_id": 33,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ },
+ {
+  "payment_id": 13734,
+  "company_id": 33,
+  "billing_period_start": "2026-08-01",
+  "billing_period_end": "2026-08-31",
+  "cleared_at": "2026-09-20T01:37:53.794Z"
+ }
+]
