@@ -128,18 +128,48 @@ function settledMonthStart(from: Date, billDate: number | null): Date {
   return new Date(from.getFullYear(), from.getMonth() - back, 1)
 }
 
-/** The month a payment covers — first and last day inclusive. */
+/**
+ * The billed month a payment settles — first and last day inclusive — or NULL
+ * WHEN IT SETTLES NONE.
+ *
+ * A PAYMENT ONLY HAS A BILL PERIOD IF A BILL IS BEING PAID. With nothing on the
+ * carried balance no bill run's charge is being cleared: the money is a
+ * prepayment for time ahead, and the arithmetic above would still hand it a
+ * month — an unrelated one. A customer provisioned in September who had never
+ * been billed, holding an expiry of 24 September, was shown "Bill period: July
+ * 2026", and the same July was stamped on the payment row. An empty label is
+ * better than a wrong month, and the stored columns matter more than the
+ * label: bills will read them.
+ *
+ * THE TEST IS settledMonths(), the same function that decides whether the
+ * money buys a renewal month, so "this payment settles a month" means one
+ * thing to the pricing, the label and the stored period. A first-period
+ * payment (migration 0017) has nothing carried either — its charge was never
+ * raised by a bill run — so it has no bill period, for the same reason.
+ *
+ * `carriedBalance` is the balance BEFORE this payment.
+ */
 export function billingPeriod(
   from: Date,
-  billDate: number | null
-): { start: string; end: string } {
+  billDate: number | null,
+  carriedBalance: number
+): { start: string; end: string } | null {
+  if (settledMonths(carriedBalance) === 0) return null
   const start = settledMonthStart(from, billDate)
   const end = new Date(start.getFullYear(), start.getMonth() + 1, 0)
   return { start: ymd(start), end: ymd(end) }
 }
 
-/** "August 2026" — the bill period label on the expiry preview. */
-export function billingPeriodLabel(from: Date, billDate: number | null): string {
+/**
+ * "August 2026" — the bill period label on the expiry preview. Null exactly
+ * when billingPeriod is: nothing owed, no month to name.
+ */
+export function billingPeriodLabel(
+  from: Date,
+  billDate: number | null,
+  carriedBalance: number
+): string | null {
+  if (settledMonths(carriedBalance) === 0) return null
   return settledMonthStart(from, billDate)
     .toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
 }

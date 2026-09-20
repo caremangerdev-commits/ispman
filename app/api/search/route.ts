@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { expiryOf } from '@/lib/domain'
+import { localDateOnly } from '@/lib/format'
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { lastNetworkEvents } from '@/lib/data/network-events'
 import { resolveStatus, type CustomerStatus } from '@/lib/status'
@@ -31,7 +32,18 @@ export type SearchHit = {
   monthly_rate: number
   /** Billing expiry, derived from last_bill_date. Drives the renewal preview. */
   expires_at: string | null
-  /** Network expiry from the registry — what the customer card displays. */
+  /**
+   * Network expiry from the registry, AS THE CALENDAR DATE RADCHECK HOLDS:
+   * "YYYY-MM-DD", never an instant. Read it with parseYmd, never `new Date()`.
+   *
+   * It used to be `expiry.toISOString()`. radcheck stores wall-clock text with
+   * no zone ("24 Sep 2026 00:00"); the server parses that in its own zone, and
+   * a browser in Jamaica re-reading the instant got 23 Sep 19:00. The payment
+   * form then showed the 23rd AND ANCHORED THE CUT-OFF WALK ON IT, so a
+   * customer holding the 24th on a cut-off of the 24th was previewed to 28 Sep
+   * while the server, reading the same row in its own zone, wrote 28 Oct. See
+   * lib/format.ts#localDateOnly, which exists for exactly this.
+   */
   network_expiry: string | null
   expiry_mode: string
   /** Day of month the customer is cut off. Drives the from_expiry preview,
@@ -209,7 +221,9 @@ export async function GET(request: NextRequest) {
       })(),
       network_expiry: (() => {
         const key = r.mac_address ? r.mac_address.trim().toUpperCase() : null
-        return key ? (registry.get(key)?.expiry?.toISOString() ?? null) : null
+        const held = key ? registry.get(key)?.expiry : null
+        // The date, taken in the process that parsed it — see SearchHit.
+        return held ? localDateOnly(held) : null
       })(),
       customer_type: caps.connectionTypes ? toCustomerType(r.customer_type) : null,
       monthly_rate: Number(r.monthly_rate ?? 0),

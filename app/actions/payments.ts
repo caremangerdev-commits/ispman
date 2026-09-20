@@ -637,11 +637,15 @@ export async function recordPayment(
   }
 
   if (caps.billing) {
-    // Every payment now settles a period already used, so every payment stamps
-    // one. Under the retired split only the postpaid arm did.
-    const period = billingPeriod(paymentDate, customer.bill_date ?? null)
-    insertRow.billing_period_start = period.start
-    insertRow.billing_period_end = period.end
+    // The billed month this payment settles — NULL WHEN IT SETTLES NONE. With
+    // nothing carried the money is a prepayment and there is no month to name;
+    // this used to stamp one anyway, derived from the date alone, and wrote
+    // July onto payments by customers first provisioned in September. Bills
+    // will read these columns, so a null that is true beats a month that is
+    // not. See lib/billing.ts#billingPeriod.
+    const period = billingPeriod(paymentDate, customer.bill_date ?? null, carriedBefore)
+    insertRow.billing_period_start = period?.start ?? null
+    insertRow.billing_period_end = period?.end ?? null
     // The expiry this payment leaves the customer with. For a payment that
     // bought nothing that is the one they already held, stamped so the receipt
     // can print it as unchanged; null when there is no registry expiry to keep.

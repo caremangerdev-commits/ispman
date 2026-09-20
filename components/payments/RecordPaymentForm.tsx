@@ -60,6 +60,25 @@ const fmtDate = (d: Date) =>
   d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
 
 /**
+ * The network expiry a search hit carries, as a LOCAL-midnight Date.
+ *
+ * THE ONE PLACE THIS FORM READS IT. `network_expiry` is a calendar date,
+ * "YYYY-MM-DD", and parseYmd is the only correct reader. It used to be an ISO
+ * instant read with `new Date()`, in three places, and a browser west of the
+ * server saw every midnight expiry as the day before — displayed it that way
+ * and anchored the cut-off walk on it, so the preview promised one month while
+ * the server wrote another. See SearchHit.network_expiry.
+ */
+const networkExpiry = (hit: { network_expiry: string | null }): Date | null =>
+  parseYmd(hit.network_expiry)
+
+/** The same date, for display: what the cashier reads is what the walk starts from. */
+const networkExpiryLabel = (hit: { network_expiry: string | null }): string => {
+  const held = networkExpiry(hit)
+  return held ? fmtDate(held) : '—'
+}
+
+/**
  * What the Amount field should start at.
  *
  * One month is the carried balance alone — what the bill run charged and the
@@ -510,7 +529,16 @@ export function RecordPaymentForm({
   const creditAdded =
     selected && Number.isFinite(paid) ? prepaymentCredit(owed, paid) : 0
 
-  const currentExpiry = selected?.network_expiry ? new Date(selected.network_expiry) : null
+  const currentExpiry = selected ? networkExpiry(selected) : null
+
+  // The billed month this payment settles, or null when it settles none —
+  // nothing carried means a prepayment, and a prepayment names no month. Keyed
+  // on `carried`, the balance a bill run raised, NOT on `owed`: a first-period
+  // charge was never billed by a run. The server stamps the payment row from
+  // the same function and the same balance.
+  const billPeriodLabel = selected
+    ? billingPeriodLabel(today, selected.bill_date, carried)
+    : null
 
   // Full payment, and the "Full Period" branch of a short one, land on the
   // same date — the period the customer would have got had they paid in full.
@@ -668,7 +696,7 @@ export function RecordPaymentForm({
                       <span className="shrink-0 text-xs text-gray-400">
                         {/* Registry expiry, matching the card and detail page.
                             expires_at is billing-derived and never shown. */}
-                        {r.network_expiry ? fmtDate(new Date(r.network_expiry)) : '—'}
+                        {networkExpiryLabel(r)}
                       </span>
                     </button>
                   </li>
@@ -707,7 +735,7 @@ export function RecordPaymentForm({
               <p className="mt-1 pr-16 text-xs text-gray-400">
                 Current Expiry:{' '}
                 <span className="font-medium text-gray-200">
-                  {selected.network_expiry ? fmtDate(new Date(selected.network_expiry)) : '—'}
+                  {networkExpiryLabel(selected)}
                 </span>
               </p>
             )}
@@ -791,9 +819,9 @@ export function RecordPaymentForm({
                   {/* Shown whenever anything is carried, so the customer is never
                       asked for a figure larger than their plan without being told
                       where the difference came from. */}
-                  {carried > 0 ? (
+                  {billPeriodLabel ? (
                     <p className="text-right text-xs text-gray-500">
-                      {'Billed ' + billingPeriodLabel(today, selected.bill_date)}
+                      {'Billed ' + billPeriodLabel}
                     </p>
                   ) : null}
                   {/* Prepayment is money collected, not a discount — it is shown
@@ -1280,11 +1308,11 @@ export function RecordPaymentForm({
                   Outstanding balance: {money(outstanding)}
                   {accessChoice === 'full_period' ? ' carried to next bill' : ''}
                 </p>
-              ) : (
+              ) : billPeriodLabel ? (
                 <p className="mt-0.5 text-xs text-gray-400">
-                  Bill period: {billingPeriodLabel(today, selected.bill_date)}
+                  Bill period: {billPeriodLabel}
                 </p>
-              )}
+              ) : null}
 
               {/* Not an error — the cashier may have good reason — but it is
                   access the payment did not cover, so it is never silent. */}

@@ -9,6 +9,7 @@ import { EMPTY_COLLECTION, getAgentCollections } from '@/lib/data/checkoff'
 import { getGeneralSettings } from '@/lib/data/company'
 import { listPaymentCategories } from '@/lib/data/payment-categories'
 import { expiryOf } from '@/lib/domain'
+import { localDateOnly } from '@/lib/format'
 import { lastNetworkEvent } from '@/lib/data/network-events'
 import { getRadiusStatus } from '@/lib/radius-db'
 import { resolveStatus } from '@/lib/status'
@@ -114,7 +115,8 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
         // registry's answer, with a deliberate disconnection separated from an
         // ordinary lapse by the event log.
         status: net ? resolveStatus(net.status, lastEvent) : 'unknown',
-        network_expiry: net?.expiry ? net.expiry.toISOString() : null,
+        // The calendar date, not an instant — see SearchHit.network_expiry.
+        network_expiry: net?.expiry ? localDateOnly(net.expiry) : null,
       }
     })()),
     customer_type: caps.connectionTypes ? toCustomerType(r.customer_type) : null,
