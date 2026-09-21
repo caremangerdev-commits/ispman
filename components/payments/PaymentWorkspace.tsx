@@ -31,6 +31,7 @@ export function PaymentWorkspace({
   initialCustomer,
   currency,
   gracePeriodDays,
+  companyBillDate,
   paymentCategories,
   otherPaymentsAvailable,
 }: {
@@ -42,6 +43,8 @@ export function PaymentWorkspace({
   currency: string
   /** Company grace period, for the postpaid expiry preview. */
   gracePeriodDays: number
+  /** settings.bill_date — the bill day of a customer with none of their own. */
+  companyBillDate: number | null
   /** False until migration 0011 is applied — postpaid controls stay hidden. */
   /** The Purpose list for "other" payments. */
   paymentCategories: PaymentCategory[]
@@ -62,6 +65,7 @@ export function PaymentWorkspace({
         initialCustomer={initialCustomer}
         currency={currency}
         gracePeriodDays={gracePeriodDays}
+        companyBillDate={companyBillDate}
         paymentCategories={paymentCategories}
         otherPaymentsAvailable={otherPaymentsAvailable}
         onCustomerChange={(hit) => setFocused(Boolean(hit))}

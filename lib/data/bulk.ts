@@ -112,6 +112,16 @@ export type BillableCustomer = {
    */
   lastBilledDate: string | null
   /**
+   * `customers.bill_date` AS STORED, null for the many customers who have none.
+   * Never used raw: the run resolves it with the company's day through
+   * lib/billing.ts#effectiveBillDay. Kept as stored because the write re-asserts
+   * it in its WHERE clause, and that has to compare against the column.
+   */
+  billDate: number | null
+  /** `customers.date_added`, `YYYY-MM-DD`. A bill date that came round before
+   *  this was never this customer's — see lib/billing.ts#billDue. */
+  dateAdded: string | null
+  /**
    * The name this customer authenticates under in radcheck: the PPPoE username
    * for a PPPoE subscriber, the MAC for everyone else. Null when neither is
    * recorded, which means there is no row in the registry to ask about.
@@ -124,7 +134,7 @@ export type BillableCustomer = {
 
 const BILLABLE_BASE =
   'id, first_name, last_name, monthly_rate, carried_balance, account_credit, ' +
-  'last_billed_date, mac_address'
+  'last_billed_date, bill_date, date_added, mac_address'
 
 /**
  * The select list, plus the 0003 identity columns where they exist.
@@ -158,6 +168,8 @@ function toBillable(row: Record<string, unknown>): BillableCustomer {
     carriedBalance: Number(row.carried_balance ?? 0) || 0,
     accountCredit: Number(row.account_credit ?? 0) || 0,
     lastBilledDate: (row.last_billed_date as string | null) ?? null,
+    billDate: (row.bill_date as number | null) ?? null,
+    dateAdded: (row.date_added as string | null) ?? null,
     identity: identity && identity.trim() ? identity.trim() : null,
   }
 }

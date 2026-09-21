@@ -19,11 +19,13 @@ import {
   type BillableCustomer,
 } from '@/lib/data/bulk'
 import { getSchemaCapabilities } from '@/lib/schema'
-import { CURRENCY_SYMBOL, formatCurrency } from '@/lib/format'
+import { CURRENCY_SYMBOL, formatCurrency, instantToDateOnly } from '@/lib/format'
 import { activateInRadius, batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { usernameKey } from '@/lib/radius/format'
 import { formatRadiusExpiration, radiusIdentity } from '@/lib/radius/format'
-import { applyCredit } from '@/lib/billing'
+import {
+  applyCredit, billRunVerdict, type BillRunVerdict, type BillScope,
+} from '@/lib/billing'
 import { addMonths, nextCutOff } from '@/lib/expiry'
 
 /**
@@ -554,11 +556,6 @@ function resolvePeriod(key: string): BillPeriod | null {
   }
 }
 
-/** Was this customer already billed FOR the chosen period? */
-function billedInPeriod(lastBilledDate: string | null, period: BillPeriod): boolean {
-  return lastBilledDate !== null && lastBilledDate >= period.start && lastBilledDate <= period.end
-}
-
 /**
  * Which of these customers had service at the moment the run fired.
  *
@@ -640,10 +637,72 @@ export type BillTarget = {
   amount: number
 }
 
+/** One line of the preview's bill-date table. */
+export type BillDayLine = {
+  /** The day customers on this line are billed on — their own, or the company's. */
+  day: number
+  /** The date this period's bill falls due for them, `YYYY-MM-DD`. */
+  dueDate: string
+  /** Would be billed by this run. */
+  included: number
+  /** Their bill date for this period has not arrived. */
+  notDue: number
+  /** It arrived before they were on the platform, so it was never theirs. */
+  beforeJoined: number
+}
+
+/**
+ * What the run needs to know about the company, read once: today IN THE
+ * COMPANY'S ZONE, and its bill day for customers with none of their own.
+ *
+ * NOT THE SERVER'S TODAY. The server runs in UTC; at 8pm in Kingston on the
+ * 19th it already reads the 20th, and a run pressed then would bill the
+ * 20th-group a day early.
+ */
+async function billRunContext(companyId: number): Promise<{ today: string; companyBillDate: number | null }> {
+  const { data, error } = await tenantClient()
+    .from('settings').select('bill_date, timezone').eq('company_id', companyId).maybeSingle()
+  if (error) throw new Error('Could not read the company bill day: ' + error.message)
+
+  const row = data as { bill_date: number | null; timezone: string | null } | null
+  return {
+    today: instantToDateOnly(new Date(), row?.timezone || 'America/Jamaica'),
+    companyBillDate: row?.bill_date ?? null,
+  }
+}
+
+/** The period before this one, for the "still unbilled" line. */
+function previousPeriod(period: BillPeriod): BillPeriod | null {
+  const [y, m] = period.key.split('-').map(Number)
+  const d = new Date(y, m - 2, 1)
+  return resolvePeriod(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'))
+}
+
 export type BillAllPlan = {
   /** False until migration 0011 is applied; the modal refuses to run. */
   available: boolean
   period: BillPeriod
+  /** Which customers this plan considered — see lib/billing.ts#BillScope. */
+  scope: BillScope
+  /** Today in the company's zone: the date bill dates were tested against. */
+  today: string
+  /**
+   * Per bill date: who is included, who is not yet due, who joined too late.
+   * What lets an operator SEE which dates they are about to bill. In scope
+   * 'all' every customer counts as included, whatever their date.
+   */
+  billDays: BillDayLine[]
+  /** Bill date for this period not reached yet. Always 0 in scope 'all'. */
+  notDue: number
+  /** Bill date came round before they were on the platform. 0 in scope 'all'. */
+  beforeJoined: number
+  /**
+   * Customers whose bill date for the PREVIOUS period has come round and who
+   * were never billed for it. A group missed last month is otherwise invisible
+   * once the picker moves on; this is how it gets noticed. Bill the older
+   * period FIRST — see the note on billBatch about running periods out of order.
+   */
+  priorUnbilled: { label: string; key: string; count: number } | null
   /** Every customer in the company. Was postpaid-only before the split was
    *  retired — see lib/billing.ts. */
   customerCount: number
@@ -674,18 +733,36 @@ export type BillAllPlan = {
  * because it is the only thing standing between them and silently doubling
  * every balance in the company. A run that would bill nobody still returns a
  * plan — the modal shows why rather than an empty error.
+ *
+ * BY BILL DATE, BY DEFAULT. `scope` 'due' considers only customers whose bill
+ * date for this period has been reached; 'all' is the whole company, which is
+ * what this did before bill dates counted. The per-date table is returned in
+ * both, so the operator is shown WHICH dates they are about to bill either way.
+ * Who is billed is decided by lib/billing.ts#billRunVerdict — the same call
+ * billBatch makes before it writes.
  */
-export async function loadBillAllPlan(periodKey: string): Promise<BillAllPlan> {
+export async function loadBillAllPlan(
+  periodKey: string,
+  scope: BillScope = 'due'
+): Promise<BillAllPlan> {
   const { company } = await authorize()
 
   const period = resolvePeriod(periodKey)
   if (!period) throw new Error('"' + periodKey + '" is not a valid billing period.')
+  // Anything that is not exactly 'all' is the safe one.
+  const runScope: BillScope = scope === 'all' ? 'all' : 'due'
 
   const caps = await getSchemaCapabilities()
   if (!caps.billing) {
     return {
       available: false,
       period,
+      scope: runScope,
+      today: '',
+      billDays: [],
+      notDue: 0,
+      beforeJoined: 0,
+      priorUnbilled: null,
       customerCount: 0,
       alreadyBilled: 0,
       zeroRate: 0,
@@ -697,30 +774,41 @@ export async function loadBillAllPlan(periodKey: string): Promise<BillAllPlan> {
     }
   }
 
-  const customers = await readBillableCustomers(company.id)
+  const [customers, context] = await Promise.all([
+    readBillableCustomers(company.id),
+    billRunContext(company.id),
+  ])
   const service = await serviceStateFor(customers)
+  const prior = previousPeriod(period)
 
-  let alreadyBilled = 0
-  let zeroRate = 0
-  let disconnected = 0
-  let unprovisioned = 0
+  const counts: Record<BillRunVerdict, number> = {
+    bill: 0, already_billed: 0, not_due: 0, before_joined: 0,
+    zero_rate: 0, disconnected: 0, unprovisioned: 0,
+  }
+  const lines = new Map<number, BillDayLine>()
   let creditApplied = 0
+  let priorCount = 0
   const targets: BillTarget[] = []
 
   for (const customer of customers) {
-    const state = service.get(customer.id)
+    const decided = billRunVerdict({
+      period, scope: runScope, today: context.today,
+      companyBillDate: context.companyBillDate,
+      customer, service: service.get(customer.id),
+    })
+    counts[decided.verdict]++
 
-    if (billedInPeriod(customer.lastBilledDate, period)) {
-      alreadyBilled++
-    } else if (customer.monthlyRate <= 0) {
-      zeroRate++
-    } else if (state === 'disconnected') {
-      // Tested before the rate so an operator sees "disconnected" rather than
-      // a zero-rate skip for someone who is both.
-      disconnected++
-    } else if (state === 'unprovisioned') {
-      unprovisioned++
-    } else {
+    // The table is about DATES, so it only counts what a date decided: who is
+    // in, who is not yet due, who joined too late. Already-billed, zero-rate
+    // and lapsed customers are reported company-wide below, as before.
+    const line = lines.get(decided.billDay) ??
+      { day: decided.billDay, dueDate: decided.dueDate, included: 0, notDue: 0, beforeJoined: 0 }
+    if (decided.verdict === 'bill') line.included++
+    else if (decided.verdict === 'not_due') line.notDue++
+    else if (decided.verdict === 'before_joined') line.beforeJoined++
+    lines.set(decided.billDay, line)
+
+    if (decided.verdict === 'bill') {
       targets.push({ id: customer.id, name: customer.name, amount: customer.monthlyRate })
       // Preview only. billBatch recomputes this from the row it is about to
       // write, so a credit spent between the preview and the run cannot be
@@ -729,16 +817,35 @@ export async function loadBillAllPlan(periodKey: string): Promise<BillAllPlan> {
         customer.accountCredit, customer.carriedBalance, customer.monthlyRate
       ).drawn
     }
+
+    // Due for the period BEFORE this one, with a rate, and never billed for it.
+    // Service state is not consulted: this is a prompt to go and look, not a
+    // list of who that run would bill.
+    if (prior && customer.monthlyRate > 0) {
+      const before = billRunVerdict({
+        period: prior, scope: 'due', today: context.today,
+        companyBillDate: context.companyBillDate, customer, service: 'active',
+      })
+      if (before.verdict === 'bill') priorCount++
+    }
   }
 
   return {
     available: true,
     period,
+    scope: runScope,
+    today: context.today,
+    billDays: [...lines.values()]
+      .filter((l) => l.included + l.notDue + l.beforeJoined > 0)
+      .sort((a, b) => a.day - b.day),
+    notDue: counts.not_due,
+    beforeJoined: counts.before_joined,
+    priorUnbilled: prior && priorCount > 0 ? { label: prior.label, key: prior.key, count: priorCount } : null,
     customerCount: customers.length,
-    alreadyBilled,
-    zeroRate,
-    disconnected,
-    unprovisioned,
+    alreadyBilled: counts.already_billed,
+    zeroRate: counts.zero_rate,
+    disconnected: counts.disconnected,
+    unprovisioned: counts.unprovisioned,
     creditApplied: Math.round(creditApplied * 100) / 100,
     targets,
     totalAmount: targets.reduce((sum, t) => sum + t.amount, 0),
@@ -751,12 +858,18 @@ export type BillOutcome = {
   result:
     | 'billed'
     | 'skipped_already'
+    /** Bill date for this period not reached when the write ran. */
+    | 'skipped_not_due'
+    /** Bill date came round before the customer was on the platform. */
+    | 'skipped_before_joined'
     | 'skipped_zero_rate'
     | 'skipped_disconnected'
     | 'skipped_unprovisioned'
     | 'failed'
   /** Added to carried_balance. Populated for `billed`. */
   amount?: number
+  /** The day they are billed on. Populated for `billed`, for the log row. */
+  billDay?: number
   /** Populated for `failed`. */
   error?: string
 }
@@ -775,9 +888,22 @@ export type BillOutcome = {
  *
  * It does READ radcheck, and that read decides who is billed at all: a customer
  * whose access has expired when the run fires had no service to be charged for
- * and is skipped. `bill_date` plays no part in any of this — the period comes
- * from the operator, and a customer with no bill day recorded bills exactly like
- * one who has it. See serviceStateFor.
+ * and is skipped. See serviceStateFor.
+ *
+ * THE PERIOD COMES FROM THE OPERATOR; WHO IS DUE COMES FROM `bill_date`. In the
+ * default scope a customer is billed only once their bill date for the period
+ * has been reached — their own day, else the company's — and only if they were
+ * on the platform when it came round. Reached means reached OR PASSED: a run
+ * pressed on the 25th still bills the 20th-group; late is not skipped. It used
+ * to bill the whole company whatever their dates, which charged JMEDIA's
+ * 4th-group a month early the moment anyone billed its 20th-group. Scope 'all'
+ * is that old behaviour, kept as a deliberate choice. Decided by
+ * lib/billing.ts#billRunVerdict, the same call the preview makes.
+ *
+ * ONE RUN, ONE PERIOD, ONE STAMP — so customers on different dates are billed
+ * by DIFFERENT RUNS OF THE SAME PERIOD. August is run on 4 September for the
+ * 4th-group and again on the 20th for the rest, and the guard below is what
+ * makes the second run skip the first group. Nothing about the stamp changed.
  *
  * last_billed_date IS THE PERIOD, NOT THE RUN DATE. Billing August 2026 writes
  * 2026-08-31 whether the run happens on 1 September or on 14 October. Stamping
@@ -795,6 +921,19 @@ export type BillOutcome = {
  * already billed for a later one adds the charge but keeps the later stamp,
  * because lowering it would re-open a period that has already been billed.
  *
+ * ON THE RECORD: RUNNING PERIODS OUT OF ORDER IS NOT SAFE TO REPEAT, AND A
+ * STAMP COLUMN CANNOT MAKE IT SO. One date per customer can say "billed through
+ * here"; it cannot say "billed for September AND for August". So once a
+ * customer carries September's stamp, billing August leaves the stamp where it
+ * is, the guard's third arm (`last_billed_date.gt.<period end>`) still reads
+ * them as unbilled for August, and A SECOND AUGUST RUN BILLS THEM AGAIN. That
+ * is how Ezmze's 2026-09-30 stamp would have double-billed 952 customers.
+ * Billing by date makes out-of-order catch-up more likely, not less. The safe
+ * order is always OLDEST PERIOD FIRST, and the preview's "still unbilled for
+ * last period" line exists to point there. The real fix is a row per customer
+ * per month — a ledger the guard can look a period up in — and until that
+ * exists this is a rule for operators, not something the code enforces.
+ *
  * Sequential, one customer per statement. PostgREST cannot add a column to
  * itself, so each new balance is computed here from the row it was read from —
  * which is also what lets the guard and the arithmetic stay in agreement.
@@ -802,11 +941,14 @@ export type BillOutcome = {
 export async function billBatch(input: {
   period: string
   ids: number[]
+  /** Absent, or anything that is not exactly 'all', means 'due' — the safe one. */
+  scope?: BillScope
 }): Promise<{ outcomes: BillOutcome[] }> {
   const { company } = await authorize()
 
   const period = resolvePeriod(input.period)
   if (!period) throw new Error('"' + input.period + '" is not a valid billing period.')
+  const scope: BillScope = input.scope === 'all' ? 'all' : 'due'
 
   if (input.ids.length > MAX_BATCH) {
     throw new Error('Too many customers in one batch: ' + input.ids.length + ' (max ' + MAX_BATCH + ').')
@@ -829,6 +971,9 @@ export async function billBatch(input: {
   // moment the run fires" is what the rule says, so this is the reading that
   // decides. Same reasoning as the unbilled guard in the WHERE clause below.
   const service = await serviceStateFor(customers)
+
+  // Today and the company's bill day, read at WRITE time for the same reason.
+  const context = await billRunContext(company.id)
 
   // Matches a row that has NOT been billed for this period: never billed, last
   // billed before it, or last billed after it. The three arms are what let an
@@ -853,28 +998,29 @@ export async function billBatch(input: {
       continue
     }
 
-    if (billedInPeriod(customer.lastBilledDate, period)) {
-      outcomes.push({ id, name: customer.name, result: 'skipped_already' })
-      continue
-    }
+    // THE SAME DECISION THE PREVIEW MADE, made again on the row as it is now.
+    // The ids came from the plan, but a plan is minutes old: a bill date can
+    // have been edited, a customer can have lapsed, midnight can have passed.
+    //
+    // Nothing is stamped for any skip. A zero rate corrected later, a customer
+    // reconnected later, a bill date reached later — each leaves the period
+    // open so it can still be billed when that is the right call.
+    const decided = billRunVerdict({
+      period, scope, today: context.today,
+      companyBillDate: context.companyBillDate,
+      customer, service: service.get(id),
+    })
 
-    // Skipped outright rather than billed for nothing: leaving last_billed_date
-    // alone means a rate corrected later can still be billed for this period.
-    if (customer.monthlyRate <= 0) {
-      outcomes.push({ id, name: customer.name, result: 'skipped_zero_rate' })
-      continue
-    }
-
-    // No service, no bill. last_billed_date is deliberately NOT stamped for
-    // these, exactly as for a zero rate: the period stays open, so a customer
-    // reconnected later can still be billed for it if that is the right call.
-    const state = service.get(id)
-    if (state === 'disconnected') {
-      outcomes.push({ id, name: customer.name, result: 'skipped_disconnected' })
-      continue
-    }
-    if (state === 'unprovisioned') {
-      outcomes.push({ id, name: customer.name, result: 'skipped_unprovisioned' })
+    if (decided.verdict !== 'bill') {
+      const SKIPS: Record<Exclude<BillRunVerdict, 'bill'>, BillOutcome['result']> = {
+        already_billed: 'skipped_already',
+        not_due: 'skipped_not_due',
+        before_joined: 'skipped_before_joined',
+        zero_rate: 'skipped_zero_rate',
+        disconnected: 'skipped_disconnected',
+        unprovisioned: 'skipped_unprovisioned',
+      }
+      outcomes.push({ id, name: customer.name, result: SKIPS[decided.verdict] })
       continue
     }
 
@@ -896,7 +1042,7 @@ export async function billBatch(input: {
     )
 
     try {
-      const { error, count } = await db
+      let write = db
         .from('customers')
         .update(
           {
@@ -908,7 +1054,22 @@ export async function billBatch(input: {
         )
         .eq('company_id', company.id)
         .eq('id', id)
+        // THE GUARD, unchanged: the row is still unbilled for this period.
         .or(unbilled)
+
+      // AND STILL ON THE BILL DATE THAT MADE IT DUE. Asserted in the statement
+      // for the same reason the guard is: the decision above was made on a row
+      // read a moment ago. A bill date edited in between matches nothing, and
+      // the customer is reported skipped rather than billed on a date they are
+      // no longer on. Not asserted in scope 'all', where no date decided
+      // anything and the write is exactly what it was before.
+      if (scope === 'due') {
+        write = customer.billDate === null
+          ? write.is('bill_date', null)
+          : write.eq('bill_date', customer.billDate)
+      }
+
+      const { error, count } = await write
 
       if (error) throw new Error(error.message)
 
@@ -920,7 +1081,10 @@ export async function billBatch(input: {
         continue
       }
 
-      outcomes.push({ id, name: customer.name, result: 'billed', amount: customer.monthlyRate })
+      outcomes.push({
+        id, name: customer.name, result: 'billed',
+        amount: customer.monthlyRate, billDay: decided.billDay,
+      })
     } catch (err) {
       const message = (err as Error).message
       console.error('[bulk] bill failed for customer %d: %s', id, message)
@@ -942,6 +1106,12 @@ export async function logBulkBill(summary: {
   skippedDisconnected: number
   skippedUnprovisioned: number
   failed: number
+  /** Absent reads as 'due', which is what billBatch ran if it was given none. */
+  scope?: BillScope
+  skippedNotDue?: number
+  skippedBeforeJoined?: number
+  /** Customers billed, per bill day. What the log says was actually billed. */
+  billDays?: { day: number; count: number }[]
 }): Promise<void> {
   const { profile } = await authorize()
 
@@ -949,11 +1119,31 @@ export async function logBulkBill(summary: {
   const label = period ? period.label : summary.period
   const stamp = period ? period.end : 'the end of the period'
 
+  const ordinal = (n: number) => {
+    const tens = n % 100
+    const suffix = tens >= 11 && tens <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')
+    return n + suffix
+  }
+  const days = (summary.billDays ?? [])
+    .filter((d) => d.count > 0)
+    .sort((a, b) => a.day - b.day)
+    .map((d) => ordinal(d.day) + ' (' + d.count + ')')
+    .join(', ')
+
+  // WHICH customers, said in the row itself: a log that reads the same for a
+  // by-date run and a whole-company run cannot answer "why was this customer
+  // billed on the 20th" a month later.
+  const who = summary.scope === 'all'
+    ? 'WHOLE COMPANY, regardless of bill date'
+    : 'customers whose bill date had been reached'
+
   const details =
-    'Bulk bill for ' + label + ': ' + summary.billed +
+    'Bulk bill for ' + label + ', ' + who + (days ? ' — bill dates ' + days : '') + ': ' + summary.billed +
     (summary.billed === 1 ? ' customer' : ' customers') +
     ' billed ' + formatCurrency(summary.totalAmount) + ' in total, added to carried balance. ' +
     'Skipped ' + summary.skippedAlready + ' already billed for this period, ' +
+    (summary.skippedNotDue ?? 0) + ' whose bill date has not been reached, ' +
+    (summary.skippedBeforeJoined ?? 0) + ' not on the platform when it came round, ' +
     summary.skippedZeroRate + ' with no monthly rate, ' +
     summary.skippedDisconnected + ' disconnected, ' +
     summary.skippedUnprovisioned + ' never provisioned. ' +

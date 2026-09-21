@@ -122,10 +122,36 @@ export function daysBetween(from: Date, to: Date): number {
  * stamps the period end there and is the only writer of it, but it is stamped
  * per RUN rather than per customer-month, so bill_date is the stabler anchor.
  */
-function settledMonthStart(from: Date, billDate: number | null): Date {
-  const day = billDate && billDate >= 1 ? Math.floor(billDate) : 1
-  const back = from.getDate() >= day ? 1 : 2
+function settledMonthStart(from: Date, billDay: number): Date {
+  const back = from.getDate() >= billDay ? 1 : 2
   return new Date(from.getFullYear(), from.getMonth() - back, 1)
+}
+
+/**
+ * THE DAY OF THE MONTH A CUSTOMER IS BILLED ON. One definition, every caller.
+ *
+ * The customer's own `bill_date`; failing that the company's
+ * (`settings.bill_date`); failing that the 1st.
+ *
+ * WHY THIS IS A FUNCTION AND NOT A `?? 1`. Most customers on this platform have
+ * no bill date of their own — 1,276 of Vernon's 1,279, every customer of four
+ * other companies — and are billed on the company's day. The payment path used
+ * to read a missing date as the 1st while the bill run was about to read it as
+ * the company's day: for a company billing on the 26th, the till would have
+ * said a payment on the 19th settled August while the run that raised the
+ * charge called it July. Same drift as the three customer searches, and the
+ * same cure: everything below takes a resolved `billDay: number`, so a caller
+ * cannot reach the period arithmetic without coming through here first.
+ */
+export function effectiveBillDay(
+  customerBillDate: number | null | undefined,
+  companyBillDate: number | null | undefined
+): number {
+  for (const candidate of [customerBillDate, companyBillDate]) {
+    const day = Math.floor(Number(candidate))
+    if (Number.isFinite(day) && day >= 1 && day <= 31) return day
+  }
+  return 1
 }
 
 /**
@@ -151,11 +177,12 @@ function settledMonthStart(from: Date, billDate: number | null): Date {
  */
 export function billingPeriod(
   from: Date,
-  billDate: number | null,
+  /** From effectiveBillDay — never a raw, possibly-null column. */
+  billDay: number,
   carriedBalance: number
 ): { start: string; end: string } | null {
   if (settledMonths(carriedBalance) === 0) return null
-  const start = settledMonthStart(from, billDate)
+  const start = settledMonthStart(from, billDay)
   const end = new Date(start.getFullYear(), start.getMonth() + 1, 0)
   return { start: ymd(start), end: ymd(end) }
 }
@@ -166,12 +193,149 @@ export function billingPeriod(
  */
 export function billingPeriodLabel(
   from: Date,
-  billDate: number | null,
+  /** From effectiveBillDay — never a raw, possibly-null column. */
+  billDay: number,
   carriedBalance: number
 ): string | null {
   if (settledMonths(carriedBalance) === 0) return null
-  return settledMonthStart(from, billDate)
+  return settledMonthStart(from, billDay)
     .toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+}
+
+// ---------------------------------------------------------------------------
+// When a bill falls due (the bill run)
+// ---------------------------------------------------------------------------
+
+/**
+ * The date the bill FOR a period falls due for a customer billed on `billDay`:
+ * that day of the month AFTER the period. Billing is in arrears — August's bill
+ * is raised in September — which is the same convention settledMonthStart reads
+ * backwards from a payment date.
+ *
+ * DATE-ONLY STRINGS IN AND OUT, compared as strings. No Date crosses a zone
+ * here, which is the mistake the payment preview made.
+ *
+ * A day longer than the month is clamped to its last day, so a bill day of 31
+ * falls due on 30 September rather than never.
+ */
+export function billDueDate(periodEnd: string, billDay: number): string {
+  const [y, m] = periodEnd.split('-').map(Number)
+  // `m` is 1-based, so as a 0-based index it already names the month after.
+  const next = new Date(y, m, 1)
+  const last = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate()
+  return ymd(new Date(next.getFullYear(), next.getMonth(), Math.min(Math.max(1, billDay), last)))
+}
+
+export type BillDueVerdict =
+  /** The bill date has come round and the customer was here for it. */
+  | 'due'
+  /** The bill date for this period has not arrived yet. */
+  | 'not_yet'
+  /** It came round BEFORE the customer was on the platform. Never theirs. */
+  | 'before_joined'
+
+/**
+ * Whether the bill for a period is due for one customer, today.
+ *
+ * LATE IS STILL DUE. A customer billed on the 20th is due on the 20th and on
+ * the 25th alike: a run nobody pressed on the day is late, not skipped. (Whether
+ * they are then BILLED is a second question — the run also skips anyone whose
+ * access has lapsed, with no grace; see app/actions/bulk.ts#serviceStateFor.)
+ *
+ * A BILL DATE ONLY COUNTS IF THE CUSTOMER WAS HERE WHEN IT CAME ROUND. Without
+ * this, "late is still due" bills a new customer for every date that passed
+ * before they existed: JMEDIA's 29 customers billed on the 4th were imported on
+ * 16 September, and a run on 20 September would have read their 4 September
+ * date as merely late and charged a month they had already been carried past.
+ * Their first bill is the first date on or after they joined. For a migrated
+ * company `date_added` is the legacy signup date, long past, and never binds.
+ */
+export function billDue(opts: {
+  /** Last day of the period being billed, `YYYY-MM-DD`. */
+  periodEnd: string
+  billDay: number
+  /** Today IN THE COMPANY'S ZONE, `YYYY-MM-DD` — not the server's. */
+  today: string
+  /** `customers.date_added`. Null reads as "always been here". */
+  dateAdded: string | null
+}): { verdict: BillDueVerdict; dueDate: string } {
+  const dueDate = billDueDate(opts.periodEnd, opts.billDay)
+  if (dueDate > opts.today) return { verdict: 'not_yet', dueDate }
+  if (opts.dateAdded && dueDate < opts.dateAdded.slice(0, 10)) return { verdict: 'before_joined', dueDate }
+  return { verdict: 'due', dueDate }
+}
+
+/**
+ * `due` bills customers whose bill date has been reached — the default.
+ * `all` bills the whole company whatever their bill dates, which is what the
+ * run did before bill dates counted. It stays possible because a company's
+ * first run, or a catch-up, may genuinely want it; it is never the default.
+ */
+export type BillScope = 'due' | 'all'
+
+export type BillRunVerdict =
+  | 'bill'
+  | 'already_billed'
+  | 'not_due'
+  | 'before_joined'
+  | 'zero_rate'
+  | 'disconnected'
+  | 'unprovisioned'
+
+/** Was this customer already billed FOR the period? The guard, in JavaScript. */
+export function billedInPeriod(
+  lastBilledDate: string | null,
+  period: { start: string; end: string }
+): boolean {
+  return lastBilledDate !== null && lastBilledDate >= period.start && lastBilledDate <= period.end
+}
+
+/**
+ * WHAT A BILL RUN DOES WITH ONE CUSTOMER. One decision, for the preview and the
+ * write alike — app/actions/bulk.ts calls this from loadBillAllPlan and again
+ * from billBatch, so the list an operator confirms and the rows that get
+ * charged are decided by the same lines.
+ *
+ * THE ORDER IS THE ORDER OF REASONS an operator should be given:
+ *   already billed   the guard, first and unconditional, in both scopes
+ *   not due / before joined   the bill date — skipped entirely in scope 'all'
+ *   zero rate, disconnected, unprovisioned   as before bill dates counted
+ *
+ * Pure. The service state is handed in because reading radcheck is the
+ * caller's job; everything else is arithmetic on the row.
+ */
+export function billRunVerdict(opts: {
+  period: { start: string; end: string }
+  scope: BillScope
+  /** Today in the company's zone, `YYYY-MM-DD`. */
+  today: string
+  companyBillDate: number | null
+  customer: {
+    lastBilledDate: string | null
+    billDate: number | null
+    dateAdded: string | null
+    monthlyRate: number
+  }
+  service: 'active' | 'disconnected' | 'unprovisioned' | undefined
+}): { verdict: BillRunVerdict; billDay: number; dueDate: string } {
+  const { period, customer } = opts
+  const billDay = effectiveBillDay(customer.billDate, opts.companyBillDate)
+  const due = billDue({
+    periodEnd: period.end, billDay, today: opts.today, dateAdded: customer.dateAdded,
+  })
+  const out = (verdict: BillRunVerdict) => ({ verdict, billDay, dueDate: due.dueDate })
+
+  if (billedInPeriod(customer.lastBilledDate, period)) return out('already_billed')
+
+  if (opts.scope === 'due') {
+    if (due.verdict === 'not_yet') return out('not_due')
+    if (due.verdict === 'before_joined') return out('before_joined')
+  }
+
+  if (customer.monthlyRate <= 0) return out('zero_rate')
+  if (opts.service === 'disconnected') return out('disconnected')
+  if (opts.service === 'unprovisioned') return out('unprovisioned')
+  return out('bill')
 }
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import type { SearchHit } from '@/app/api/search/route'
 import { StatusBadge } from '@/components/customers/StatusBadge'
 import {
   amountDue as computeAmountDue, amountDueForMonths, billingPeriodLabel,
-  isPartialPayment, MAX_PREPAY_MONTHS, monthsCovered, outstandingBalance, parseYmd,
+  effectiveBillDay, isPartialPayment, MAX_PREPAY_MONTHS, monthsCovered, outstandingBalance, parseYmd,
   prepaymentCredit, PREPAY_MONTH_OPTIONS, proportionalDate, serviceExpiry, ymd,
   type AccessDecision,
 } from '@/lib/billing'
@@ -113,6 +113,7 @@ export function RecordPaymentForm({
   initialCustomer,
   currency,
   gracePeriodDays,
+  companyBillDate,
   paymentCategories,
   otherPaymentsAvailable,
   onCustomerChange,
@@ -121,6 +122,9 @@ export function RecordPaymentForm({
   currency: string
   /** Company-wide grace period, added to a postpaid customer's bill date. */
   gracePeriodDays: number
+  /** settings.bill_date — the bill day of a customer who has none of their
+   *  own, which is most of them. See lib/billing.ts#effectiveBillDay. */
+  companyBillDate: number | null
   /** The Purpose list for "other" payments. Empty until 0013 is applied. */
   paymentCategories: PaymentCategory[]
   /** False until migration 0013 is applied; the type toggle is then not shown
@@ -537,7 +541,7 @@ export function RecordPaymentForm({
   // charge was never billed by a run. The server stamps the payment row from
   // the same function and the same balance.
   const billPeriodLabel = selected
-    ? billingPeriodLabel(today, selected.bill_date, carried)
+    ? billingPeriodLabel(today, effectiveBillDay(selected.bill_date, companyBillDate), carried)
     : null
 
   // Full payment, and the "Full Period" branch of a short one, land on the

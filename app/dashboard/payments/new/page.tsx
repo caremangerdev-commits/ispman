@@ -192,6 +192,7 @@ export default async function RecordPaymentPage({
         initialCustomer={initialCustomer}
         currency={settings.currency}
         gracePeriodDays={settings.gracePeriodDays}
+        companyBillDate={settings.billDate}
         paymentCategories={paymentCategories}
         otherPaymentsAvailable={caps.otherPayments}
         stats={

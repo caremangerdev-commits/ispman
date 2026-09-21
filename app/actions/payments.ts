@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import {
-  billingPeriod, carriedBalanceAfter, firstPeriodCharge, firstPeriodDays,
+  billingPeriod, carriedBalanceAfter, effectiveBillDay, firstPeriodCharge, firstPeriodDays,
   firstPeriodDiscount, isPartialPayment, MAX_PREPAY_MONTHS, monthsCovered,
   outstandingBalance, parseYmd, prepaymentCredit, proportionalDate, reverseCredit,
   serviceExpiry, ymd, type AccessDecision,
@@ -533,18 +533,21 @@ export async function recordPayment(
 
   // The company grace period is what carries a customer past their cut-off day
   // before they are actually taken off the network.
-  let gracePeriodDays = 0
-  if (caps.generalSettings) {
-    const { data: settingsRow } = await db
-      .from('settings')
-      .select('grace_period_days')
-      .eq('company_id', company.id)
-      .maybeSingle()
+  //
+  // The company's bill day rides on the same read. `settings.bill_date`
+  // predates 0007, so it is selected whether or not the grace column exists.
+  const { data: settingsRow } = await db
+    .from('settings')
+    .select(caps.generalSettings ? 'bill_date, grace_period_days' : 'bill_date')
+    .eq('company_id', company.id)
+    .maybeSingle()
 
-    gracePeriodDays = Number(
-      (settingsRow as { grace_period_days: number | null } | null)?.grace_period_days ?? 0
-    )
-  }
+  const companySettings = settingsRow as unknown as {
+    bill_date: number | null
+    grace_period_days?: number | null
+  } | null
+
+  const gracePeriodDays = Number(companySettings?.grace_period_days ?? 0)
 
   // The date a full payment would have reached, and the "Full Period" branch of
   // a short one. One calculation for everybody now — the months-from-expiry
@@ -643,7 +646,15 @@ export async function recordPayment(
     // July onto payments by customers first provisioned in September. Bills
     // will read these columns, so a null that is true beats a month that is
     // not. See lib/billing.ts#billingPeriod.
-    const period = billingPeriod(paymentDate, customer.bill_date ?? null, carriedBefore)
+    //
+    // The bill day comes through effectiveBillDay — the customer's own, else
+    // the company's — the same resolution the bill run uses, so the month a
+    // payment says it settled is the month the run said it raised.
+    const period = billingPeriod(
+      paymentDate,
+      effectiveBillDay(customer.bill_date, companySettings?.bill_date),
+      carriedBefore
+    )
     insertRow.billing_period_start = period?.start ?? null
     insertRow.billing_period_end = period?.end ?? null
     // The expiry this payment leaves the customer with. For a payment that

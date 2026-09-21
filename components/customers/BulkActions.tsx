@@ -11,6 +11,7 @@ import {
 
 import { Modal, settingsInput } from '@/components/settings/Modal'
 import type { CustomerFilters } from '@/lib/customer-filter'
+import type { BillScope } from '@/lib/billing'
 import { formatCurrency } from '@/lib/format'
 import {
   billBatch, loadAccessPointPlan, loadBillAllPlan, loadBillDatePlan, loadCutOffPlan,
@@ -225,7 +226,8 @@ export function BulkActions({
             className={menuItem}
           >
             <Receipt className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
-            Bill All
+            {/* Was "Bill All", which is no longer what it does by default. */}
+            Run Bills
           </button>
 
           <button
@@ -1206,10 +1208,25 @@ type BillSummary = {
   billed: number
   totalAmount: number
   skippedAlready: number
+  skippedNotDue: number
+  skippedBeforeJoined: number
   skippedZeroRate: number
   skippedDisconnected: number
   skippedUnprovisioned: number
   failed: BillOutcome[]
+}
+
+/** "4th", "20th", "1st" — a bill day as people say it. */
+function ordinalDay(n: number): string {
+  const tens = n % 100
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')
+  return n + suffix
+}
+
+/** "20 Sep" from `YYYY-MM-DD`, read as a calendar date and never as an instant. */
+function shortDay(dateOnly: string): string {
+  const [y, m, d] = dateOnly.split('-').map(Number)
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
 }
 
 /**
@@ -1254,12 +1271,20 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
  * The period defaults to LAST month, not this one: this company bills in
  * arrears, so the bill raised at the start of September is September's bill for
  * August's service.
+ *
+ * BY BILL DATE, BY DEFAULT. Only customers whose bill date for the period has
+ * been reached are offered, and the table of bill dates is on screen before the
+ * confirm field is, so the operator sees WHICH dates they are about to bill and
+ * which are being held back. Billing the whole company regardless of date is
+ * still possible, as a box somebody has to tick — it resets the typed
+ * confirmation, because the count it was typed against is no longer the count.
  */
 function BillAllModal({ onClose }: { onClose: () => void }) {
   const router = useRouter()
   const months = useMemo(() => recentMonths(), [])
   // months[0] is the current month; months[1] is the month just ended.
   const [period, setPeriod] = useState(months[1]?.key ?? months[0].key)
+  const [scope, setScope] = useState<BillScope>('due')
   const [plan, setPlan] = useState<BillAllPlan | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState('')
@@ -1270,13 +1295,13 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     let live = true
-    loadBillAllPlan(period)
+    loadBillAllPlan(period, scope)
       .then((result) => live && setPlan(result))
       .catch((err: Error) => live && setLoadError(err.message))
     return () => {
       live = false
     }
-  }, [period])
+  }, [period, scope])
 
   /**
    * Clearing the old plan happens HERE, not in the effect above.
@@ -1288,6 +1313,14 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
    */
   function choosePeriod(next: string) {
     setPeriod(next)
+    setPlan(null)
+    setLoadError(null)
+    setConfirm('')
+  }
+
+  /** The same clearing, for the same reason: a different set of customers. */
+  function chooseScope(next: BillScope) {
+    setScope(next)
     setPlan(null)
     setLoadError(null)
     setConfirm('')
@@ -1310,6 +1343,9 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
         const result = await billBatch({
           period: plan.period.key,
           ids: slice.map((t: BillTarget) => t.id),
+          // The scope THE PLAN WAS LOADED WITH, not the checkbox as it is now:
+          // what runs is what was previewed and confirmed.
+          scope: plan.scope,
         })
         outcomes.push(...result.outcomes)
         setProgress({ done: i + slice.length, total: targets.length })
@@ -1336,6 +1372,10 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
       totalAmount: billed.reduce((sum, o) => sum + (o.amount ?? 0), 0),
       skippedAlready:
         plan.alreadyBilled + outcomes.filter((o) => o.result === 'skipped_already').length,
+      skippedNotDue:
+        plan.notDue + outcomes.filter((o) => o.result === 'skipped_not_due').length,
+      skippedBeforeJoined:
+        plan.beforeJoined + outcomes.filter((o) => o.result === 'skipped_before_joined').length,
       skippedZeroRate:
         plan.zeroRate + outcomes.filter((o) => o.result === 'skipped_zero_rate').length,
       skippedDisconnected:
@@ -1357,6 +1397,15 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
         skippedDisconnected: collected.skippedDisconnected,
         skippedUnprovisioned: collected.skippedUnprovisioned,
         failed: collected.failed.length,
+        scope: plan.scope,
+        skippedNotDue: collected.skippedNotDue,
+        skippedBeforeJoined: collected.skippedBeforeJoined,
+        // From the OUTCOMES, not the plan: the log says who was billed, per
+        // bill date, not who the preview expected to be.
+        billDays: [...billed.reduce((m, o) => {
+          if (o.billDay) m.set(o.billDay, (m.get(o.billDay) ?? 0) + 1)
+          return m
+        }, new Map<number, number>())].map(([day, count]) => ({ day, count })),
       })
     } catch {
       // The audit row is the least important thing that just happened.
@@ -1368,7 +1417,7 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
   }, [plan, targets, router])
 
   return (
-    <Modal title="Bill all customers" onClose={onClose}>
+    <Modal title="Run bills" onClose={onClose}>
       {loadError ? <ErrorNote>{loadError}</ErrorNote> : null}
       {!plan && !loadError && !summary ? <Loading /> : null}
 
@@ -1403,6 +1452,16 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
               label="Skipped"
               value={summary.skippedAlready.toLocaleString() + ' — already billed for this period'}
             />
+            <Row
+              label="Skipped"
+              value={summary.skippedNotDue.toLocaleString() + ' — bill date not reached'}
+            />
+            {summary.skippedBeforeJoined > 0 ? (
+              <Row
+                label="Skipped"
+                value={summary.skippedBeforeJoined.toLocaleString() + ' — joined after their bill date'}
+              />
+            ) : null}
             <Row
               label="Skipped"
               value={summary.skippedZeroRate.toLocaleString() + ' — no monthly rate'}
@@ -1491,12 +1550,103 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
             </p>
           </div>
 
+          {/* ---- which bill dates this run covers ---- */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-gray-400">
+              {plan.scope === 'all'
+                ? 'Bill dates — the whole company is included, whatever the date'
+                : 'Bill dates reached by ' + shortDay(plan.today)}
+            </p>
+            {plan.billDays.length === 0 ? (
+              <p className="text-xs text-gray-600">No customers left to consider for {plan.period.label}.</p>
+            ) : (
+              <div className="overflow-hidden rounded-lg border border-gray-800">
+                <table className="w-full text-left text-xs tabular-nums">
+                  <thead className="bg-gray-800/60 text-[11px] text-gray-500">
+                    <tr>
+                      <th className="px-3 py-1.5 font-medium">Bill date</th>
+                      <th className="px-3 py-1.5 font-medium">{plan.period.label} bill due</th>
+                      <th className="px-3 py-1.5 text-right font-medium">Included</th>
+                      <th className="px-3 py-1.5 text-right font-medium">Held back</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {plan.billDays.map((line) => (
+                      <tr key={line.day} className="border-t border-gray-800">
+                        <td className="px-3 py-1.5 font-medium text-gray-200">{ordinalDay(line.day)}</td>
+                        <td className="px-3 py-1.5 text-gray-400">{shortDay(line.dueDate)}</td>
+                        <td className={'px-3 py-1.5 text-right ' + (line.included > 0 ? 'font-semibold text-green-400' : 'text-gray-600')}>
+                          {line.included.toLocaleString()}
+                        </td>
+                        <td className="px-3 py-1.5 text-right text-gray-400">
+                          {line.notDue > 0 ? line.notDue.toLocaleString() + ' not due yet' : null}
+                          {line.notDue > 0 && line.beforeJoined > 0 ? ' · ' : null}
+                          {line.beforeJoined > 0 ? line.beforeJoined.toLocaleString() + ' joined after it' : null}
+                          {line.notDue === 0 && line.beforeJoined === 0 ? '—' : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="text-[11px] text-gray-600">
+              Included counts leave out anyone already billed, on no rate, or without service —
+              those are listed below. A customer with no bill date of their own uses the company&apos;s.
+              A date that has passed still counts: late is billed, not skipped.
+            </p>
+          </div>
+
+          <label className="flex items-start gap-2 text-xs text-gray-400">
+            <input
+              type="checkbox"
+              checked={scope === 'all'}
+              onChange={(e) => chooseScope(e.target.checked ? 'all' : 'due')}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-amber-500"
+            />
+            <span>
+              Bill the whole company, including customers whose bill date has not been reached
+            </span>
+          </label>
+
+          {plan.scope === 'all' ? (
+            <p className="flex items-start gap-1.5 text-xs text-amber-300/90">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+              Bill dates are being ignored. Everyone below is charged for {plan.period.label} now,
+              including customers who would not be billed until later in the month.
+            </p>
+          ) : null}
+
+          {plan.priorUnbilled ? (
+            <p className="flex items-start gap-1.5 text-xs text-amber-300/90">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span>
+                {plan.priorUnbilled.count.toLocaleString()}{' '}
+                {plan.priorUnbilled.count === 1 ? 'customer was' : 'customers were'} due for{' '}
+                {plan.priorUnbilled.label} and never billed for it. If that was a miss, bill{' '}
+                {plan.priorUnbilled.label} first — always the older period before the newer one.
+              </span>
+            </p>
+          ) : null}
+
           <dl className="space-y-1.5 rounded-lg border border-gray-800 bg-gray-800/40 px-3 py-2.5 text-sm">
             <SummaryLine
               label="Customers"
               value={plan.customerCount.toLocaleString() + ' customers'}
             />
             <SummaryLine label="Already billed" value={plan.alreadyBilled.toLocaleString()} />
+            {plan.notDue > 0 ? (
+              <SummaryLine
+                label="Bill date not reached"
+                value={plan.notDue.toLocaleString() + ' — held back'}
+              />
+            ) : null}
+            {plan.beforeJoined > 0 ? (
+              <SummaryLine
+                label="Joined after their bill date"
+                value={plan.beforeJoined.toLocaleString() + ' — held back'}
+              />
+            ) : null}
             {plan.zeroRate > 0 ? (
               <SummaryLine
                 label="No monthly rate"
