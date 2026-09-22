@@ -217,7 +217,7 @@ async function main() {
   if (!company) throw new Error('No ISPMan company #' + COMPANY_ID)
   const { data: settings } = await supabase
     .from('settings')
-    .select('account_number_prefix, default_expiry_mode, default_billing_type, bill_date, cut_off_date')
+    .select('account_number_prefix, default_expiry_mode, bill_date, cut_off_date')
     .eq('company_id', COMPANY_ID).maybeSingle()
   const cutOffDay = Number(settings?.cut_off_date)
   if (!Number.isInteger(cutOffDay) || cutOffDay < 1 || cutOffDay > 28) {
@@ -297,9 +297,8 @@ async function main() {
       balance: 0,
       carried_balance: 0,
       account_credit: 0,
-      // Nothing branches on billing_type (lib/billing.ts) but the column is
-      // NOT NULL, so it is stated rather than left to chance.
-      billing_type: settings?.default_billing_type ?? 'prepaid',
+      // customers.billing_type is NOT written: retired by migration 0024. The
+      // column keeps its own default; the billing model is settings.billing_type.
       // THE THIRD SILENT DEFAULT. cut_off_date defaults to 5 in the schema, so
       // leaving the key out would give every stub a cut-off day nobody chose.
       // It is the company's cut-off day, STATED, not inherited: no customer on

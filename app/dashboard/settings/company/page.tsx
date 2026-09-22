@@ -83,6 +83,7 @@ export default async function GeneralSettingsPage() {
         firstPeriodAvailable={caps.firstPeriod}
         taxIdAvailable={caps.taxId}
         accountNumbersAvailable={caps.accountNumbers}
+        billingEngineAvailable={caps.billingEngine}
         currencySymbol={currencySymbol(settings.currency)}
       />
 

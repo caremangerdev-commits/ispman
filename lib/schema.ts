@@ -17,12 +17,25 @@ export type SchemaCapabilities = {
   /** payments.checked_off/payment_method/user_id + checkoff_records (0010). */
   checkoff: boolean
   /**
-   * Postpaid billing (0011): the customers and payments billing columns plus
-   * `settings.default_billing_type`. All three halves are required together —
-   * recording a postpaid payment writes to all of them in one flow, so a
-   * partially applied 0011 must read as absent rather than half-enabled.
+   * Postpaid billing (0011): the customers and payments billing columns. Both
+   * halves are required together — recording a payment writes to both in one
+   * flow, so a partially applied 0011 must read as absent rather than
+   * half-enabled.
+   *
+   * NO LONGER PROBES `settings.default_billing_type` OR `customers.billing_type`.
+   * Migration 0024 renames the settings column and retires the customer one,
+   * and this probe has to read the same on both sides of that migration —
+   * it is what makes "deploy the code, then run 0024" a safe order.
    */
   billing: boolean
+  /**
+   * The daily billing engine (0024): `settings.billing_type` plus the two
+   * engine controls, and the `bill_runs` and `bill_charges` tables. All of it
+   * lands in one file, so one probe decides it. Absent, the engine's tick does
+   * nothing, the Billing Runs page says so, and the settings form hides the
+   * controls.
+   */
+  billingEngine: boolean
   /** The three billing policy thresholds added by migration 0012. */
   billingThresholds: boolean
   /**
@@ -141,14 +154,14 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
 
   const [
     typeRes, expiryRes, catalogRes, generalRes, rateRes, checkoffRes, recordsRes,
-    billingCustomerRes, billingPaymentRes, billingSettingRes, thresholdRes,
+    billingCustomerRes, billingPaymentRes, engineSettingRes, thresholdRes,
     otherPaymentRes, paymentCategoryRes, creditReversalRes, logMetadataRes,
     firstPeriodRes, amountDueRes, paymentSegmentRes,
     taxIdCustomerRes, taxIdSettingRes, accountNumberRes, accountCounterRes,
     accountPrefixRes,
     smsOutboxRes, smsSettingRes, smsOptOutRes,
     messagingOutboxRes, messagingSettingRes, messagingOptOutRes,
-    brandingRes,
+    brandingRes, engineRunsRes, engineChargesRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -157,9 +170,11 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('settings').select('default_monthly_rate').limit(1),
     db.from('payments').select('checked_off, payment_method, user_id').limit(1),
     db.from('checkoff_records').select('id').limit(1),
+    // customers.billing_type is deliberately NOT in this list: 0024 retires it
+    // and the probe must not depend on a column nothing reads.
     db
       .from('customers')
-      .select('billing_type, carried_balance, account_credit, bill_date, last_billed_date')
+      .select('carried_balance, account_credit, bill_date, last_billed_date')
       .limit(1),
     db
       .from('payments')
@@ -168,7 +183,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
           'carried_balance_before, carried_balance_after, access_decision'
       )
       .limit(1),
-    db.from('settings').select('default_billing_type').limit(1),
+    // 0024: the renamed company billing type and the engine controls. This is
+    // the engine's probe, not 0011's — see the note on `billing` above.
+    db
+      .from('settings')
+      .select('billing_type, billing_engine_mode, billing_engine_start_date')
+      .limit(1),
     db
       .from('settings')
       .select('late_credit_threshold, min_payment_threshold, max_carried_balance')
@@ -209,6 +229,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('customers').select('email_opted_out').limit(1),
     // 0023: one ALTER adds both, so one probe decides them.
     db.from('settings').select('logo_path, brand_color').limit(1),
+    // 0024: the engine's two tables.
+    db.from('bill_runs').select('id').limit(1),
+    db.from('bill_charges').select('id').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -227,7 +250,15 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   // 0011 lands as three separate ALTERs, so any missing piece disables the lot.
   const missingBillingCustomer = billingCustomerRes.error?.code === '42703'
   const missingBillingPayment = billingPaymentRes.error?.code === '42703'
-  const missingBillingSetting = billingSettingRes.error?.code === '42703'
+  // 0024 spans a rename on `settings` and two new tables. Any missing piece
+  // reads as "no engine": a tick against half of it would have nowhere to
+  // record what it did.
+  const missingEngine =
+    engineSettingRes.error?.code === '42703' ||
+    engineRunsRes.error?.code === 'PGRST205' ||
+    engineRunsRes.error?.code === '42P01' ||
+    engineChargesRes.error?.code === 'PGRST205' ||
+    engineChargesRes.error?.code === '42P01'
   const missingThresholds = thresholdRes.error?.code === '42703'
   // 0013 lands as one ALTER plus one CREATE TABLE, so either missing disables it.
   const missingOtherPaymentCols = otherPaymentRes.error?.code === '42703'
@@ -300,10 +331,15 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
       'Schema probe failed for payments billing columns: ' + billingPaymentRes.error.message
     )
   }
-  if (billingSettingRes.error && !missingBillingSetting) {
+  if (engineSettingRes.error && engineSettingRes.error.code !== '42703') {
     throw new Error(
-      'Schema probe failed for default_billing_type: ' + billingSettingRes.error.message
+      'Schema probe failed for settings billing engine columns: ' + engineSettingRes.error.message
     )
+  }
+  for (const [what, res] of [['bill_runs', engineRunsRes], ['bill_charges', engineChargesRes]] as const) {
+    if (res.error && res.error.code !== 'PGRST205' && res.error.code !== '42P01') {
+      throw new Error('Schema probe failed for ' + what + ': ' + res.error.message)
+    }
   }
   if (thresholdRes.error && !missingThresholds) {
     throw new Error(
@@ -396,7 +432,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     generalSettings: !missingGeneral,
     defaultMonthlyRate: !missingRate,
     checkoff: !missingCheckoffCols && !missingRecords,
-    billing: !missingBillingCustomer && !missingBillingPayment && !missingBillingSetting,
+    billing: !missingBillingCustomer && !missingBillingPayment,
+    billingEngine: !missingBillingCustomer && !missingBillingPayment && !missingEngine,
     billingThresholds: !missingThresholds,
     otherPayments: !missingOtherPaymentCols && !missingPaymentCategories,
     creditReversal: !missingCreditReversal,
@@ -425,6 +462,9 @@ export const DEFAULT_RATE_HINT =
 
 export const BILLING_HINT =
   'Postpaid billing is not set up on this system yet. Ask your administrator to enable it.'
+
+export const BILLING_ENGINE_HINT =
+  'The billing engine is not set up on this database yet. Apply migration 0024_billing_engine.sql first.'
 
 export const BILLING_THRESHOLD_HINT =
   'These billing policy fields are not set up on this system yet. Ask your administrator to enable them.'

@@ -1,6 +1,6 @@
 import 'server-only'
 
-import { actingMarker, stripActingMarkers } from '@/lib/log-detail'
+import { actingMarker, stripActingMarkers, systemMarker } from '@/lib/log-detail'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -151,6 +151,102 @@ export async function logEvent(input: LogEventInput): Promise<LogEventResult> {
       return { ok: false, error: error.message }
     }
 
+    return { ok: true }
+  } catch (err) {
+    const message = (err as Error).message
+    console.error('%s could not write a %s log row: %s', tag, input.type, message)
+    return { ok: false, error: message }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// System writes — rows with no signed-in user behind them
+// ---------------------------------------------------------------------------
+
+/**
+ * The `users` row the daily billing engine writes as. Created by migration
+ * 0024; has no auth account, so it cannot sign in. Looked up by email rather
+ * than by a hard-coded id because ids differ between databases.
+ */
+export const SYSTEM_BILLING_EMAIL = 'billing-engine@system.ispman'
+
+export type SystemActor = { id: number; email: string }
+
+/**
+ * The system identity for a background process, or null when migration 0024
+ * has not created it. The engine REFUSES to run without it (see
+ * lib/data/billing-engine.ts): a charge with no one to file it under is a
+ * charge the trail cannot explain.
+ */
+export async function systemActor(email: string = SYSTEM_BILLING_EMAIL): Promise<SystemActor | null> {
+  const { data, error } = await tenantClient()
+    .from('users')
+    .select('id, email')
+    .eq('email', email)
+    .maybeSingle()
+  if (error) {
+    console.error('[audit] could not look up the system user %s: %s', email, error.message)
+    return null
+  }
+  return (data as SystemActor | null) ?? null
+}
+
+export type LogSystemEventInput = {
+  /** The tenant the row is filed against. There is no session to default from. */
+  companyId: number
+  /** Which process wrote it: 'billing'. Becomes the `via=system:<process>` marker. */
+  process: 'billing'
+  /** The identity to file it under — from systemActor(). */
+  actor: SystemActor
+  type: string
+  details: string
+  customerId?: number | null
+  tag?: string
+  amount?: number | null
+  correlationId?: string | null
+}
+
+/**
+ * logEvent for a background process. Same table, same sanitiser, same
+ * metadata handling, but no getSession(): a tick has no cookies to read and
+ * would be redirected to /login by the one logEvent calls. The marker says
+ * which process wrote the row, the way actingMarker says a platform operator
+ * did, so a tenant's trail never shows an automatic charge as staff work.
+ *
+ * Never throws, for the same reason logEvent never does.
+ */
+export async function logSystemEvent(input: LogSystemEventInput): Promise<LogEventResult> {
+  const tag = input.tag ?? '[system]'
+
+  try {
+    const details = stripActingMarkers(input.details) + systemMarker(input.process)
+
+    const row: Record<string, unknown> = {
+      company_id: input.companyId,
+      user_id: input.actor.id,
+      customer_id: input.customerId ?? null,
+      type: input.type,
+      details,
+    }
+
+    const wantsMetadata = input.amount !== undefined || input.correlationId !== undefined
+    if (wantsMetadata) {
+      if ((await getSchemaCapabilities()).logMetadata) {
+        row.amount = input.amount ?? null
+        row.correlation_id = input.correlationId ?? null
+      } else {
+        console.warn(
+          '%s wrote a %s row without its metadata: migration 0016 is not applied.',
+          tag, input.type
+        )
+      }
+    }
+
+    const { error } = await tenantClient().from('log').insert(row)
+    if (error) {
+      console.error('%s could not write a %s log row: %s', tag, input.type, error.message)
+      return { ok: false, error: error.message }
+    }
     return { ok: true }
   } catch (err) {
     const message = (err as Error).message

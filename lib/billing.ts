@@ -20,9 +20,11 @@
  * the authoritative debt for both arms, so the arms were collapsed into the
  * postpaid one, which is the arm that was correct.
  *
- * `customers.billing_type` still exists as a column and is still read back as
- * data, but NOTHING BRANCHES ON IT. Do not reintroduce a branch here without
- * first giving the other model a column that is actually charged.
+ * `customers.billing_type` still exists as a column but is neither read nor
+ * written since migration 0024 (kept as the record of the 2026-09-04 repair).
+ * THE COMPANY'S MODEL is `settings.billing_type`, and the only code that
+ * branches on it is the daily billing engine's period shapes in
+ * lib/billing-engine.ts. Nothing in THIS file branches on either.
  *
  * `bill_date` decides WHEN A BILL IS GENERATED; `cut_off_date` decides WHEN
  * ACCESS EXPIRES. They are different columns describing different events, and

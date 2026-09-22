@@ -261,8 +261,11 @@ export function humaniseLogDetail(details: string | null | undefined): string {
   // lib/log-detail.ts, which is the only definition of the format — this
   // function used to hold a second copy, and the copy in the Change History
   // card was the one that was wrong.
-  const { body, viaPlatform } = readLogDetail(details)
-  const attribute = (text: string) => (viaPlatform ? text + ' (platform operator)' : text)
+  const { body, viaPlatform, viaSystem } = readLogDetail(details)
+  const attribute = (text: string) =>
+    viaPlatform ? text + ' (platform operator)'
+    : viaSystem ? text + ' (' + viaSystem + ' engine)'
+    : text
   const field = (name: string) => logField(body, name)
 
   // A payment reversal carries every field a later report needs, which makes it

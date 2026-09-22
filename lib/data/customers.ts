@@ -13,7 +13,6 @@ import type {
   ConnectionType, Customer, CustomerCategory, CustomerType,
   CustomerWithExpiry, ExpiryMode,
 } from '@/lib/types'
-import { toBillingType, type BillingType } from '@/lib/billing'
 import {
   toConnectionType, toCustomerCategory, toCustomerType, toExpiryMode,
 } from '@/lib/types'
@@ -46,7 +45,8 @@ async function selectWithExtras(join = false) {
   if (caps.sms) sel += ', sms_opted_out'
   if (caps.messaging) sel += ', email_opted_out'
   if (caps.billing) {
-    sel += ', billing_type, carried_balance, account_credit, bill_date, last_billed_date'
+    // customers.billing_type is not selected: retired by migration 0024.
+    sel += ', carried_balance, account_credit, bill_date, last_billed_date'
   }
   if (caps.catalog) {
     sel += ', connection_type, customer_category, notes, misc_category_id, service_plan_id'
@@ -79,7 +79,6 @@ async function selectWithExtras(join = false) {
 export function withBillingDefaults<T extends Record<string, unknown>>(row: T) {
   return {
     ...row,
-    billing_type: toBillingType(row.billing_type as string | null | undefined),
     carried_balance: Number(row.carried_balance ?? 0),
     account_credit: Number(row.account_credit ?? 0),
     bill_date: (row.bill_date as number | null | undefined) ?? null,
@@ -336,7 +335,6 @@ export type CustomerDetail = CustomerWithExpiry & {
   emailOptedOut: boolean
   emailAvailable: boolean
   billingAvailable: boolean
-  billingType: BillingType
   /** null when migration 0003 has not been applied. */
   customerType: CustomerType | null
   pppoeUsername: string | null
@@ -385,7 +383,6 @@ export async function getCustomer(
     pppoe_username?: string | null
     access_point?: string | null
     expiry_mode?: string | null
-    billing_type?: string | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
     bill_date?: number | null
@@ -423,7 +420,6 @@ export async function getCustomer(
       : false,
     emailAvailable: caps.messaging,
     billingAvailable: caps.billing,
-    billingType: toBillingType(caps.billing ? row.billing_type : 'prepaid'),
     customerType: caps.connectionTypes ? toCustomerType(row.customer_type) : null,
     pppoeUsername: row.pppoe_username ?? null,
     accessPoint: row.access_point ?? null,

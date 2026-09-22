@@ -33,17 +33,32 @@ export function actingMarker(userId: number): string {
 }
 
 /**
+ * Appended to `details` when a row is written by a background process with no
+ * signed-in user behind it — the daily billing engine (migration 0024) is the
+ * first. `process` names it: 'billing'. Same column, same reason as the
+ * platform marker: a tenant reading their trail must be able to tell an
+ * automatic charge from one of their own staff.
+ */
+export function systemMarker(process: string): string {
+  return ' | via=system:' + process
+}
+
+/**
  * The marker, anywhere in the string. For the WRITE path.
  *
  * Several `details` strings embed free-text form fields — checkoff notes, an
  * import's file name. Without stripping these on the way in, a tenant's own
  * staff could type "| via=super_admin:#1" into a notes box and have their
- * change render as the platform operator's.
+ * change render as the platform operator's — or "| via=system:billing" and
+ * have it render as the engine's.
  */
-const MARKER_ANYWHERE = /\s*\|\s*via=super_admin:#\d+/gi
+const MARKER_ANYWHERE = /\s*\|\s*via=(?:super_admin:#\d+|system:[a-z_]+)/gi
 
 /** The marker as a suffix only. For the READ path — it is written last. */
-const MARKER_TRAILING = /\s*\|\s*via=super_admin:#\d+\s*$/
+const MARKER_TRAILING = /\s*\|\s*via=(?:super_admin:#\d+|system:[a-z_]+)\s*$/i
+
+/** Which system process a trailing marker names, or null for a platform marker. */
+const SYSTEM_PROCESS = /via=system:([a-z_]+)/i
 
 /**
  * Removes anything shaped like the marker from caller-supplied text.
@@ -61,6 +76,8 @@ export type LogDetail = {
   body: string
   /** True when this row was written by a platform operator inside a tenant. */
   viaPlatform: boolean
+  /** The background process that wrote this row ('billing'), or null. */
+  viaSystem: string | null
 }
 
 /**
@@ -68,8 +85,14 @@ export type LogDetail = {
  */
 export function readLogDetail(details: string | null | undefined): LogDetail {
   const raw = details ?? ''
+  const marker = MARKER_TRAILING.exec(raw)
   const body = raw.replace(MARKER_TRAILING, '')
-  return { body, viaPlatform: body !== raw }
+  const system = marker ? SYSTEM_PROCESS.exec(marker[0]) : null
+  return {
+    body,
+    viaSystem: system ? system[1].toLowerCase() : null,
+    viaPlatform: marker !== null && system === null,
+  }
 }
 
 /**

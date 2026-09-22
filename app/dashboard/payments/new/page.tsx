@@ -16,7 +16,6 @@ import { resolveStatus } from '@/lib/status'
 import { CHECKOFF_HINT, getSchemaCapabilities } from '@/lib/schema'
 import { displayName, requirePermission } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { toBillingType } from '@/lib/billing'
 import { toCustomerType, toExpiryMode } from '@/lib/types'
 
 export const metadata: Metadata = { title: 'Record Payment · ISPMan' }
@@ -35,7 +34,7 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
     (caps.connectionTypes ? ', customer_type' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
-      ? ', billing_type, carried_balance, account_credit, bill_date, last_billed_date'
+      ? ', carried_balance, account_credit, bill_date, last_billed_date'
       : '') +
     (caps.catalog
       ? ', service_plans!customers_service_plan_id_fkey(name, speed_down_mbps, speed_up_mbps, monthly_price)'
@@ -63,7 +62,6 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
     cut_off_date: number | null
     customer_type?: string | null
     expiry_mode?: string | null
-    billing_type?: string | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
     bill_date?: number | null
@@ -136,7 +134,6 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
       : null,
     addons,
     total_monthly: base + addons.reduce((s, a) => s + a.price, 0),
-    billing_type: toBillingType(caps.billing ? r.billing_type : 'prepaid'),
     carried_balance: Number(r.carried_balance ?? 0),
     account_credit: Number(r.account_credit ?? 0),
     bill_date: r.bill_date ?? null,

@@ -8,7 +8,9 @@ import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { toBillingType } from '@/lib/billing'
+import { toCompanyBillingType, toEngineMode } from '@/lib/billing-engine'
+import { dryRunCycleComplete, engineSettingsFor } from '@/lib/data/billing-engine'
+import { instantToDateOnly } from '@/lib/format'
 import { toExpiryMode } from '@/lib/types'
 
 export type CompanyResult = { ok: true } | { ok: false; error: string }
@@ -165,8 +167,43 @@ export async function saveCompanyProfile(
     patch.default_monthly_rate = defaultRate ?? 0
   }
 
-  if (caps.billing) {
-    patch.default_billing_type = toBillingType(str(formData, 'default_billing_type'))
+  // Migration 0024: the company's billing model and the daily engine's
+  // controls. Only once the columns exist; the form hides them until then.
+  if (caps.billingEngine) {
+    const billingType = toCompanyBillingType(str(formData, 'billing_type'))
+    const mode = toEngineMode(str(formData, 'billing_engine_mode'))
+    const startRaw = str(formData, 'billing_engine_start_date')
+    const startDate = /^\d{4}-\d{2}-\d{2}$/.test(startRaw) ? startRaw : null
+
+    // Mirrors settings_billing_engine_start_check: a company that is not off
+    // must say from when. Without a start date the engine would charge the
+    // period running when it was switched on, which may already have been
+    // billed by hand.
+    if (mode !== 'off' && !startDate) {
+      return {
+        ok: false,
+        error:
+          'A start date is required to run the billing engine. Charge dates before it are never ' +
+          'charged, so set it after the last date this company was billed by hand.',
+      }
+    }
+
+    // A FULL DRY-RUN CYCLE BEFORE LIVE. Checked only on the transition, so a
+    // company already live can be saved without re-proving it.
+    if (mode === 'live') {
+      const current = await engineSettingsFor(company.id)
+      if (current?.mode !== 'live') {
+        const today = instantToDateOnly(new Date(), timezone)
+        const cycle = await dryRunCycleComplete(company.id, today)
+        if (!cycle.ok) {
+          return { ok: false, error: 'Cannot go live yet. ' + cycle.reason }
+        }
+      }
+    }
+
+    patch.billing_type = billingType
+    patch.billing_engine_mode = mode
+    patch.billing_engine_start_date = startDate
   }
 
   if (caps.billingThresholds) {

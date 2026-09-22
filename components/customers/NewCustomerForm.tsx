@@ -9,9 +9,6 @@ import { createCustomer, type ActionResult } from '@/app/actions/customers'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
 import { formatCurrency } from '@/lib/format'
 import {
-  toBillingType, type BillingType,
-} from '@/lib/billing'
-import {
   CONNECTION_TYPES, CONNECTION_TYPE_LABELS, CUSTOMER_CATEGORIES,
   CUSTOMER_CATEGORY_LABELS, CUSTOMER_TYPES, CUSTOMER_TYPE_LABELS, describePlan,
   toCustomerType,
@@ -83,7 +80,6 @@ export function NewCustomerForm({
   taxIdLabel,
   defaultMonthlyRate,
   billingAvailable,
-  defaultBillingType,
   defaultBillDate,
 }: {
   servicePlans: ServicePlan[]
@@ -99,8 +95,6 @@ export function NewCustomerForm({
   defaultMonthlyRate: number
   /** False until migration 0011 is applied; the control renders disabled. */
   billingAvailable: boolean
-  /** From settings.default_billing_type. */
-  defaultBillingType: BillingType
   /** From settings.bill_date — the company's default bill day. Null when the
    *  setting has never been saved; the field then starts on day 1. */
   defaultBillDate: number | null
@@ -121,13 +115,6 @@ export function NewCustomerForm({
     v('monthly_rate') || (defaultMonthlyRate > 0 ? String(defaultMonthlyRate) : '')
   )
   const [addons, setAddons] = useState<number[]>([])
-  // A failed submit re-seeds from what was posted, so switching to postpaid and
-  // tripping a validation error elsewhere does not silently revert the choice.
-  // Not state any more: there is no control to change it. Still submitted so
-  // the column round-trips — see lib/billing.ts.
-  const billingType: BillingType =
-    prior.billing_type ? toBillingType(prior.billing_type) : defaultBillingType
-
   const showPppoeFields = authType === 'pppoe' || authType === 'hotspot'
   // Matches the server rule: MAC only becomes optional for PPPoE once
   // migration 0003 has dropped the NOT NULL constraint.
@@ -345,11 +332,8 @@ export function NewCustomerForm({
             </div>
           </Field>
 
-          {/* No billing type chooser. There is one billing model, so the
-              control offered a choice that changed nothing — see
-              lib/billing.ts. The column is still written, from the company
-              default, so it round-trips until it is dropped. */}
-          <input type="hidden" name="billing_type" value={billingType} />
+          {/* No billing type here. It is the COMPANY'S setting
+              (settings.billing_type, migration 0024); a customer has none. */}
 
           {billingAvailable ? (
             <Field

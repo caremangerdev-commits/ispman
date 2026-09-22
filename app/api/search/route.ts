@@ -10,7 +10,6 @@ import { getSchemaCapabilities } from '@/lib/schema'
 import { searchClauses } from '@/lib/search'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { toBillingType, type BillingType } from '@/lib/billing'
 import { toCustomerType, toExpiryMode } from '@/lib/types'
 
 export type SearchHit = {
@@ -63,7 +62,6 @@ export type SearchHit = {
    * a prepaid one carrying nothing, which is exactly what these values say, so
    * the payment form needs no separate "migration absent" branch.
    */
-  billing_type: BillingType
   carried_balance: number
   account_credit: number
   bill_date: number | null
@@ -93,7 +91,7 @@ export async function GET(request: NextRequest) {
     (caps.connectionTypes ? ', customer_type' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
-      ? ', billing_type, carried_balance, account_credit, bill_date, last_billed_date'
+      ? ', carried_balance, account_credit, bill_date, last_billed_date'
       : '') +
     (caps.catalog
       ? ', service_plans!customers_service_plan_id_fkey(name, speed_down_mbps, speed_up_mbps, monthly_price)'
@@ -126,7 +124,6 @@ export async function GET(request: NextRequest) {
     cut_off_date: number | null
     customer_type?: string | null
     expiry_mode?: string | null
-    billing_type?: string | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
     bill_date?: number | null
@@ -230,7 +227,6 @@ export async function GET(request: NextRequest) {
       expires_at: expiry ? expiry.toISOString() : null,
       expiry_mode: toExpiryMode(caps.expiryMode ? r.expiry_mode : 'from_expiry'),
       cut_off_date: r.cut_off_date ?? null,
-      billing_type: toBillingType(caps.billing ? r.billing_type : 'prepaid'),
       carried_balance: Number(r.carried_balance ?? 0),
       account_credit: Number(r.account_credit ?? 0),
       bill_date: r.bill_date ?? null,

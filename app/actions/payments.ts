@@ -390,7 +390,7 @@ export async function recordPayment(
     (caps.connectionTypes ? ', customer_type, pppoe_username' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
     (caps.billing
-      ? ', billing_type, carried_balance, account_credit, bill_date, last_billed_date'
+      ? ', carried_balance, account_credit, bill_date, last_billed_date'
       : '')
 
   const { data, error: loadError } = await db
@@ -414,7 +414,6 @@ export async function recordPayment(
     customer_type?: string | null
     pppoe_username?: string | null
     expiry_mode?: string | null
-    billing_type?: string | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
     bill_date?: number | null

@@ -16,12 +16,13 @@ import { getGeneralSettings } from '@/lib/data/company'
 import {
   bulkCustomerName, countAllCustomers, findProvisioned, getProvisionPlan,
   readCustomersByIds, readBillableByIds, readBillableCustomers,
-  type BillableCustomer,
 } from '@/lib/data/bulk'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { CURRENCY_SYMBOL, formatCurrency, instantToDateOnly } from '@/lib/format'
-import { activateInRadius, batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
+import { activateInRadius, radiusConfigured } from '@/lib/radius-db'
 import { usernameKey } from '@/lib/radius/format'
+import { serviceStateFor } from '@/lib/radius/service-state'
+import { isEngineLive } from '@/lib/data/billing-engine'
 import { formatRadiusExpiration, radiusIdentity } from '@/lib/radius/format'
 import {
   applyCredit, billRunVerdict, type BillRunVerdict, type BillScope,
@@ -583,52 +584,9 @@ function resolvePeriod(key: string): BillPeriod | null {
  * reports a run that did nothing. Neither is safe on a company's whole book, so
  * the run refuses rather than guessing.
  */
-async function serviceStateFor(
-  customers: BillableCustomer[]
-): Promise<Map<number, 'active' | 'disconnected' | 'unprovisioned'>> {
-  const out = new Map<number, 'active' | 'disconnected' | 'unprovisioned'>()
-  if (customers.length === 0) return out
-
-  if (!radiusConfigured()) {
-    throw new Error(
-      'The network registry is not configured, so the bill run cannot tell which ' +
-      'customers had service. Nothing was billed.'
-    )
-  }
-
-  let registry
-  try {
-    registry = await batchGetRadiusStatus(customers.map((c) => c.identity))
-  } catch (err) {
-    throw new Error(
-      'The network registry could not be read, so the bill run cannot tell which ' +
-      'customers had service. Nothing was billed. (' + (err as Error).message + ')'
-    )
-  }
-
-  for (const customer of customers) {
-    if (!customer.identity) {
-      out.set(customer.id, 'unprovisioned')
-      continue
-    }
-
-    // Keyed the way batchGetRadiusStatus normalises identities, not by the
-    // spelling the customers row happens to hold.
-    const record = registry.get(usernameKey(customer.identity))
-
-    if (!record || !record.exists) {
-      out.set(customer.id, 'unprovisioned')
-      continue
-    }
-
-    // 'active' is the only state that means access has not expired.
-    // 'expired' and 'inactive' are both an expiry in the past — they differ
-    // only in how long ago, which this rule does not care about.
-    out.set(customer.id, record.status === 'active' ? 'active' : 'disconnected')
-  }
-
-  return out
-}
+// serviceStateFor lives in lib/radius/service-state.ts now, imported above: the
+// daily billing engine applies the same rule, and one definition is the only
+// way the two stay the same rule. The note above still describes it.
 
 export type BillTarget = {
   id: number
@@ -681,6 +639,14 @@ function previousPeriod(period: BillPeriod): BillPeriod | null {
 export type BillAllPlan = {
   /** False until migration 0011 is applied; the modal refuses to run. */
   available: boolean
+  /**
+   * True when the daily billing engine is LIVE for this company (migration
+   * 0024). The modal refuses: the engine charges this company's periods, and
+   * a second writer on carried_balance with a different guard is how a month
+   * gets charged twice. billBatch refuses too, so the plan is not the only
+   * thing standing in the way.
+   */
+  engineLive: boolean
   period: BillPeriod
   /** Which customers this plan considered — see lib/billing.ts#BillScope. */
   scope: BillScope
@@ -756,6 +722,32 @@ export async function loadBillAllPlan(
   if (!caps.billing) {
     return {
       available: false,
+      engineLive: false,
+      period,
+      scope: runScope,
+      today: '',
+      billDays: [],
+      notDue: 0,
+      beforeJoined: 0,
+      priorUnbilled: null,
+      customerCount: 0,
+      alreadyBilled: 0,
+      zeroRate: 0,
+      disconnected: 0,
+      unprovisioned: 0,
+      creditApplied: 0,
+      targets: [],
+      totalAmount: 0,
+    }
+  }
+
+  // THE ENGINE OWNS A LIVE COMPANY'S CHARGES. Refused here so the modal can say
+  // so before anyone types a count, and again in billBatch so the plan is not
+  // the only guard.
+  if (await isEngineLive(company.id)) {
+    return {
+      available: true,
+      engineLive: true,
       period,
       scope: runScope,
       today: '',
@@ -832,6 +824,7 @@ export async function loadBillAllPlan(
 
   return {
     available: true,
+    engineLive: false,
     period,
     scope: runScope,
     today: context.today,
@@ -959,6 +952,14 @@ export async function billBatch(input: {
     throw new Error(
       'Postpaid billing is not available on this database yet. Apply migration ' +
       '0011_postpaid_billing.sql first — nothing was billed.'
+    )
+  }
+
+  // The engine owns a live company's charges — see BillAllPlan.engineLive.
+  if (await isEngineLive(company.id)) {
+    throw new Error(
+      'This company is billed by the daily billing engine, which is live. Run Bills is ' +
+      'disabled for it; see Billing Runs. Nothing was billed.'
     )
   }
 

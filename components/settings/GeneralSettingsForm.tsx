@@ -9,10 +9,35 @@ import { useFormStatus } from 'react-dom'
 import { saveCompanyProfile, type CompanyResult } from '@/app/actions/company'
 import { settingsInput } from '@/components/settings/Modal'
 import type { GeneralSettings } from '@/lib/data/company'
-import {
-  type BillingType,
-} from '@/lib/billing'
+import type { CompanyBillingType, EngineMode } from '@/lib/billing-engine'
 import { EXPIRY_MODES, EXPIRY_MODE_HELP, EXPIRY_MODE_LABELS, type ExpiryMode } from '@/lib/types'
+
+/** What each billing model means, in the words the engine applies. */
+const BILLING_TYPE_HELP: Record<CompanyBillingType, string> = {
+  postpaid:
+    'The calendar month, 1st to last day, charged on the company bill day while the month is ' +
+    'still running. The bill day is only the day the charge goes out; customers’ own bill ' +
+    'dates are ignored.',
+  prepaid:
+    'Each customer’s bill date to the same date next month, charged on the bill date. The ' +
+    'month ahead: a customer billed on the 20th is charged on 20 Sep for 20 Sep to 20 Oct.',
+}
+
+const ENGINE_MODE_LABELS: Record<EngineMode, string> = {
+  off: 'Off',
+  dry_run: 'Dry run',
+  live: 'Live',
+}
+
+const ENGINE_MODE_HELP: Record<EngineMode, string> = {
+  off: 'The engine does nothing for this company. Run Bills works as before.',
+  dry_run:
+    'Every day the engine records what it WOULD charge on Billing Runs and charges nothing. ' +
+    'A full cycle (one month, including a real charge date) must complete before Live is allowed.',
+  live:
+    'The engine charges carried balances on each charge date and Run Bills is disabled for ' +
+    'this company. It never touches expiry dates or the network.',
+}
 
 function SaveButton() {
   const { pending } = useFormStatus()
@@ -103,6 +128,7 @@ export function GeneralSettingsForm({
   currencySymbol,
   taxIdAvailable,
   accountNumbersAvailable,
+  billingEngineAvailable,
 }: {
   settings: GeneralSettings
   currencies: readonly string[]
@@ -121,12 +147,16 @@ export function GeneralSettingsForm({
   taxIdAvailable: boolean
   /** Migration 0020 — hides the prefix field until applied. */
   accountNumbersAvailable: boolean
+  /** Migration 0024 — hides the billing model and engine controls until applied. */
+  billingEngineAvailable: boolean
 }) {
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveCompanyProfile, null)
 
   const [mode, setMode] = useState<ExpiryMode>(settings.defaultExpiryMode)
-  // Not state any more: there is no control to change it. See lib/billing.ts.
-  const billingType: BillingType = settings.defaultBillingType
+  // Migration 0024: the company's billing model and the engine's mode. State
+  // so the help text follows the choice before it is saved.
+  const [billingType, setBillingType] = useState<CompanyBillingType>(settings.billingType)
+  const [engineMode, setEngineMode] = useState<EngineMode>(settings.billingEngineMode)
   const [firstExpiryRule, setFirstExpiryRule] = useState(settings.firstExpiryRuleEnabled)
   const [prorata, setProrata] = useState(settings.prorataFirstPaymentEnabled)
   const [sms, setSms] = useState(settings.smsEnabled)
@@ -292,10 +322,71 @@ export function GeneralSettingsForm({
             </Field>
           </div>
 
-          {/* No Default Billing Type control. One billing model — see
-              lib/billing.ts. The setting column is still posted so the save
-              action and the settings row are unchanged. */}
-          <input type="hidden" name="default_billing_type" value={billingType} />
+          {/* ---- Billing model and the daily engine (migration 0024) ---- */}
+          {billingEngineAvailable ? (
+            <div className="space-y-3 rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-3">
+              <div>
+                <span className="block text-xs font-semibold text-gray-300">Billing Model &amp; Engine</span>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-gray-600">
+                  One model for the whole company; customers have no override. The engine sets the
+                  charge and names the period. It never moves an expiry: expiries move on payment.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <span className="block text-xs font-medium text-gray-400">Billing Model</span>
+                <input type="hidden" name="billing_type" value={billingType} />
+                <div className="flex gap-2" role="group" aria-label="Billing model">
+                  {(['postpaid', 'prepaid'] as CompanyBillingType[]).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setBillingType(t)}
+                      aria-pressed={billingType === t}
+                      className={
+                        'flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition ' +
+                        (billingType === t
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200')
+                      }
+                    >
+                      {t === 'postpaid' ? 'Postpaid' : 'Prepaid'}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-gray-600">{BILLING_TYPE_HELP[billingType]}</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Engine" htmlFor="billing_engine_mode" hint={ENGINE_MODE_HELP[engineMode]}>
+                  <select
+                    id="billing_engine_mode"
+                    name="billing_engine_mode"
+                    value={engineMode}
+                    onChange={(e) => setEngineMode(e.target.value as EngineMode)}
+                    className={settingsInput}
+                  >
+                    {(['off', 'dry_run', 'live'] as EngineMode[]).map((m) => (
+                      <option key={m} value={m}>{ENGINE_MODE_LABELS[m]}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field
+                  label="Engine Start Date"
+                  htmlFor="billing_engine_start_date"
+                  hint="Charge dates before this are never charged. Set it after the last date this company was billed by hand."
+                >
+                  <input
+                    id="billing_engine_start_date"
+                    name="billing_engine_start_date"
+                    type="date"
+                    defaultValue={settings.billingEngineStartDate ?? ''}
+                    className={settingsInput}
+                  />
+                </Field>
+              </div>
+            </div>
+          ) : null}
 
           <div className="space-y-1.5">
             <span className="block text-xs font-medium text-gray-400">Default Expiry Mode</span>

@@ -1433,6 +1433,21 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
         </div>
       ) : null}
 
+      {/* THE ENGINE OWNS A LIVE COMPANY'S CHARGES. Nothing below renders: no
+          period, no table, no confirm field. The server refuses too. */}
+      {plan && plan.available && plan.engineLive ? (
+        <div className="space-y-4">
+          <ErrorNote>
+            This company is billed by the daily billing engine, which is live. Run Bills is
+            disabled for it so a period cannot be charged twice. See Billing Runs for what the
+            engine has charged and what it will charge next.
+          </ErrorNote>
+          <button type="button" onClick={onClose} className={ghostBtn}>
+            Close
+          </button>
+        </div>
+      ) : null}
+
       {/* ---------------- result ---------------- */}
       {summary ? (
         <div className="space-y-4">
@@ -1528,7 +1543,7 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
       ) : null}
 
       {/* ---------------- confirm ---------------- */}
-      {plan && plan.available && !summary && !running ? (
+      {plan && plan.available && !plan.engineLive && !summary && !running ? (
         <div className="space-y-4">
           <div className="space-y-1.5">
             <label htmlFor="bulk-bill-period" className="block text-xs font-medium text-gray-400">

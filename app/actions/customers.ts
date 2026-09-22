@@ -24,7 +24,6 @@ import {
 } from '@/lib/radius/operations'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { toBillingType } from '@/lib/billing'
 import {
   toConnectionType, toCustomerCategory, toCustomerType, toExpiryMode,
 } from '@/lib/types'
@@ -64,7 +63,7 @@ const KEEP_FIELDS = [
   'first_name', 'last_name', 'phone', 'email', 'address', 'gps',
   'mac_address', 'monthly_rate', 'cut_off_date',
   'customer_type', 'pppoe_username', 'pppoe_password', 'access_point',
-  'billing_type', 'bill_date',
+  'bill_date',
 ]
 
 function submitted(fd: FormData): SubmittedValues {
@@ -118,7 +117,6 @@ export async function createCustomer(
   const mac_address = str(formData, 'mac_address').toUpperCase()
   const monthly_rate = numOrNull(formData, 'monthly_rate')
   const cut_off_date = numOrNull(formData, 'cut_off_date')
-  const billing_type = toBillingType(str(formData, 'billing_type'))
   const bill_date = numOrNull(formData, 'bill_date')
   const customerType = toCustomerType(str(formData, 'customer_type') || 'dhcp')
   const pppoe_username = str(formData, 'pppoe_username')
@@ -234,11 +232,10 @@ export async function createCustomer(
     row.pppoe_password = pppoe_password || null
     row.access_point = str(formData, 'access_point') || null
   }
-  // A prepaid customer gets no bill date: there is no bill run to generate.
   if (caps.billing) {
-    // billing_type is still written so the column round-trips, but NOTHING
-    // BRANCHES ON IT any more — see lib/billing.ts.
-    row.billing_type = billing_type
+    // customers.billing_type is NOT written. Retired by migration 0024: the
+    // billing model is the company's (settings.billing_type) and there is no
+    // per-customer override. The column keeps its default for the row.
     row.bill_date = bill_date
     row.carried_balance = 0
     row.account_credit = 0
@@ -1206,6 +1203,7 @@ export async function deleteCustomer(formData: FormData) {
   if (id === null) return
 
   const db = tenantClient()
+  const caps = await getSchemaCapabilities()
 
   // COUNTED BEFORE THE DELETE, because afterwards there is nothing left to
   // count. "11 payments worth 49,000 were destroyed" is the fact somebody will
@@ -1217,6 +1215,14 @@ export async function deleteCustomer(formData: FormData) {
   await db.from('notifications_queue').delete().eq('company_id', company.id).eq('customer_id', id)
   await db.from('support_tickets').delete().eq('company_id', company.id).eq('customer_id', id)
   await db.from('payments').delete().eq('company_id', company.id).eq('customer_id', id)
+  // bill_charges (migration 0024) holds a NOT NULL foreign key to the customer.
+  // Cleared in the same sweep as payments, for the same reason and with the
+  // same loss: the engine's charge history for this customer goes with them.
+  // Without this line, deleting a customer the engine has billed fails on the
+  // foreign key with a raw database error.
+  if (caps.billingEngine) {
+    await db.from('bill_charges').delete().eq('company_id', company.id).eq('customer_id', id)
+  }
   await db.from('customers').delete().eq('company_id', company.id).eq('id', id)
 
   await logDeletion(id, doomed, profile.email)

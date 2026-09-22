@@ -736,7 +736,7 @@ async function main() {
     console.log('\n  NOT migrated — no legacy source, ISPMan defaults apply:')
     console.log(
       '    date_format, grace_period_days, tax_rate, expiry_warning_days,\n' +
-      '    default_expiry_mode, default_billing_type, late_credit_threshold,\n' +
+      '    default_expiry_mode, billing_type (company model, 0024), late_credit_threshold,\n' +
       '    min_payment_threshold, max_carried_balance, first_expiry_rule_enabled,\n' +
       '    prorata_first_payment_enabled, ddns_hostname, radius_secret,\n' +
       '    country, tax_id_label, account_number_prefix'

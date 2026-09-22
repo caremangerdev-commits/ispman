@@ -51,6 +51,9 @@ const SECTIONS: NavSection[] = [
       { label: 'Payments', href: '/dashboard/payments', icon: 'creditCard', permission: 'view_all_payments' },
       { label: 'Record Payment', href: '/dashboard/payments/new', icon: 'receipt', permission: 'record_payment' },
       { label: 'Checkoff', href: '/dashboard/checkoff', icon: 'fileText', permission: 'view_checkoff' },
+      // The daily billing engine's run log (migration 0024). Same line as the
+      // payments book: reading what the company was charged is reading money.
+      { label: 'Billing Runs', href: '/dashboard/billing-runs', icon: 'fileText', permission: 'view_all_payments' },
     ],
   },
   {
@@ -109,6 +112,8 @@ const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/tickets\/[^/]+$/, title: 'Ticket Details' },
   { match: /^\/dashboard\/tickets$/, title: 'Tickets' },
   { match: /^\/dashboard\/checkoff/, title: 'Checkoff' },
+  { match: /^\/dashboard\/billing-runs\/[^/]+$/, title: 'Billing Run' },
+  { match: /^\/dashboard\/billing-runs$/, title: 'Billing Runs' },
   // Named individually rather than all reading "Settings". The header bar is
   // the only place a page title appears now, so a settings sub-page has to say
   // which one it is — the left-hand nav shows the active section, but the

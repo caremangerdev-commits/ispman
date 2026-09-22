@@ -148,7 +148,7 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
               // Only once 0011 exists: PostgREST rejects the whole query for one
               // unknown column. Without them every row reads as prepaid below,
               // which is how the app treated everybody before that migration.
-              (caps.billing ? ', billing_type, carried_balance, account_credit, bill_date, last_billed_date' : '')
+              (caps.billing ? ', carried_balance, account_credit, bill_date, last_billed_date' : '')
             )
             .eq('company_id', companyId)
             .order('id', { ascending: true })

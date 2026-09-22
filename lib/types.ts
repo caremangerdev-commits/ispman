@@ -1,4 +1,4 @@
-import type { AccessDecision, BillingType } from '@/lib/billing'
+import type { AccessDecision } from '@/lib/billing'
 import type { CustomerStatus } from '@/lib/status'
 
 /** Row shapes for the tables this dashboard reads. Mirrors the Supabase schema. */
@@ -23,7 +23,12 @@ export type LooseDatabase = {
       }
     >
     Views: Record<string, never>
-    Functions: Record<string, never>
+    /**
+     * Loose like the tables: the one function this app calls
+     * (apply_bill_charges, migration 0024) takes named JSON arguments and
+     * returns JSON, and its shape is asserted at the call site.
+     */
+    Functions: Record<string, { Args: Record<string, unknown>; Returns: unknown }>
     Enums: Record<string, never>
     CompositeTypes: Record<string, never>
   }
@@ -64,10 +69,14 @@ export type Customer = {
    * columns as JSON numbers, which the 0011 rollout confirmed.
    *
    * Reads still have to cope with the columns being absent — until 0011 is
-   * applied they are not selected at all — so the data layer defaults
-   * `billing_type` to prepaid and the balances to 0.
+   * applied they are not selected at all — so the data layer defaults the
+   * balances to 0.
+   *
+   * `customers.billing_type` IS NOT HERE. Retired by migration 0024: the
+   * billing model is `settings.billing_type`, one per company, and the
+   * customer column is neither read nor written. It stays in the database as
+   * the record of the 2026-09-04 repair.
    */
-  billing_type: BillingType
   carried_balance: number
   account_credit: number
   /** Day of month postpaid billing is generated. Null for prepaid. */

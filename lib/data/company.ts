@@ -1,6 +1,8 @@
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { toBillingType, type BillingType } from '@/lib/billing'
+import {
+  toCompanyBillingType, toEngineMode, type CompanyBillingType, type EngineMode,
+} from '@/lib/billing-engine'
 import { toExpiryMode, type ExpiryMode } from '@/lib/types'
 
 /** Caribbean currencies this platform bills in. */
@@ -48,8 +50,15 @@ export type GeneralSettings = {
   gracePeriodDays: number
   taxRate: number
   defaultMonthlyRate: number
-  /** migration 0011 */
-  defaultBillingType: BillingType
+  /**
+   * Migration 0024 — the company's billing model and the daily engine's
+   * controls. Postpaid, off and null until that migration is applied; the
+   * form hides the controls until then (`billingEngineAvailable`).
+   */
+  billingType: CompanyBillingType
+  billingEngineMode: EngineMode
+  /** `YYYY-MM-DD` or null. */
+  billingEngineStartDate: string | null
   /** migration 0017 — the two first-period switches. See getFirstPeriodRules. */
   firstExpiryRuleEnabled: boolean
   prorataFirstPaymentEnabled: boolean
@@ -84,7 +93,7 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
   if (caps.defaultMonthlyRate) cols += ', default_monthly_rate'
   if (caps.taxId) cols += ', country, tax_id_label'
   if (caps.accountNumbers) cols += ', account_number_prefix'
-  if (caps.billing) cols += ', default_billing_type'
+  if (caps.billingEngine) cols += ', billing_type, billing_engine_mode, billing_engine_start_date'
   if (caps.billingThresholds) {
     cols += ', late_credit_threshold, min_payment_threshold, max_carried_balance'
   }
@@ -127,7 +136,9 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
     expiry_warning_days?: number | null
     ddns_hostname?: string | null
     radius_secret?: string | null
-    default_billing_type?: string | null
+    billing_type?: string | null
+    billing_engine_mode?: string | null
+    billing_engine_start_date?: string | null
     late_credit_threshold?: number | null
     min_payment_threshold?: number | string | null
     max_carried_balance?: number | null
@@ -153,7 +164,9 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
     gracePeriodDays: Number(s?.grace_period_days ?? 0),
     taxRate: Number(s?.tax_rate ?? 0),
     defaultMonthlyRate: Number(s?.default_monthly_rate ?? 0),
-    defaultBillingType: toBillingType(caps.billing ? s?.default_billing_type : 'prepaid'),
+    billingType: toCompanyBillingType(caps.billingEngine ? s?.billing_type : null),
+    billingEngineMode: toEngineMode(caps.billingEngine ? s?.billing_engine_mode : null),
+    billingEngineStartDate: caps.billingEngine ? (s?.billing_engine_start_date ?? null) : null,
     // Defaults match migration 0012, so the form shows what the column would
     // hold rather than a row of zeroes before it is applied.
     lateCreditThreshold: Number(s?.late_credit_threshold ?? 7),
@@ -196,21 +209,9 @@ export async function getDefaultMonthlyRate(companyId: number): Promise<number> 
  * Falls back to prepaid when migration 0011 has not been applied, which is also
  * what every customer reads as until it is.
  */
-export async function getDefaultBillingType(companyId: number): Promise<BillingType> {
-  const caps = await getSchemaCapabilities()
-  if (!caps.billing) return 'prepaid'
-
-  const db = tenantClient()
-  const { data } = await db
-    .from('settings')
-    .select('default_billing_type')
-    .eq('company_id', companyId)
-    .maybeSingle()
-
-  return toBillingType(
-    (data as { default_billing_type: string | null } | null)?.default_billing_type
-  )
-}
+// getDefaultBillingType is gone with migration 0024: a customer no longer
+// carries a billing type, so there is no default to seed one from. The
+// company's model is GeneralSettings.billingType.
 
 /**
  * The bill day to pre-fill on the Add Customer form for a postpaid customer.

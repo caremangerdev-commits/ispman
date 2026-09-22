@@ -26,7 +26,6 @@ import { ChannelOptOut, SmsOptOut } from '@/components/customers/SmsOptOut'
 // From format.ts, not client.ts: this is a client component and client.ts
 // pulls in mysql2.
 import { formatBytes, type RadiusStatus } from '@/lib/radius/format'
-import { type BillingType } from '@/lib/billing'
 import {
   CONNECTION_TYPES, CONNECTION_TYPE_LABELS, CUSTOMER_CATEGORIES,
   CUSTOMER_CATEGORY_LABELS, CUSTOMER_TYPES, CUSTOMER_TYPE_LABELS, describePlan,
@@ -68,10 +67,11 @@ export type DetailCustomer = {
   emailOptedOut: boolean
   /** migration 0011 */
   billingAvailable: boolean
-  billingType: BillingType
   bill_date: number | null
   carried_balance: number
   last_billed_date: string | null
+  /** The engine's latest charge for this customer (migration 0024), or null. */
+  lastCharge: { chargedOn: string; periodStart: string; periodEnd: string } | null
   date_added: string | null
   expiresAtIso: string | null
   daysUntilExpiry: number | null
@@ -783,8 +783,20 @@ export function CustomerDetail({
                   above now shows carried_balance for every billing type, and
                   two rows carrying the same number under two labels is how the
                   two columns got confused in the first place. */}
-              {/* DATE column — same reason as Date Added. */}
-              <Row label="Last Billed" value={formatDateOnly(c.last_billed_date)} />
+              {/* DATE column — same reason as Date Added. The engine's latest
+                  charge (bill_charges, migration 0024) wins when there is one:
+                  it names the period as well as the day. Otherwise Run Bills'
+                  stamp, last_billed_date, which is the end of the period. */}
+              <Row
+                label="Last Billed"
+                value={
+                  c.lastCharge
+                    ? formatDateOnly(c.lastCharge.chargedOn) +
+                      ' (' + formatDateOnly(c.lastCharge.periodStart) + ' to ' +
+                      formatDateOnly(c.lastCharge.periodEnd) + ')'
+                    : formatDateOnly(c.last_billed_date)
+                }
+              />
             </>
           ) : null}
 

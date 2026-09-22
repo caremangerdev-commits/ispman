@@ -11,6 +11,7 @@ import { ChangeHistory } from '@/components/customers/ChangeHistory'
 import { NetworkHistory } from '@/components/customers/NetworkHistory'
 import { TicketPriorityBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges'
 import { lastBalanceAdjustment } from '@/lib/data/balance-adjustments'
+import { lastChargeFor } from '@/lib/data/billing-engine'
 import { listCustomerChanges } from '@/lib/data/customer-changes'
 import { listNetworkHistory } from '@/lib/data/network-events'
 import {
@@ -40,7 +41,7 @@ export default async function CustomerDetailPage({
 
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
-    balanceAdjustment, changeHistory, settings, caps,
+    balanceAdjustment, changeHistory, settings, caps, lastCharge,
   ] = await Promise.all([
       getCustomerPayments(company.id, customerId),
       getCustomerTickets(company.id, customerId),
@@ -69,6 +70,8 @@ export default async function CustomerDetailPage({
       // The company's own word for the tax id, and whether the columns exist.
       getGeneralSettings(company.id),
       getSchemaCapabilities(),
+      // The engine's latest charge (migration 0024), for the Last Billed row.
+      lastChargeFor(company.id, customerId),
     ])
 
   const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
@@ -106,10 +109,12 @@ export default async function CustomerDetailPage({
           emailAvailable: customer.emailAvailable,
           emailOptedOut: customer.emailOptedOut,
           billingAvailable: customer.billingAvailable,
-          billingType: customer.billingType,
           bill_date: customer.bill_date,
           carried_balance: customer.carried_balance,
           last_billed_date: customer.last_billed_date,
+          lastCharge: lastCharge
+            ? { chargedOn: lastCharge.chargedOn, periodStart: lastCharge.periodStart, periodEnd: lastCharge.periodEnd }
+            : null,
           last_bill_date: customer.last_bill_date,
           date_added: customer.date_added,
           expiresAtIso: customer.expiresAt ? customer.expiresAt.toISOString() : null,

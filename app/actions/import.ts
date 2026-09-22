@@ -205,7 +205,6 @@ export type BatchResult = {
 type ImportDefaults = {
   cutOffDate: number | null
   billDate: number | null
-  billingType: string
   expiryMode: string
   companyPhone: string | null
 }
@@ -280,8 +279,8 @@ function buildPayload(
   }
 
   if (caps.billing) {
-    // billing_type still round-trips; nothing branches on it. See lib/billing.ts.
-    payload.billing_type = defaults.billingType
+    // customers.billing_type is not written: retired by migration 0024. The
+    // billing model is the company's, settings.billing_type.
     payload.bill_date = defaults.billDate
     payload.carried_balance = 0
     payload.account_credit = 0
@@ -319,7 +318,6 @@ export async function importCustomerBatch(batch: ImportBatch): Promise<BatchResu
   const defaults: ImportDefaults = {
     cutOffDate: settings.cutOffDate,
     billDate: settings.billDate,
-    billingType: settings.defaultBillingType,
     expiryMode: settings.defaultExpiryMode,
     companyPhone: settings.phone,
   }

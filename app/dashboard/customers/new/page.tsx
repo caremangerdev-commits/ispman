@@ -6,9 +6,7 @@ import { NewCustomerForm } from '@/components/customers/NewCustomerForm'
 import {
   listAdditionalServices, listMiscCategories, listServicePlans,
 } from '@/lib/data/catalog'
-import {
-  getDefaultBillDate, getDefaultBillingType, getDefaultMonthlyRate,
-} from '@/lib/data/company'
+import { getDefaultBillDate, getDefaultMonthlyRate } from '@/lib/data/company'
 import { CATALOG_HINT, getSchemaCapabilities } from '@/lib/schema'
 import { requirePermission } from '@/lib/session'
 import { getGeneralSettings } from '@/lib/data/company'
@@ -20,14 +18,13 @@ export default async function NewCustomerPage() {
   const { company } = await requirePermission('add_customer')
 
   const [
-    plans, addons, miscCats, caps, defaultRate, defaultBillingType, defaultBillDate,
+    plans, addons, miscCats, caps, defaultRate, defaultBillDate,
   ] = await Promise.all([
     listServicePlans(company.id),
     listAdditionalServices(company.id),
     listMiscCategories(company.id),
     getSchemaCapabilities(),
     getDefaultMonthlyRate(company.id),
-    getDefaultBillingType(company.id),
     getDefaultBillDate(company.id),
   ])
 
@@ -70,7 +67,6 @@ export default async function NewCustomerPage() {
         catalogAvailable={caps.catalog}
         defaultMonthlyRate={defaultRate}
         billingAvailable={caps.billing}
-        defaultBillingType={defaultBillingType}
         defaultBillDate={defaultBillDate}
       />
     </div>
