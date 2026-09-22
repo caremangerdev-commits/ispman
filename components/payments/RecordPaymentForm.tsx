@@ -8,15 +8,17 @@ import {
 } from 'react'
 import { useFormStatus } from 'react-dom'
 
-import { loadFirstPeriod, recordPayment, type PaymentResult } from '@/app/actions/payments'
+import {
+  loadPaymentContext, recordPayment, type PaymentContext, type PaymentResult,
+} from '@/app/actions/payments'
 import { ReceiptModal } from '@/components/payments/ReceiptModal'
 import type { SearchHit } from '@/app/api/search/route'
 import { StatusBadge } from '@/components/customers/StatusBadge'
 import {
-  amountDue as computeAmountDue, amountDueForMonths, billingPeriodLabel,
+  amountDue as computeAmountDue, amountDueForMonths, billingPeriod, billingPeriodLabel,
   effectiveBillDay, isPartialPayment, MAX_PREPAY_MONTHS, monthsCovered, outstandingBalance, parseYmd,
-  prepaymentCredit, PREPAY_MONTH_OPTIONS, proportionalDate, serviceExpiry, ymd,
-  type AccessDecision,
+  periodAlreadyGranted, periodCompletion, prepaymentCredit, PREPAY_MONTH_OPTIONS,
+  proportionalDate, serviceExpiry, ymd, type AccessDecision,
 } from '@/lib/billing'
 import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type PaymentMethod,
@@ -58,6 +60,10 @@ const DOTS = STATUS_DOT
 
 const fmtDate = (d: Date) =>
   d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
+
+/** `date`, or `limit` when that is earlier. No limit, no cap. */
+const capAt = (date: Date, limit: Date | null) =>
+  limit && limit.getTime() < date.getTime() ? limit : date
 
 /**
  * The network expiry a search hit carries, as a LOCAL-midnight Date.
@@ -141,9 +147,13 @@ export function RecordPaymentForm({
   // Migration 0017. Null for almost every customer, and null until the lookup
   // returns — the ordinary pricing is shown in the meantime, which is what the
   // answer turns out to be nearly every time.
-  const [firstPeriod, setFirstPeriod] = useState<
-    { days: number; charge: number; discount: number } | null
-  >(null)
+  const [firstPeriod, setFirstPeriod] = useState<PaymentContext['firstPeriod']>(null)
+  // The most recent payment that moved this customer's expiry, for the
+  // one-month-per-period guard. Null for a customer with none, and null until
+  // the same lookup returns, so the preview shows ordinary pricing for the
+  // moment before it lands; the server always has the evidence and decides
+  // for real. See lib/billing.ts#periodAlreadyGranted.
+  const [priorGrant, setPriorGrant] = useState<PaymentContext['grant']>(null)
   // NEVER AUTOMATIC. A short first period is charged in full unless the cashier
   // ticks this, which is why it starts false on every customer.
   const [discountTicked, setDiscountTicked] = useState(false)
@@ -277,23 +287,27 @@ export function RecordPaymentForm({
     setNewCategory('')
   }
 
-  // --- First period (migration 0017) ---------------------------------------
+  // --- Per-customer context: first period (0017) and prior grant -------------
   //
   // Asked ON SELECTION rather than carried on every search hit: answering it
-  // costs two history queries and a radcheck read per customer, which is a
+  // costs history queries and a radcheck read per customer, which is a
   // per-row cost on a search and a one-off cost here. See
-  // app/actions/payments.ts#loadFirstPeriod.
+  // app/actions/payments.ts#loadPaymentContext.
   //
-  // Null for almost everybody, and null while the lookup is in flight, so the
-  // form shows ordinary pricing until it hears otherwise. Picking a customer is
-  // an EVENT, so the lookup is fired from the handler rather than from an
-  // effect watching the selection.
-  function lookupFirstPeriod(customer: SearchHit, monthsNow: number) {
-    loadFirstPeriod(customer.id)
-      .then((period) => {
+  // Both halves are null for almost everybody, and null while the lookup is in
+  // flight, so the form shows ordinary pricing until it hears otherwise.
+  // Picking a customer is an EVENT, so the lookup is fired from the handler
+  // rather than from an effect watching the selection.
+  function lookupContext(customer: SearchHit, monthsNow: number) {
+    loadPaymentContext(customer.id)
+      .then((context) => {
         // A response for a customer who is no longer selected is dropped. Read
         // in a callback, never during render.
-        if (!period || selectedIdRef.current !== customer.id) return
+        if (selectedIdRef.current !== customer.id) return
+        setPriorGrant(context.grant)
+
+        const period = context.firstPeriod
+        if (!period) return
         setFirstPeriod(period)
 
         // ONLY WHEN THE CASHIER HAS NOT TYPED OVER THE SEED. The field is
@@ -306,8 +320,8 @@ export function RecordPaymentForm({
         )
       })
       .catch(() => {
-        // Leaves firstPeriod null, which prices the payment the ordinary way.
-        // The server decides for real on submit regardless.
+        // Leaves both null, which prices the payment the ordinary way. The
+        // server decides for real on submit regardless.
       })
   }
 
@@ -319,9 +333,13 @@ export function RecordPaymentForm({
     if (!customer) return
 
     let live = true
-    loadFirstPeriod(customer.id)
-      .then((period) => {
-        if (!live || !period) return
+    loadPaymentContext(customer.id)
+      .then((context) => {
+        if (!live) return
+        setPriorGrant(context.grant)
+
+        const period = context.firstPeriod
+        if (!period) return
         setFirstPeriod(period)
         const untouched = seedAmount(customer, 1)
         setAmount((current) => (current === untouched ? String(period.charge) : current))
@@ -344,8 +362,9 @@ export function RecordPaymentForm({
     // never carried across.
     selectedIdRef.current = hit.id
     setFirstPeriod(null)
+    setPriorGrant(null)
     setDiscountTicked(false)
-    lookupFirstPeriod(hit, months)
+    lookupContext(hit, months)
     setAmount(next)
     // Seeded rather than debounced-into, so a preloaded short amount does not
     // sit for 600ms showing a prompt built from the previous customer.
@@ -373,6 +392,7 @@ export function RecordPaymentForm({
     setSelected(null)
     selectedIdRef.current = null
     setFirstPeriod(null)
+    setPriorGrant(null)
     setDiscountTicked(false)
     setTerm('')
     setAmount('')
@@ -513,6 +533,51 @@ export function RecordPaymentForm({
   const partial =
     selected !== null && Number.isFinite(paid) && isPartialPayment(owed, paid)
 
+  const currentExpiry = selected ? networkExpiry(selected) : null
+
+  // The date the payment is being entered as, which is what the server names
+  // the period from. Today until the cashier changes it; a payment backdated
+  // across the bill day settles a different month, and the label has to say
+  // the one the row will carry.
+  const paidOnDate = parseYmd(paidOn) ?? today
+  const billDay = selected ? effectiveBillDay(selected.bill_date, companyBillDate) : 1
+
+  // The billed month this payment settles, or null when it settles none —
+  // nothing carried means a prepayment, and a prepayment names no month. Keyed
+  // on `carried`, the balance a bill run raised, NOT on `owed`: a first-period
+  // charge was never billed by a run. The server stamps the payment row from
+  // the same function and the same balance.
+  const billPeriod = selected ? billingPeriod(paidOnDate, billDay, carried) : null
+  const billPeriodLabel = selected ? billingPeriodLabel(paidOnDate, billDay, carried) : null
+
+  // ONE MONTH PER PERIOD. If the customer's last extending payment already
+  // granted the month this one settles, the money settles the debt and the
+  // expiry does not move — the same test, on the same row data, that the
+  // server runs before it writes. Never for a first payment, whose period no
+  // earlier payment can have granted.
+  const periodGranted =
+    selected !== null && !firstPeriod &&
+    periodAlreadyGranted({
+      periodStart: billPeriod?.start ?? null,
+      carriedBefore: carried,
+      grant: priorGrant,
+    })
+
+  // Where a guarded payment may COMPLETE the open month to, or null when there
+  // is nothing to complete. Only a picked date leaves a month open; a Full
+  // Period grant already ran to the cut-off, and a picked date past its
+  // cut-off is a manager's decision that is left where it is.
+  const completion =
+    periodGranted && priorGrant && selected
+      ? periodCompletion({
+          grant: priorGrant,
+          anchorThen: parseYmd(priorGrant.anchorThen),
+          registryExpiry: currentExpiry,
+          cutOffDay: selected.cut_off_date,
+          gracePeriodDays,
+        })
+      : null
+
   // Priced off the MONEY, exactly as the server does it, so the preview and the
   // written expiry cannot disagree.
   //
@@ -520,58 +585,59 @@ export function RecordPaymentForm({
   // for is the one the customer already holds. Only money beyond the period
   // buys anything further, which is why this cannot go through monthsCovered.
   // Everyone else does, and for them too the answer can be ZERO — nothing owed
-  // and less than a month's money — which is previewed below as access
-  // unchanged and the money held as credit.
+  // and less than a month's money, or a period that already has its month —
+  // which is previewed below as access unchanged.
   const monthsBought =
     selected && Number.isFinite(paid)
       ? firstPeriod
         ? monthlyCharge > 0
           ? Math.min(MAX_PREPAY_MONTHS, Math.floor(Math.max(0, paid - owed) / monthlyCharge))
           : 0
-        : monthsCovered(owed, monthlyCharge, paid)
+        : monthsCovered(owed, monthlyCharge, paid, periodGranted)
       : 1
   const creditAdded =
     selected && Number.isFinite(paid) ? prepaymentCredit(owed, paid) : 0
 
-  const currentExpiry = selected ? networkExpiry(selected) : null
-
-  // The billed month this payment settles, or null when it settles none —
-  // nothing carried means a prepayment, and a prepayment names no month. Keyed
-  // on `carried`, the balance a bill run raised, NOT on `owed`: a first-period
-  // charge was never billed by a run. The server stamps the payment row from
-  // the same function and the same balance.
-  const billPeriodLabel = selected
-    ? billingPeriodLabel(today, effectiveBillDay(selected.bill_date, companyBillDate), carried)
-    : null
+  // Where the cut-off walk starts: the registry expiry, or for a completion
+  // the end of the month already paid for — that hop is not one this money
+  // bought.
+  const walkFrom = completion ?? currentExpiry
 
   // Full payment, and the "Full Period" branch of a short one, land on the
   // same date — the period the customer would have got had they paid in full.
   //
   // ZERO MONTHS MOVES NOTHING. serviceExpiry floors its months at 1, so the
   // branch is taken here rather than by passing it a zero it would ignore —
-  // the same rule app/actions/payments.ts applies before it writes.
+  // the same rule app/actions/payments.ts applies before it writes. A
+  // completion is the one zero-month payment that moves, to the end of the
+  // open month.
   const fullPeriodExpiry = selected
     ? monthsBought === 0
-      ? currentExpiry
+      ? walkFrom
       : serviceExpiry({
         // cut_off_date, not bill_date — the bill day raises the charge, the
         // cut-off day ends access. Anchored on the registry expiry so paying
         // rolls the customer past the cut-off the bill was due at.
           cutOffDay: selected.cut_off_date,
           gracePeriodDays,
-          currentExpiry,
+          currentExpiry: walkFrom,
           from: today,
           months: monthsBought,
         })
     : null
 
+  // Capped at the completion date when there is one: the suggestion for
+  // finishing a month cannot lie past the end of that month.
   const proportional = selected
-    ? proportionalDate({
-        amountPaid: paid,
-        monthlyCharge,
-        currentExpiry,
-        from: today,
-      })
+    ? capAt(
+        proportionalDate({
+          amountPaid: paid,
+          monthlyCharge,
+          currentExpiry,
+          from: today,
+        }),
+        completion
+      )
     : null
 
   const proportionalYmd = proportional ? ymd(proportional) : ''
@@ -581,21 +647,32 @@ export function RecordPaymentForm({
   // picks. The date decides access; it never changes what is owed.
   const outstanding = selected ? outstandingBalance(owed, paid) : 0
 
-  const dateChosen = partial && accessChoice === 'date_selected'
+  // The short-payment choice is offered when there is a choice to make. A
+  // guarded payment with nothing to complete has none: both options leave the
+  // expiry where it is, so the till says so once, in the amber block below,
+  // and asks nothing.
+  const offerDecision = partial && !(periodGranted && !completion)
+
+  const dateChosen = offerDecision && accessChoice === 'date_selected'
   // ISO dates compare correctly as strings, so no parsing is needed here.
   const beyondProportional = Boolean(
     dateChosen && accessDate && proportionalYmd && accessDate > proportionalYmd
   )
+  // The second picker is bounded at the end of the month it is completing;
+  // the server refuses a later date. The first picker stays unbounded.
+  const completionYmd = completion ? ymd(completion) : ''
+  const beyondCompletion = Boolean(dateChosen && completionYmd && accessDate > completionYmd)
 
   const newExpiry = dateChosen ? parseYmd(accessDate) : fullPeriodExpiry
 
   // The money bought no months, so the preview must say so BEFORE the cashier
-  // commits: the expiry stays where it is and the money is held as credit. A
-  // payment of nothing is not this — there is nothing to hold. Nor is a first
-  // payment: it buys no months either, but its money settles the period the
-  // customer already holds, so the ordinary preview below is the right one.
+  // commits: the expiry stays where it is and the money is held as credit or
+  // settles the debt. A payment of nothing is not this — there is nothing to
+  // hold. Nor is a first payment: it buys no months either, but its money
+  // settles the period the customer already holds, so the ordinary preview
+  // below is the right one. Nor is a completion, which moves the expiry.
   const accessUnchanged =
-    selected !== null && !firstPeriod && monthsBought === 0 && paid > 0
+    selected !== null && !firstPeriod && monthsBought === 0 && !completion && paid > 0
 
   return (
     <form action={formAction} className="space-y-4">
@@ -1202,8 +1279,12 @@ export function RecordPaymentForm({
               No button opens this. Anything short of the amount due is a
               partial payment whether or not the cashier says so, and the
               decision about access has to be made before the money is taken —
-              so the prompt appears on its own as soon as typing stops. */}
-          {partial ? (
+              so the prompt appears on its own as soon as typing stops.
+
+              Not offered when the period already has its month and there is
+              nothing to complete: both choices would leave the expiry where it
+              is, and the amber block below says so instead. */}
+          {offerDecision ? (
             <div
               id="partial-payment"
               className="mt-4 rounded-lg border border-amber-800/60 bg-amber-950/30 p-4"
@@ -1223,7 +1304,10 @@ export function RecordPaymentForm({
 
               <fieldset className="mt-3">
                 <legend className="text-xs font-medium text-gray-300">
-                  How would you like to handle access?
+                  {completion
+                    ? 'This completes the month already granted, which ends ' +
+                      fmtDate(completion) + '.'
+                    : 'How would you like to handle access?'}
                 </legend>
 
                 <div className="mt-2 space-y-2">
@@ -1262,11 +1346,16 @@ export function RecordPaymentForm({
                         setDateTouched(true)
                         setAccessChoice('date_selected')
                       }}
-                      // Deliberately unbounded: the cashier may need to honour
-                      // an arrangement the arithmetic does not know about. The
-                      // amber note below flags an over-generous date rather
-                      // than preventing it.
-                      className={inputBase + inputOk + ' [color-scheme:dark]'}
+                      // Deliberately unbounded on a FIRST short payment: the
+                      // cashier may need to honour an arrangement the
+                      // arithmetic does not know about, and the amber note
+                      // below flags an over-generous date rather than
+                      // preventing it. BOUNDED WHEN COMPLETING a month an
+                      // earlier payment started: past its cut-off is the next
+                      // month, which this money did not buy, and the server
+                      // refuses it.
+                      max={completionYmd || undefined}
+                      className={inputBase + (beyondCompletion ? inputBad : inputOk) + ' [color-scheme:dark]'}
                     />
                     <p className="text-xs text-gray-400">
                       Suggested:{' '}
@@ -1274,6 +1363,15 @@ export function RecordPaymentForm({
                         {proportional ? fmtDate(proportional) : '—'}
                       </span>
                     </p>
+                    {beyondCompletion && completion ? (
+                      <p role="alert" className="text-xs text-red-400">
+                        The month being completed ends {fmtDate(completion)}. A later
+                        date would start a new month.
+                      </p>
+                    ) : null}
+                    {errors.access_date ? (
+                      <p role="alert" className="text-xs text-red-400">{errors.access_date}</p>
+                    ) : null}
                     <p className="text-xs text-gray-400">
                       Outstanding:{' '}
                       <span className="font-medium text-orange-400">{money(outstanding)}</span>
@@ -1295,10 +1393,23 @@ export function RecordPaymentForm({
                 Access unchanged
                 {currentExpiry ? ': expiry stays ' + fmtDate(currentExpiry) : ''}
               </p>
-              <p className="mt-0.5 text-xs text-amber-300/80">
-                {money(creditAdded)} held as credit against the next bill.
-                Less than one month&apos;s charge ({money(monthlyCharge)}) buys no access.
-              </p>
+              {periodGranted && priorGrant ? (
+                // The period already has its month from an earlier payment.
+                // This one settles the debt; it does not buy the month twice.
+                <p className="mt-0.5 text-xs text-amber-300/80">
+                  {billPeriodLabel ? billPeriodLabel + ' already' : 'This period already'} has
+                  its month from the payment on{' '}
+                  {parseYmd(priorGrant.paidOn) ? fmtDate(parseYmd(priorGrant.paidOn) as Date) : priorGrant.paidOn}.
+                  This payment settles the balance
+                  {outstanding > 0 ? '; ' + money(outstanding) + ' is still owed' : ''}
+                  {creditAdded > 0 ? '; ' + money(creditAdded) + ' held as credit' : ''}.
+                </p>
+              ) : (
+                <p className="mt-0.5 text-xs text-amber-300/80">
+                  {money(creditAdded)} held as credit against the next bill.
+                  Less than one month&apos;s charge ({money(monthlyCharge)}) buys no access.
+                </p>
+              )}
             </div>
           ) : newExpiry ? (
             <div className="mt-4 rounded-lg border border-green-900/50 bg-green-950/20 px-3 py-2.5">
@@ -1307,7 +1418,15 @@ export function RecordPaymentForm({
                 {fmtDate(newExpiry)}
               </p>
 
-              {partial ? (
+              {completion && monthsBought === 0 ? (
+                <p className="mt-0.5 text-xs text-gray-400">
+                  Completes the month granted by the payment on{' '}
+                  {parseYmd(priorGrant?.paidOn ?? '')
+                    ? fmtDate(parseYmd(priorGrant?.paidOn ?? '') as Date)
+                    : priorGrant?.paidOn}
+                  {partial ? '. Outstanding balance: ' + money(outstanding) : ''}
+                </p>
+              ) : partial ? (
                 <p className="mt-0.5 text-xs text-gray-400">
                   Outstanding balance: {money(outstanding)}
                   {accessChoice === 'full_period' ? ' carried to next bill' : ''}

@@ -6,14 +6,15 @@ import { redirect } from 'next/navigation'
 import {
   billingPeriod, carriedBalanceAfter, effectiveBillDay, firstPeriodCharge, firstPeriodDays,
   firstPeriodDiscount, isPartialPayment, MAX_PREPAY_MONTHS, monthsCovered,
-  outstandingBalance, parseYmd, prepaymentCredit, proportionalDate, reverseCredit,
-  serviceExpiry, ymd, type AccessDecision,
+  outstandingBalance, parseYmd, periodAlreadyGranted, periodCompletion, prepaymentCredit,
+  proportionalDate, reverseCredit, serviceExpiry, ymd, type AccessDecision, type PriorGrant,
 } from '@/lib/billing'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
 import { getFirstPeriodRules } from '@/lib/data/company'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
 import { getReversalSubject } from '@/lib/data/payments'
+import { grantAnchor, latestGrant } from '@/lib/data/period-grants'
 import { can } from '@/lib/permissions'
 import { canExtend } from '@/lib/status'
 import { getRadiusStatus as readNetworkRecord, radiusConfigured } from '@/lib/radius-db'
@@ -72,6 +73,10 @@ const num = (fd: FormData, key: string) => {
 
 /** Money is stored as numeric; keep float drift out of what we write back. */
 const round2 = (n: number) => Math.round(n * 100) / 100
+
+/** `date`, or `limit` when that is earlier. No limit, no cap. */
+const capAt = (date: Date, limit: Date | null) =>
+  limit && limit.getTime() < date.getTime() ? limit : date
 
 const money = (n: number) =>
   'J$' + new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(n)
@@ -446,6 +451,26 @@ export async function recordPayment(
   const monthlyCharge = Number(customer.monthly_rate ?? 0) + addonTotal
   const carriedBefore = caps.billing ? Number(customer.carried_balance ?? 0) : 0
 
+  // The company grace period is what carries a customer past their cut-off day
+  // before they are actually taken off the network.
+  //
+  // The company's bill day rides on the same read. `settings.bill_date`
+  // predates 0007, so it is selected whether or not the grace column exists.
+  // Read before the pricing because the bill day names the period this payment
+  // settles, and the one-month-per-period guard below is keyed on that.
+  const { data: settingsRow } = await db
+    .from('settings')
+    .select(caps.generalSettings ? 'bill_date, grace_period_days' : 'bill_date')
+    .eq('company_id', company.id)
+    .maybeSingle()
+
+  const companySettings = settingsRow as unknown as {
+    bill_date: number | null
+    grace_period_days?: number | null
+  } | null
+
+  const gracePeriodDays = Number(companySettings?.grace_period_days ?? 0)
+
   // --- Where access currently ends -----------------------------------------
   //
   // Read BEFORE anything is priced, because the expiry it holds is the anchor
@@ -518,36 +543,88 @@ export async function recordPayment(
   // be ZERO — nothing owed and less than a month's money — and zero is handled
   // below as "access unchanged, money held as credit", never passed to
   // serviceExpiry, which would floor it to a month nobody paid for.
+  // --- One month per period ------------------------------------------------
+  //
+  // THE GUARD. If an earlier payment already moved the expiry for the period
+  // this one settles, this payment settles the debt and buys no month for it:
+  // owing 4,500, a 4,000 grants the month and writes 8 Oct; the 500 the next
+  // day clears the balance and the expiry stays 8 Oct. Before this the 500 saw
+  // a positive balance, counted a month to settle, and walked the customer to
+  // 8 Nov — two months for one month's money, on every debt paid in two goes.
+  //
+  // The evidence is the prior payment's own row (lib/data/period-grants.ts);
+  // the match is lib/billing.ts#periodAlreadyGranted, which the till runs too.
+  // The period is named from the payment date and the bill day exactly as it
+  // is stamped on the row below, so the key the guard compares is the key the
+  // row will carry.
+  //
+  // NOT FOR A FIRST PAYMENT. Its period was never billed and no earlier
+  // payment can have granted it; the branch below is untouched.
+  const period = billingPeriod(
+    paymentDate,
+    effectiveBillDay(customer.bill_date, companySettings?.bill_date),
+    carriedBefore
+  )
+
+  const grant = caps.billing && !firstPeriod ? await latestGrant(company.id, customer.id) : null
+  const periodGranted =
+    grant !== null &&
+    periodAlreadyGranted({ periodStart: period?.start ?? null, carriedBefore, grant })
+
+  // Where a guarded payment may complete an open month to, or null: the
+  // expiry then stays where it is. Only a grant that picked a date left a
+  // month open, and only that case reads the anchor back from the audit row.
+  const completion: Date | null =
+    periodGranted && grant
+      ? periodCompletion({
+          grant,
+          anchorThen: await grantAnchor(company.id, customer.id, grant),
+          registryExpiry,
+          cutOffDay: customer.cut_off_date ?? null,
+          gracePeriodDays,
+        })
+      : null
+
   const excess = Math.max(0, round2(paidAmount - due))
   const monthsPaid = firstPeriod
     ? monthlyCharge > 0
       ? Math.min(MAX_PREPAY_MONTHS, Math.floor(excess / monthlyCharge))
       : 0
-    : monthsCovered(due, monthlyCharge, paidAmount)
+    : monthsCovered(due, monthlyCharge, paidAmount, periodGranted)
 
   // A decision only means something for a payment that is actually short. One
   // sent for a payment that covers the bill is dropped rather than stored.
-  const decision: AccessDecision | null = partial
-    ? accessDecisionRaw === 'date_selected' ? 'date_selected' : 'full_period'
-    : null
-
-  // The company grace period is what carries a customer past their cut-off day
-  // before they are actually taken off the network.
   //
-  // The company's bill day rides on the same read. `settings.bill_date`
-  // predates 0007, so it is selected whether or not the grace column exists.
-  const { data: settingsRow } = await db
-    .from('settings')
-    .select(caps.generalSettings ? 'bill_date, grace_period_days' : 'bill_date')
-    .eq('company_id', company.id)
-    .maybeSingle()
+  // NOR FOR A SHORT PAYMENT WITH NOTHING TO DECIDE: when the period already has
+  // its month and there is no open month to complete, the till offers no
+  // choice (both would give the same answer) and none is stored.
+  const decision: AccessDecision | null =
+    partial && !(periodGranted && !completion)
+      ? accessDecisionRaw === 'date_selected' ? 'date_selected' : 'full_period'
+      : null
 
-  const companySettings = settingsRow as unknown as {
-    bill_date: number | null
-    grace_period_days?: number | null
-  } | null
+  // A COMPLETION IS BOUNDED. The first picker is deliberately unbounded — a
+  // manager over-granting is a decision. The second is not: it is finishing a
+  // month somebody already started, and a date past that month's cut-off is
+  // the next month, which this money did not buy.
+  if (decision === 'date_selected' && chosenDate && completion &&
+      chosenDate.getTime() > completion.getTime()) {
+    return {
+      ok: false,
+      error: 'Please correct the highlighted fields.',
+      fieldErrors: {
+        access_date:
+          'This payment completes the month already granted, which ends ' +
+          ymd(completion) + '. A later date would start a new month.',
+      },
+    }
+  }
 
-  const gracePeriodDays = Number(companySettings?.grace_period_days ?? 0)
+  // WHERE THE WALK STARTS. The registry expiry, as always — except for a
+  // guarded payment completing a picked-date month, which starts from the end
+  // of that month: the hop from the picked date to its cut-off is the month
+  // already paid for, not one this money bought.
+  const walkFrom: Date | null = completion ?? registryExpiry
 
   // The date a full payment would have reached, and the "Full Period" branch of
   // a short one. One calculation for everybody now — the months-from-expiry
@@ -556,14 +633,16 @@ export async function recordPayment(
   // A PAYMENT THAT BUYS NO MONTHS DOES NOT MOVE THE EXPIRY. For a first payment
   // it stays exactly where provisioning put it, because that is the end of the
   // period the money is paying for. For anyone else it is a short prepayment
-  // on a clear balance: the expiry stays where the registry holds it (null when
-  // the customer is not on the network) and the money is credit. serviceExpiry
-  // cannot say either — it floors months at 1, which is right for a renewal
-  // and wrong here — so the branch is taken before the call rather than by
-  // passing it a zero it would ignore.
+  // on a clear balance, or a payment on a period that already has its month:
+  // the expiry stays where the registry holds it (null when the customer is
+  // not on the network) and the money is credit or settles the debt.
+  // serviceExpiry cannot say either — it floors months at 1, which is right
+  // for a renewal and wrong here — so the branch is taken before the call
+  // rather than by passing it a zero it would ignore. The one exception is a
+  // completion, which moves to the end of the open month without buying one.
   const fullPeriodExpiry: Date | null =
     monthsPaid === 0
-      ? firstPeriod ? firstPeriod.expiry : registryExpiry
+      ? firstPeriod ? firstPeriod.expiry : walkFrom
       : serviceExpiry({
           // cut_off_date, not bill_date: the bill day says when the charge is
           // raised, the cut-off day says when access ends. Anchored on the
@@ -571,7 +650,7 @@ export async function recordPayment(
           // cut-off that bill was due at rather than up to it.
           cutOffDay: customer.cut_off_date ?? null,
           gracePeriodDays,
-          currentExpiry: registryExpiry,
+          currentExpiry: walkFrom,
           from: paymentDate,
           // A prepayment moves the expiry the WHOLE distance now, not one month
           // per bill run. The customer paid for the months today, so they hold
@@ -584,19 +663,24 @@ export async function recordPayment(
 
   // Nothing was bought, so nothing moves and nothing is written to the
   // network. Decided here, once, so the row, the log and the panel all say the
-  // same thing. Zero months cannot be partial: a partial payment is short of a
-  // balance, and the settled month that balance carries is never zero.
-  const accessUnchanged = monthsPaid === 0
+  // same thing. A completion is the one zero-month payment that does move:
+  // to the end of the month already paid for, never beyond it.
+  const accessUnchanged = monthsPaid === 0 && !completion
 
   // Recomputed rather than trusted, so the log records the real proportional
-  // date even if the form sent a stale one.
+  // date even if the form sent a stale one. Capped at the completion date when
+  // there is one: a proportional suggestion past the end of the open month
+  // would be a date this money cannot reach.
   const proportional = partial
-    ? proportionalDate({
-        amountPaid: paidAmount,
-        monthlyCharge,
-        currentExpiry: registryExpiry,
-        from: paymentDate,
-      })
+    ? capAt(
+        proportionalDate({
+          amountPaid: paidAmount,
+          monthlyCharge,
+          currentExpiry: registryExpiry,
+          from: paymentDate,
+        }),
+        completion
+      )
     : null
 
   const beyondProportional = Boolean(
@@ -615,7 +699,12 @@ export async function recordPayment(
     company_id: company.id,
     customer_id: customer.id,
     amount: paidAmount,
-    months_paid: monthsPaid,
+    // A completion bought no month by the money, but it did move the expiry —
+    // to the end of the month the picked-date payment before it had started.
+    // Stamped at least 1 so the receipt does not print it as unchanged
+    // (lib/data/receipts.ts reads months_paid 0 as exactly that) and so the
+    // next guard read sees it as a grant: the month is now complete.
+    months_paid: completion ? Math.max(1, monthsPaid) : monthsPaid,
     payment_type: legacyPaymentType(method),
     payment_date: paymentDate.toISOString(),
     agent,
@@ -649,12 +738,8 @@ export async function recordPayment(
     //
     // The bill day comes through effectiveBillDay — the customer's own, else
     // the company's — the same resolution the bill run uses, so the month a
-    // payment says it settled is the month the run said it raised.
-    const period = billingPeriod(
-      paymentDate,
-      effectiveBillDay(customer.bill_date, companySettings?.bill_date),
-      carriedBefore
-    )
+    // payment says it settled is the month the run said it raised. Computed
+    // once, above, where the guard compares it.
     insertRow.billing_period_start = period?.start ?? null
     insertRow.billing_period_end = period?.end ?? null
     // The expiry this payment leaves the customer with. For a payment that
@@ -774,10 +859,32 @@ export async function recordPayment(
       // DELIBERATELY NOT A WARNING. This is the correct and expected outcome of
       // a payment that bought no months: a first payment, where the customer
       // already holds access to the end of the period they have just paid for,
-      // or a short prepayment on a clear balance, where the money is held as
-      // credit and the expiry stays put. Writing the same date back would put
-      // an extend through the backwards-write guard for no reason and log an
-      // extension that extended nothing.
+      // a short prepayment on a clear balance, where the money is held as
+      // credit and the expiry stays put, or a payment on a period that already
+      // has its month. Writing the same date back would put an extend through
+      // the backwards-write guard for no reason and log an extension that
+      // extended nothing.
+      //
+      // THE GUARDED CASE IS LOGGED, THOUGH. A payment on a positive balance
+      // that moved nothing is the one a manager will be asked about ("they
+      // paid, why are they still on the old date?"), and the row that answers
+      // it — which earlier payment granted the month — should not have to be
+      // reconstructed from balances.
+      if (periodGranted && grant && newExpiry) {
+        await logEvent({
+          customerId: customer.id,
+          type: 'access_already_granted',
+          tag: '[payments]',
+          details:
+            'Access unchanged | identity=' + identity +
+            ' | expiry=' + ymd(newExpiry) +
+            ' | granted_by_payment=' + grant.paymentId +
+            ' | payment_id=' + paymentId +
+            ' | amount=' + paidAmount.toFixed(2) +
+            ' | balance_after=' + carriedAfter.toFixed(2) +
+            ' | by=' + profile.email,
+        })
+      }
     } else {
       // extendInRadius still refuses to move an expiry backwards. A cashier who
       // picks a date earlier than the customer already holds lands here and is
@@ -819,6 +926,9 @@ export async function recordPayment(
             skipped: result.skipped,
             note:
               'bill period' +
+              // A completion moved the customer to the end of a month an
+              // earlier payment started, not into a new one.
+              (completion && grant ? ', completes_payment=' + grant.paymentId : '') +
               (decision ? ', partial=' + decision : '') +
               // Kept when payment_recorded went: a manager granting a date
               // beyond what the money bought is a decision, and this is now
@@ -970,9 +1080,12 @@ type FirstPeriod = {
 }
 
 /**
- * The first-period figures for ONE customer, for the till to preview.
+ * What the till needs to know about ONE customer before pricing a payment,
+ * beyond what the search hit carries: their first period, if this is one, and
+ * the most recent payment that moved their expiry, for the one-month-per-
+ * period guard.
  *
- * Returns null for the overwhelming majority of customers, which is what the
+ * Both are null for the overwhelming majority of customers, which is what the
  * form treats as "price this the ordinary way".
  *
  * WHY A SERVER ACTION AND NOT A FIELD ON THE SEARCH HIT. Answering this needs
@@ -985,13 +1098,21 @@ type FirstPeriod = {
  * is SHOWN, in the same way the form already previews the expiry and the
  * proportional date.
  */
-export async function loadFirstPeriod(customerId: number): Promise<{
-  days: number
-  charge: number
-  discount: number
-} | null> {
+export type PaymentContext = {
+  firstPeriod: { days: number; charge: number; discount: number } | null
+  /**
+   * The prior grant, with the registry expiry it anchored on ("YYYY-MM-DD",
+   * null when unknown or when it did not pick a date), so the form can say
+   * where a completion would run to with lib/billing.ts#periodCompletion.
+   */
+  grant: (PriorGrant & { anchorThen: string | null }) | null
+}
+
+export async function loadPaymentContext(customerId: number): Promise<PaymentContext> {
+  const none: PaymentContext = { firstPeriod: null, grant: null }
+
   const { company, profile } = await getSession()
-  if (!can(profile.role, 'record_payment')) return null
+  if (!can(profile.role, 'record_payment')) return none
 
   const caps = await getSchemaCapabilities()
   const db = tenantClient()
@@ -1015,7 +1136,7 @@ export async function loadFirstPeriod(customerId: number): Promise<{
     pppoe_username?: string | null
   } | null
 
-  if (!customer) return null
+  if (!customer) return none
 
   // The same monthly charge the till prices against: rate plus active add-ons.
   let addonTotal = 0
@@ -1049,9 +1170,17 @@ export async function loadFirstPeriod(customerId: number): Promise<{
     discountRequested: false,
   })
 
-  if (!period) return null
+  // A first payment has no prior grant by definition (no service payment since
+  // provisioning), so the read is skipped rather than made and ignored.
+  const prior = period ? null : await latestGrant(company.id, customer.id)
+  const anchor = prior ? await grantAnchor(company.id, customer.id, prior) : null
 
-  return { days: period.days, charge: period.charge, discount: period.discount }
+  return {
+    firstPeriod: period
+      ? { days: period.days, charge: period.charge, discount: period.discount }
+      : null,
+    grant: prior ? { ...prior, anchorThen: anchor ? ymd(anchor) : null } : null,
+  }
 }
 async function resolveFirstPeriod(opts: {
   companyId: number

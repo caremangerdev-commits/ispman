@@ -490,14 +490,25 @@ export function prepaymentCredit(carriedBalance: number, amountPaid: number): nu
  * A first payment (migration 0017) does not come through here. Its period is
  * already held and never billed, so it is priced on its own branch in
  * app/actions/payments.ts from the excess alone.
+ *
+ * `periodGranted` IS THE ONE-MONTH-PER-PERIOD GUARD (periodAlreadyGranted).
+ * When an earlier payment has already moved the expiry for the period this one
+ * settles, the settled month is NOT counted again: the money clears the debt
+ * and buys only whatever whole charges lie beyond it. "A positive balance means
+ * a month to settle" is true of the money and was false of the access — a
+ * customer owing 4,500 who paid 4,000 and then 500 the next day was walked one
+ * cut-off on each payment, two months for one month's money, because the 500
+ * saw a positive balance and nothing else. See the section below.
  */
 export function monthsCovered(
   carriedBalance: number,
   monthlyCharge: number,
-  amountPaid: number
+  amountPaid: number,
+  periodGranted = false
 ): number {
   const charge = safe(monthlyCharge)
-  const settled = safe(amountPaid) > 0 ? settledMonths(carriedBalance) : 0
+  const settled =
+    safe(amountPaid) > 0 && !periodGranted ? settledMonths(carriedBalance) : 0
   if (charge <= 0) return settled
 
   const extra = Math.floor(prepaymentCredit(carriedBalance, amountPaid) / charge)
@@ -696,6 +707,147 @@ export function serviceExpiry(opts: {
   const next = advanceCutOff(anchor, cutOffDay, count) ?? addMonths(anchor, count)
   next.setDate(next.getDate() + grace)
   return next
+}
+
+// ---------------------------------------------------------------------------
+// One month per period
+//
+// A month of access can be granted ONCE per bill period per customer. The
+// money side has always been right — every payment reduces the balance — but
+// the access side re-derived "a month to settle" from nothing more than a
+// positive balance, and a debt paid in two goes was walked a cut-off twice.
+// The record of what an earlier payment granted is already on its row
+// (billing_period_start, carried_balance_after, access_granted_until,
+// access_decision); these functions are what reads it. Nothing on the payment
+// path read prior payment rows before this.
+// ---------------------------------------------------------------------------
+
+/**
+ * The most recent service payment that MOVED the expiry, as its own row records
+ * it. Loaded by lib/data/period-grants.ts; matched here.
+ *
+ * "Moved" means months_paid >= 1 AND service_active_until stamped — the write
+ * to the registry landed. A payment whose extend FAILED granted nothing, and
+ * the payment after it must still be allowed to.
+ */
+export type PriorGrant = {
+  paymentId: number
+  /** payments.billing_period_start, "YYYY-MM-DD"; null when it settled no month. */
+  periodStart: string | null
+  /** payments.carried_balance_after — what that payment left owing. */
+  carriedAfter: number
+  /** payments.access_granted_until, "YYYY-MM-DD" — where it put the expiry. */
+  grantedUntil: string
+  /** payments.access_decision, as stored. */
+  decision: AccessDecision | null
+  /** payments.paid_on, "YYYY-MM-DD". */
+  paidOn: string
+}
+
+/**
+ * Whether the period this payment settles ALREADY HAS ITS MONTH from `grant`.
+ *
+ * Two keys, either of which is enough:
+ *
+ *   1. SAME PERIOD LABEL, AND THE BALANCE HAS NOT GROWN SINCE. The label is
+ *      derived from the payment date and the bill day (billingPeriod), so it is
+ *      the natural key — but the bill day MOVES: 3,940 of them were filled on
+ *      20 Sep 2026 and a label stamped under the old day can coincide with one
+ *      computed under the new. At West Central a grant stamped "July" for an
+ *      August payment (company day 1) and a September payment now labelled
+ *      "July" (customer day 25) would match, and the customer paying a bill the
+ *      run raised in between would be given no access for it. A bill run always
+ *      grows the balance, so a balance at or below what the grant left behind
+ *      is the check that no new bill sits between the two payments.
+ *
+ *   2. THIS PAYMENT'S OPENING BALANCE IS EXACTLY THE REMAINDER THE GRANT LEFT.
+ *      Independent of the label entirely, which is what makes it the important
+ *      one: two payments straddling the bill day carry different labels for
+ *      the same debt, and the label will move again the next time bill days
+ *      are edited. 4,000 on 4,500 leaves 500; the 500 that clears it is this
+ *      key.
+ *
+ * NEITHER KEY CAN FIRE FOR A SQUARE CUSTOMER. Both require a positive opening
+ * balance, so a prepayment of two months' money on a clear account is still
+ * two months. The guard is about a period that already has its month, not
+ * about paying twice.
+ *
+ * Only the MOST RECENT grant is considered. An older one can only match by
+ * label, and an older label matching is exactly the moved-bill-day accident
+ * key 1 is guarding against.
+ */
+export function periodAlreadyGranted(opts: {
+  /** billingPeriod(...)?.start for this payment; null when it settles no month. */
+  periodStart: string | null
+  /** The carried balance BEFORE this payment. */
+  carriedBefore: number
+  grant: PriorGrant | null
+}): boolean {
+  const { periodStart, grant } = opts
+  const before = round2(safe(opts.carriedBefore))
+  if (!grant || before <= 0) return false
+
+  const left = round2(safe(grant.carriedAfter))
+
+  if (left > 0 && before === left) return true
+  if (periodStart !== null && grant.periodStart === periodStart && before <= left) return true
+
+  return false
+}
+
+/**
+ * The date a guarded payment may COMPLETE the open month to, or null when
+ * there is nothing to complete and the expiry stays where it is.
+ *
+ * Only a grant that picked a date left a month open: Full Period ran the
+ * period to its cut-off already, so both options a cashier could take give
+ * the same answer and the till does not offer them. For a picked date the open
+ * month ends at THE FULL-PERIOD DATE THAT PAYMENT WOULD HAVE REACHED — the same
+ * serviceExpiry walk, from the registry expiry it anchored on (`anchorThen`,
+ * read back from that extend's audit row) and its own payment date.
+ *
+ * NULL, DELIBERATELY, IN EVERY DOUBTFUL CASE:
+ *
+ *   - the anchor is unknown (no audit row found): the full date cannot be
+ *     stated, so nothing is stated;
+ *   - the registry no longer holds what the grant wrote: something else has
+ *     moved the expiry since and the month is no longer the one that is open;
+ *   - the picked date is AT OR PAST the full date: the manager over-granted,
+ *     and a completion computed from there would be the cut-off after —
+ *     a second month on top of one already given away. The expiry stays
+ *     where the manager put it.
+ *
+ * Every null is "access unchanged", which is the direction that cannot hand
+ * out a month nobody paid for.
+ */
+export function periodCompletion(opts: {
+  grant: PriorGrant
+  /** Registry expiry the grant's payment anchored on. Null when unknown. */
+  anchorThen: Date | null
+  /** Registry expiry NOW. */
+  registryExpiry: Date | null
+  cutOffDay: number | null
+  gracePeriodDays: number
+}): Date | null {
+  const { grant, anchorThen, registryExpiry, cutOffDay, gracePeriodDays } = opts
+
+  if (grant.decision !== 'date_selected') return null
+  if (!anchorThen || !registryExpiry) return null
+  if (ymd(registryExpiry) !== grant.grantedUntil) return null
+
+  const paidOn = parseYmd(grant.paidOn)
+  const granted = parseYmd(grant.grantedUntil)
+  if (!paidOn || !granted) return null
+
+  const full = serviceExpiry({
+    cutOffDay,
+    gracePeriodDays,
+    currentExpiry: anchorThen,
+    from: paidOn,
+    months: 1,
+  })
+
+  return granted.getTime() < full.getTime() ? full : null
 }
 
 // ---------------------------------------------------------------------------
