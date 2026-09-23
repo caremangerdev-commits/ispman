@@ -50,3 +50,47 @@ export function homePathFor(
 export function skipsDashboard(role: Role): boolean {
   return role === 'cashier'
 }
+
+/**
+ * Where a user goes right after signing in.
+ *
+ * `requested` is the page the proxy sent them to login from, when there was
+ * one. Everyone but a cashier goes back there: a manager whose session lapsed
+ * on a customer's record wants that record, not the dashboard. A CASHIER
+ * ALWAYS LANDS ON RECORD PAYMENT. Their session expires in the field, between
+ * gates, and the page they were on last is not the one they are about to
+ * need; the payment screen is. So for them the return target is ignored.
+ *
+ * Login cannot decide this itself: the form runs in the browser with the auth
+ * session only, which has no role. It sends every sign-in through `/` with
+ * the target as a query string, and the root page — which has the profile —
+ * calls this.
+ */
+export function landingPathFor(
+  profile: {
+    role: Role
+    is_super_admin: boolean
+  },
+  isActingInTenant: boolean,
+  requested: string | null
+): string {
+  const home = homePathFor(profile, isActingInTenant)
+  if (profile.role === 'cashier') return home
+  return requested ?? home
+}
+
+/**
+ * A return target the app will honour: a path on this site, or nothing.
+ *
+ * The one definition, used by the login page and the root page alike. Anything
+ * else — an absolute URL, a protocol-relative "//evil.com", the login page
+ * itself, or the root that would only route again — is dropped rather than
+ * followed, or the login page would be an open redirect.
+ */
+export function safeReturnPath(value: string | string[] | undefined): string | null {
+  const target = Array.isArray(value) ? value[0] : value
+  if (!target) return null
+  if (!target.startsWith('/') || target.startsWith('//')) return null
+  if (target === '/' || target === '/login' || target.startsWith('/login/')) return null
+  return target
+}

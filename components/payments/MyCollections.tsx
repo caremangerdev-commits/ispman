@@ -108,7 +108,7 @@ export function CollectionsList({
 
   return (
     <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-5 py-3.5">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-800 px-4 py-3.5 sm:px-5">
         <div>
           <h2 className="text-sm font-semibold text-white">My Collections</h2>
           <p className="mt-0.5 text-xs text-gray-500">
@@ -123,13 +123,15 @@ export function CollectionsList({
             aria-hidden
           />
           <label htmlFor="collections-search" className="sr-only">Search my payments</label>
+          {/* 44px and 16px text on a phone, like the form's fields: a thumb
+              target, and no focus zoom on iOS. */}
           <input
             id="collections-search"
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search my payments..."
-            className="w-full rounded-lg border border-gray-700 bg-gray-800 py-2 pl-9 pr-3 text-sm text-white placeholder:text-gray-500 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
+            className="w-full min-h-11 rounded-lg border border-gray-700 bg-gray-800 py-2.5 pl-9 pr-3 text-base text-white placeholder:text-gray-500 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 sm:min-h-0 sm:py-2 sm:text-sm"
           />
         </div>
       </header>
@@ -144,7 +146,59 @@ export function CollectionsList({
         </p>
       ) : (
         <div className="max-h-[26rem] overflow-y-auto">
-          <table className="w-full text-left text-sm">
+          {/* PHONE: one card per payment. Five columns at 20px padding each
+              was the one thing on this page that forced sideways scrolling
+              on a 390px screen. Name and amount on the first line, method,
+              time and the receipt button on the second. The table below is
+              the same rows for a desk, and only one of the two is rendered. */}
+          <ul className="divide-y divide-gray-800 sm:hidden">
+            {visible.map((p) => (
+              <li key={p.id} className="px-4 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  {/* The name is the link to the record, so the link is the
+                      whole first row's height — a thumb's worth — rather than
+                      the 20px the text alone would give it. */}
+                  {p.customerId ? (
+                    <Link
+                      href={'/dashboard/customers/' + p.customerId}
+                      className="flex min-h-11 min-w-0 flex-1 items-center text-sm font-medium text-gray-200 transition active:text-blue-400"
+                    >
+                      <span className="truncate">{p.customerName}</span>
+                    </Link>
+                  ) : (
+                    <span className="flex min-h-11 min-w-0 flex-1 items-center text-sm font-medium text-gray-300">
+                      <span className="truncate">{p.customerName}</span>
+                    </span>
+                  )}
+                  <span className="shrink-0 text-sm font-semibold tabular-nums text-white">
+                    {money(symbol, p.amount)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2 text-xs text-gray-500">
+                    <span
+                      className={
+                        'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ' +
+                        (METHOD_STYLES[p.method] ?? 'bg-gray-700/40 text-gray-400')
+                      }
+                    >
+                      {PAYMENT_METHOD_LABELS[p.method]}
+                    </span>
+                    <span className="truncate">{shortStamp(p.payment_date)}</span>
+                  </div>
+                  {/* The same reprint as the table's last column — see the
+                      note there. Thumb height, pulled in to the card's edge
+                      so its label lines up with the amount above it. */}
+                  <ReceiptButton
+                    paymentId={p.id}
+                    className="-mr-2 inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-xs font-semibold text-gray-400 transition active:bg-gray-800 active:text-white"
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          <table className="hidden w-full text-left text-sm sm:table">
             <thead className="sticky top-0 bg-gray-900">
               <tr className="border-b border-gray-800 text-[11px] uppercase tracking-wider text-gray-500">
                 <th scope="col" className="px-5 py-2 font-semibold">Customer</th>

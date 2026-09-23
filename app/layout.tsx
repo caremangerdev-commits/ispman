@@ -1,6 +1,16 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+
+// `cover`, so the page extends under a phone's home indicator and
+// env(safe-area-inset-bottom) reports a real number. Without it the inset is
+// always 0 on an iPhone and the bottom tab bar's safe-area padding does
+// nothing; the rest is what Next.js emits by default.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
 
 const geistSans = Geist({
   variable: "--font-geist-sans",

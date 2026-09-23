@@ -123,7 +123,10 @@ export function ShellMain({
     >
       {/* p-4 on a phone, not p-6: 24px a side off a 360px screen is 13% of the
           width spent on nothing, and these pages are already tight. */}
-      <div className="p-4 pb-24 lg:p-6 lg:pb-6">{children}</div>
+      {/* The bottom padding is the tab bar's height plus the home-indicator
+          inset the bar itself grows by, so the last control on a page — the
+          Record Payment button — clears the bar on a gesture-nav phone too. */}
+      <div className="p-4 pb-[calc(6rem+env(safe-area-inset-bottom))] lg:p-6 lg:pb-6">{children}</div>
     </main>
   )
 }

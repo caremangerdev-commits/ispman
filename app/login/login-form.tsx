@@ -5,7 +5,7 @@ import { useState, type FormEvent } from 'react'
 
 import { createClient } from '@/lib/supabase/client'
 
-export function LoginForm({ redirectTo }: { redirectTo: string }) {
+export function LoginForm({ redirectTo }: { redirectTo: string | null }) {
   const router = useRouter()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -29,7 +29,12 @@ export function LoginForm({ redirectTo }: { redirectTo: string }) {
       return
     }
 
-    router.replace(redirectTo)
+    // Always through the root page, never straight to the target. This form
+    // has the auth session and nothing else — no role — and where a sign-in
+    // lands depends on the role: a cashier goes to record payment whatever
+    // page they were on. The root page has the profile and decides; see
+    // lib/home.ts#landingPathFor.
+    router.replace(redirectTo ? '/?redirectTo=' + encodeURIComponent(redirectTo) : '/')
     // Re-render Server Components so they observe the new session cookie.
     router.refresh()
   }

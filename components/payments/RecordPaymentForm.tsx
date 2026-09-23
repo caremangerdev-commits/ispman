@@ -51,8 +51,12 @@ const todayOnServer = () => ''
  */
 const PARTIAL_DEBOUNCE_MS = 600
 
+// PHONE FIRST, DESK SECOND. Below the `sm` breakpoint every field is at least
+// 44px tall — a thumb's worth — and its text is 16px, which is the size below
+// which iOS Safari zooms the whole page in on focus. The desk gets the
+// tighter 36px / 14px it always had.
 const inputBase =
-  'w-full rounded-lg border bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 outline-none transition focus:ring-2'
+  'w-full min-h-11 rounded-lg border bg-gray-800 px-3 py-2.5 text-base text-white placeholder:text-gray-500 outline-none transition focus:ring-2 sm:min-h-0 sm:py-2 sm:text-sm'
 const inputOk = ' border-gray-700 focus:border-blue-500 focus:ring-blue-500/30'
 const inputBad = ' border-red-700 focus:border-red-500 focus:ring-red-500/30'
 
@@ -108,7 +112,7 @@ function SubmitButton() {
     <button
       type="submit"
       disabled={pending}
-      className="w-full rounded-lg bg-green-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-500 disabled:cursor-not-allowed disabled:opacity-60"
+      className="w-full min-h-12 rounded-lg bg-green-600 px-4 py-3 text-base font-semibold text-white transition hover:bg-green-500 disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-0 sm:text-sm"
     >
       {pending ? 'Recording…' : 'Record Payment'}
     </button>
@@ -468,14 +472,14 @@ export function RecordPaymentForm({
               setDismissed(state)
               clearCustomer()
             }}
-            className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500"
+            className="inline-flex min-h-11 items-center rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500 sm:min-h-0"
           >
             Record Another Payment
           </button>
           {state.customerId ? (
             <Link
               href={'/dashboard/customers/' + state.customerId}
-              className="rounded-lg bg-gray-800 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-700"
+              className="inline-flex min-h-11 items-center rounded-lg bg-gray-800 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-700 sm:min-h-0"
             >
               View Customer
             </Link>
@@ -486,7 +490,7 @@ export function RecordPaymentForm({
             <button
               type="button"
               onClick={() => setReopenedReceipt(state.paymentId ?? null)}
-              className="rounded-lg bg-gray-800 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-700"
+              className="inline-flex min-h-11 items-center rounded-lg bg-gray-800 px-4 py-2.5 text-sm font-semibold text-gray-200 transition hover:bg-gray-700 sm:min-h-0"
             >
               View Receipt
             </button>
@@ -686,7 +690,7 @@ export function RecordPaymentForm({
           Only rendered once migration 0013 is applied. Without it the form is
           exactly what it was before: a service payment, with no toggle. */}
       {otherPaymentsAvailable ? (
-        <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+        <section className="rounded-xl border border-gray-800 bg-gray-900 p-4 sm:p-5">
           <fieldset>
             <legend className="mb-3 text-sm font-semibold text-white">Payment Type</legend>
             <div className="grid gap-2 sm:grid-cols-2">
@@ -718,7 +722,7 @@ export function RecordPaymentForm({
       ) : null}
 
       {/* ---------------- Customer ---------------- */}
-      <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+      <section className="rounded-xl border border-gray-800 bg-gray-900 p-4 sm:p-5">
         <h2 className="mb-3 text-sm font-semibold text-white">Customer</h2>
 
         {/* Hidden once a customer is picked: the card below then reads as a
@@ -758,7 +762,7 @@ export function RecordPaymentForm({
                     <button
                       type="button"
                       onClick={() => pick(r)}
-                      className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition hover:bg-gray-700"
+                      className="flex min-h-14 w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-gray-700 active:bg-gray-700 sm:min-h-0 sm:py-2.5"
                     >
                       <span className={'h-2 w-2 shrink-0 rounded-full ' + DOTS[r.status]} aria-hidden />
                       <span className="min-w-0 flex-1">
@@ -772,9 +776,16 @@ export function RecordPaymentForm({
                         <span className="block truncate text-xs text-gray-400">
                           {[r.phone, r.address].filter(Boolean).join(' · ') || 'No phone or address'}
                         </span>
+                        {/* On a phone the expiry sits under the name rather
+                            than beside it: a badge AND a date on the right
+                            left a 390px row about 150px for the name, and
+                            "Christopher Thompson-Williams" became "Christoph…". */}
+                        <span className="block text-xs text-gray-500 sm:hidden">
+                          Expires {networkExpiryLabel(r)}
+                        </span>
                       </span>
                       <StatusBadge status={r.status} />
-                      <span className="shrink-0 text-xs text-gray-400">
+                      <span className="hidden shrink-0 text-xs text-gray-400 sm:inline">
                         {/* Registry expiry, matching the card and detail page.
                             expires_at is billing-derived and never shown. */}
                         {networkExpiryLabel(r)}
@@ -788,38 +799,46 @@ export function RecordPaymentForm({
         </div>
 
         {selected ? (
-          <div className="relative rounded-lg bg-gray-800 p-4">
+          <div className="rounded-lg bg-gray-800 p-4">
             <input type="hidden" name="customer_id" value={selected.id} />
 
-            <button
-              type="button"
-              onClick={clearCustomer}
-              aria-label="Clear selected customer"
-              className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-md bg-gray-700 px-2 py-1 text-[11px] font-semibold text-gray-300 transition hover:bg-gray-600"
-            >
-              <X className="h-3 w-3" aria-hidden />
-              Clear
-            </button>
+            {/* Clear is in the flow beside the name, not pinned to the corner:
+                pinned, it sat on top of a long name at phone width, and the
+                name's right padding that kept it clear was 64px the name
+                needed. A flex row gives each its own space at every width. */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                {/* Name leads the card so the cashier can confirm who they are
+                    serving at a glance; the expiry they are about to change
+                    sits directly under it. Both come from the registry, never
+                    from the billing dates. */}
+                <p className="text-2xl font-bold tracking-tight text-white">
+                  {[selected.first_name, selected.last_name].filter(Boolean).join(' ')}
+                </p>
 
-            {/* Name leads the card so the cashier can confirm who they are
-                serving at a glance; the expiry they are about to change sits
-                directly under it. Both come from the registry, never from the
-                billing dates. */}
-            <p className="pr-16 text-2xl font-bold tracking-tight text-white">
-              {[selected.first_name, selected.last_name].filter(Boolean).join(' ')}
-            </p>
+                {/* An "other" payment moves no expiry, so the date the customer
+                    currently holds is not part of the transaction and showing
+                    it would invite the cashier to think it will change. */}
+                {isOther ? null : (
+                  <p className="mt-1 text-xs text-gray-400">
+                    Current Expiry:{' '}
+                    <span className="font-medium text-gray-200">
+                      {networkExpiryLabel(selected)}
+                    </span>
+                  </p>
+                )}
+              </div>
 
-            {/* An "other" payment moves no expiry, so the date the customer
-                currently holds is not part of the transaction and showing it
-                would invite the cashier to think it will change. */}
-            {isOther ? null : (
-              <p className="mt-1 pr-16 text-xs text-gray-400">
-                Current Expiry:{' '}
-                <span className="font-medium text-gray-200">
-                  {networkExpiryLabel(selected)}
-                </span>
-              </p>
-            )}
+              <button
+                type="button"
+                onClick={clearCustomer}
+                aria-label="Clear selected customer"
+                className="inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md bg-gray-700 px-3 text-xs font-semibold text-gray-300 transition hover:bg-gray-600 active:bg-gray-600 sm:min-h-0 sm:px-2 sm:py-1 sm:text-[11px]"
+              >
+                <X className="h-3.5 w-3.5 sm:h-3 sm:w-3" aria-hidden />
+                Clear
+              </button>
+            </div>
 
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-400">
               <span>{selected.phone ?? 'No phone'}</span>
@@ -869,7 +888,7 @@ export function RecordPaymentForm({
                         value={money(firstPeriod.charge)}
                       />
                       {firstPeriod.discount > 0 ? (
-                        <label className="flex cursor-pointer items-start justify-between gap-3 rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2">
+                        <label className="flex min-h-11 cursor-pointer items-start justify-between gap-3 rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2.5 sm:min-h-0 sm:py-2">
                           <span className="text-xs text-amber-300/90">
                             Apply short-period discount
                             <span className="mt-0.5 block text-[11px] text-amber-300/60">
@@ -885,7 +904,7 @@ export function RecordPaymentForm({
                               type="checkbox"
                               checked={discountTicked}
                               onChange={(e) => setDiscountTicked(e.target.checked)}
-                              className="h-4 w-4 accent-amber-500"
+                              className="h-5 w-5 accent-amber-500 sm:h-4 sm:w-4"
                             />
                           </span>
                         </label>
@@ -942,7 +961,7 @@ export function RecordPaymentForm({
 
       {/* ---------------- Payment ---------------- */}
       {selected ? (
-        <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+        <section className="rounded-xl border border-gray-800 bg-gray-900 p-4 sm:p-5">
           <h2 className="mb-4 text-sm font-semibold text-white">Payment Details</h2>
 
           {/* ---------------- Other payment ----------------
@@ -1039,6 +1058,9 @@ export function RecordPaymentForm({
                     id="amount"
                     name="amount"
                     type="number"
+                    // Whole units, so the digit keypad — not the full keyboard
+                    // a phone shows for type="number" — opens under the thumb.
+                    inputMode="numeric"
                     min="1"
                     step="1"
                     required
@@ -1255,6 +1277,8 @@ export function RecordPaymentForm({
                   id="amount"
                   name="amount"
                   type="number"
+                  // Same as the "other" amount above: digit keypad on a phone.
+                  inputMode="numeric"
                   min="1"
                   step="1"
                   required
@@ -1484,10 +1508,10 @@ function KindOption({
     <label
       htmlFor={id}
       className={
-        'flex cursor-pointer items-start gap-2.5 rounded-lg border px-3 py-2.5 transition ' +
+        'flex min-h-14 cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition sm:min-h-0 sm:gap-2.5 sm:px-3 sm:py-2.5 ' +
         (checked
           ? 'border-blue-600 bg-blue-950/30'
-          : 'border-gray-700 bg-gray-900/40 hover:border-gray-600')
+          : 'border-gray-700 bg-gray-900/40 hover:border-gray-600 active:border-gray-500')
       }
     >
       <input
@@ -1496,7 +1520,7 @@ function KindOption({
         name="payment_kind_choice"
         checked={checked}
         onChange={onSelect}
-        className="mt-0.5 h-4 w-4 shrink-0 accent-blue-600"
+        className="mt-0.5 h-5 w-5 shrink-0 accent-blue-600 sm:h-4 sm:w-4"
       />
       <span className="min-w-0">
         <span className="block text-sm font-semibold text-white">{title}</span>
@@ -1533,7 +1557,7 @@ function AccessOption({
           : 'border-gray-700 bg-gray-900/40 hover:border-gray-600')
       }
     >
-      <label htmlFor={id} className="flex cursor-pointer items-center gap-2">
+      <label htmlFor={id} className="flex min-h-11 cursor-pointer items-center gap-3 sm:min-h-0 sm:gap-2">
         <input
           id={id}
           type="radio"
@@ -1541,11 +1565,12 @@ function AccessOption({
           value={value}
           checked={checked}
           onChange={onSelect}
-          className="h-4 w-4 shrink-0 accent-blue-600"
+          className="h-5 w-5 shrink-0 accent-blue-600 sm:h-4 sm:w-4"
         />
         <span className="text-sm font-semibold text-white">{title}</span>
       </label>
-      <div className="mt-1.5 space-y-1 pl-6">{children}</div>
+      {/* Indented to the title, past the radio and its gap at each size. */}
+      <div className="mt-1.5 space-y-1 pl-8 sm:pl-6">{children}</div>
     </div>
   )
 }

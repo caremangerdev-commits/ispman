@@ -1,5 +1,7 @@
 import type { Metadata } from 'next'
 
+import { safeReturnPath } from '@/lib/home'
+
 import { LoginForm } from './login-form'
 
 export const metadata: Metadata = {
@@ -7,21 +9,10 @@ export const metadata: Metadata = {
   description: 'Sign in to the ISPMan ISP management platform.',
 }
 
-/**
- * Only allow redirects back to a path on this site. Accepting an arbitrary
- * `redirectTo` would turn the login page into an open redirect.
- */
-function safeRedirect(value: string | string[] | undefined): string {
-  const target = Array.isArray(value) ? value[0] : value
-  // Defaults to '/', which routes by role — see lib/home.ts#homePathFor.
-  if (!target) return '/'
-  // Reject absolute URLs and protocol-relative ("//evil.com") targets.
-  if (!target.startsWith('/') || target.startsWith('//')) return '/'
-  return target
-}
-
 export default async function LoginPage({ searchParams }: PageProps<'/login'>) {
-  const redirectTo = safeRedirect((await searchParams).redirectTo)
+  // Sanitised here so the form never carries an off-site target, and again on
+  // the root page, which is the one that actually follows it.
+  const redirectTo = safeReturnPath((await searchParams).redirectTo)
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-12">
