@@ -1,8 +1,6 @@
 import { PAYMENT_METHOD_LABELS, toPaymentMethod } from '@/lib/data/checkoff'
 import { instantToDateOnly } from '@/lib/format'
-import {
-  receiptDate, receiptDateTime, receiptNumber, type Receipt,
-} from '@/lib/receipt'
+import { receiptDateTime, receiptNumber, type Receipt } from '@/lib/receipt'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -85,17 +83,21 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
   }
 
   // Company identity and timezone for the header. Read live and not stamped on
-  // the payment: a company that corrects its own phone number wants the
-  // corrected number on reprints, which is why the brief sources these from
+  // the payment: a company that corrects its own phone number or address wants
+  // the corrected one on reprints, which is why the brief sources these from
   // settings rather than from the payment.
   const tMeta = Date.now()
   const [companyRes, settingsRes] = await Promise.all([
-    db.from('companies').select('name, phone').eq('id', companyId).maybeSingle(),
+    db.from('companies').select('name, phone, address').eq('id', companyId).maybeSingle(),
     db.from('settings').select('timezone').eq('company_id', companyId).maybeSingle(),
   ])
   console.log('[perf]   getReceipt: companies+settings     %dms', Date.now() - tMeta)
 
-  const company = companyRes.data as { name: string; phone: string | null } | null
+  const company = companyRes.data as {
+    name: string
+    phone: string | null
+    address: string | null
+  } | null
   const timeZone =
     (settingsRes.data as { timezone: string | null } | null)?.timezone ?? 'America/Jamaica'
 
@@ -124,7 +126,6 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
   const lines: { label: string; amount: number }[] = []
   let totalDue: number | null = null
   let balance: number | null = null
-  let activeUntil: string | null = null
   let creditCarried: number | null = null
   let accessUnchanged = false
 
@@ -209,13 +210,13 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
         ? null
         : Number(r.credit_applied)
 
-    // Also a DATE column, and the one the off-by-one was reported against.
-    if (r.service_active_until) activeUntil = receiptDate(r.service_active_until)
+    // service_active_until is still selected and still stamped, but no longer
+    // printed: the customer's copy carries no expiry as of 25 September 2026.
+    // See lib/receipt.ts#Receipt.accessUnchanged.
 
     // A service payment that bought no months (lib/billing.ts#monthsCovered)
-    // is stamped months_paid 0, and the expiry it left the customer with is
-    // the one they already held. The receipt has to say that in so many words:
-    // "Service active until" alone reads as a grant.
+    // is stamped months_paid 0. The receipt relabels the credit line "Held as
+    // credit" for it, so the paper says where the money went.
     accessUnchanged = Number(r.months_paid ?? 1) === 0
   }
 
@@ -223,6 +224,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     kind,
     companyName: company?.name ?? '',
     companyPhone: company?.phone ?? null,
+    companyAddress: company?.address?.trim() || null,
     number: receiptNumber(r.id),
     dateLabel: receiptDateTime(paidOn, recordedAt, timeZone),
     cashier: r.agent ?? '',
@@ -240,7 +242,6 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     paid,
     balance,
     creditCarried,
-    activeUntil,
     accessUnchanged,
   }
 }

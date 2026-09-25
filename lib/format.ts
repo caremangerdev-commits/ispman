@@ -216,6 +216,57 @@ export function instantToDateOnly(value: Date, timeZone: string): string {
   return get('year') + '-' + get('month') + '-' + get('day')
 }
 
+/**
+ * The instant that is NOON ON A CALENDAR DATE IN A NAMED ZONE.
+ *
+ * `new Date(value + 'T12:00:00')` is noon in the SERVER's zone, and on a UTC
+ * server billing Jamaica that is 7:00 AM — which is what every service payment
+ * showed until 25 September 2026. This asks the zone what its clock reads at a
+ * first guess and moves by the difference, then once more so a zone whose
+ * offset changes across the guess (a DST edge) still lands on its own noon.
+ */
+export function zonedNoon(dateOnly: string, timeZone: string): Date | null {
+  const p = dateOnlyParts(dateOnly)
+  if (!p) return null
+
+  const target = Date.UTC(p.year, p.month - 1, p.day, 12, 0, 0)
+  let instant = target
+  for (let i = 0; i < 2; i++) {
+    instant -= wallClockAsUtc(new Date(instant), timeZone) - target
+  }
+  return new Date(instant)
+}
+
+/** What the zone's wall clock reads at `value`, re-encoded as if it were UTC. */
+function wallClockAsUtc(value: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(value)
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0)
+  return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'))
+}
+
+/**
+ * The instant a payment is stamped with, from the date the cashier stated.
+ *
+ * THE ONE DEFINITION. Every path that writes payments.payment_date goes
+ * through this, so the column means one thing:
+ *
+ *   - stated today, in the company's zone: NOW, the real moment the money was
+ *     taken, so the collections list orders by it and shows the true time;
+ *   - back-dated: noon on that date in the company's zone. There is no true
+ *     time to record for a payment entered days later, and noon reads as the
+ *     stated date in any zone the office could be in.
+ *
+ * Null when the date does not parse; callers validate before this.
+ */
+export function paymentInstant(paidOn: string, now: Date, timeZone: string): Date | null {
+  if (paidOn === instantToDateOnly(now, timeZone)) return now
+  return zonedNoon(paidOn, timeZone)
+}
+
 /** MAC addresses are too wide for narrow panels — show the tail only. */
 export function truncateMac(mac: string | null | undefined): string {
   if (!mac) return '—'

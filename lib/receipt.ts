@@ -41,6 +41,12 @@ export type Receipt = {
   kind: ReceiptKind
   companyName: string
   companyPhone: string | null
+  /**
+   * The company's business address, under the phone in the header. Omitted
+   * when blank, like the phone. Read live from the company record, never
+   * stamped on the payment, so a corrected address appears on reprints.
+   */
+  companyAddress: string | null
   /** The payments row id, zero padded to 8. */
   number: string
   /** paid_on, with the time the payment was recorded. */
@@ -95,14 +101,16 @@ export type Receipt = {
    * did.
    */
   creditCarried: number | null
-  /** Service only. Omitted when the payment set no expiry. */
-  activeUntil: string | null
   /**
-   * Service only. True when the payment bought no months: the expiry printed
-   * as "Service active until" is the one the customer already held, and the
-   * money went to credit. Printed as "Access unchanged" and the credit line
-   * relabelled "Held as credit", so the receipt says what happened rather than
-   * leaving a date that reads as a grant. See lib/billing.ts#monthsCovered.
+   * Service only. True when the payment bought no months and the money went
+   * to credit. It only relabels the credit line "Held as credit", so the paper
+   * says where the money went. See lib/billing.ts#monthsCovered.
+   *
+   * NO EXPIRY IS PRINTED. The receipt used to end with "Service active until"
+   * and, for a zero-month payment, "Access unchanged" above it. Both are gone
+   * from the paper as of 25 September 2026: the expiry stays on the payment
+   * row (service_active_until), in RADIUS, on the till's success panel and in
+   * the app, but the customer's copy carries the money only.
    */
   accessUnchanged: boolean
 }
@@ -232,6 +240,16 @@ export function renderReceipt(r: Receipt): string[] {
   // --- Header ---
   out.push(centre(r.companyName))
   if (r.companyPhone) out.push(centre(r.companyPhone))
+  // Wrapped to the paper, each line centred: an address is routinely wider
+  // than 32 columns ("Newell district, watchwell P.A st Elizabeth" is 44), and
+  // centre() alone would clip it at the edge. Line breaks the company typed
+  // into the field are honoured before wrapping, so "Street / Town" stays two
+  // lines rather than being run together.
+  if (r.companyAddress) {
+    for (const part of r.companyAddress.split(/\r?\n/)) {
+      for (const line of wrap(part, RECEIPT_WIDTH)) out.push(centre(line))
+    }
+  }
   out.push('')
 
   // Spread, because a field is now as many lines as its value needs — see
@@ -278,15 +296,8 @@ export function renderReceipt(r: Receipt): string[] {
     ))
   }
 
-  if (r.activeUntil) {
-    out.push('')
-    // The same words the till showed before the money was taken.
-    if (r.accessUnchanged) out.push(centre('Access unchanged'))
-    out.push(columns('Service active until', r.activeUntil))
-  } else if (r.accessUnchanged) {
-    out.push('')
-    out.push(centre('Access unchanged'))
-  }
+  // No expiry line. "Service active until" and "Access unchanged" were printed
+  // here until 25 September 2026 — see the note on Receipt.accessUnchanged.
 
   out.push('')
   out.push(centre('Thank you'))

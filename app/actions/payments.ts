@@ -10,6 +10,7 @@ import {
   proportionalDate, reverseCredit, serviceExpiry, ymd, type AccessDecision, type PriorGrant,
 } from '@/lib/billing'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
+import { instantToDateOnly, paymentInstant } from '@/lib/format'
 import { getFirstPeriodRules } from '@/lib/data/company'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
@@ -366,9 +367,14 @@ export async function recordPayment(
     fieldErrors.access_date = 'Choose a valid date for access.'
   }
 
-  // Defaults to now, which is what the record-payment form always wants. The
-  // time is kept, not floored to midday, so the collections list orders by
-  // when the money actually came in.
+  // THE BUSINESS DATE, NOT THE STORED INSTANT. This Date is midday on the
+  // stated date in the server's zone, and it is used for exactly two things:
+  // the calendar date (paid_on, the bill period, the expiry walk's `from`) and
+  // the future check below. It is NOT what payment_date is written from — see
+  // `stampedAt` further down, once the company's timezone is known. Until
+  // 25 September 2026 it was, and the comment here claimed the time was kept;
+  // it was not. The form always posts the date, so this was noon UTC on every
+  // service payment, which is 7:00 AM in Jamaica.
   const paymentDate = paymentDateRaw ? new Date(paymentDateRaw + 'T12:00:00') : new Date()
   if (!Number.isFinite(paymentDate.getTime())) {
     fieldErrors.paid_on = 'Enter a valid date.'
@@ -450,22 +456,30 @@ export async function recordPayment(
   const monthlyCharge = Number(customer.monthly_rate ?? 0) + addonTotal
   const carriedBefore = caps.billing ? Number(customer.carried_balance ?? 0) : 0
 
-  // The company's bill day. Read before the pricing because it names the
-  // period this payment settles, and the one-month-per-period guard below is
-  // keyed on that.
+  // The company's bill day, and its timezone. Read before the pricing because
+  // the bill day names the period this payment settles, and the
+  // one-month-per-period guard below is keyed on that.
   //
   // NOT grace_period_days. It used to ride on this read and be added to the
   // expiry; grace is no longer part of the billing model and nothing on the
   // expiry path reads it — see lib/billing.ts#serviceExpiry.
   const { data: settingsRow } = await db
     .from('settings')
-    .select('bill_date')
+    .select('bill_date, timezone')
     .eq('company_id', company.id)
     .maybeSingle()
 
   const companySettings = settingsRow as unknown as {
     bill_date: number | null
+    timezone: string | null
   } | null
+
+  // The instant payment_date is written from: now for a payment dated today
+  // in the company's zone, noon in that zone for a back-dated one. One
+  // definition for every writer — lib/format.ts#paymentInstant.
+  const stampedAt =
+    paymentInstant(ymd(paymentDate), new Date(), companySettings?.timezone ?? 'America/Jamaica') ??
+    paymentDate
 
   // --- Where access currently ends -----------------------------------------
   //
@@ -700,7 +714,7 @@ export async function recordPayment(
     // next guard read sees it as a grant: the month is now complete.
     months_paid: completion ? Math.max(1, monthsPaid) : monthsPaid,
     payment_type: legacyPaymentType(method),
-    payment_date: paymentDate.toISOString(),
+    payment_date: stampedAt.toISOString(),
     agent,
     notes: notes || null,
   }
@@ -1578,6 +1592,9 @@ export async function updatePayment(
   if (monthsPaid < 1 || monthsPaid > 6) fieldErrors.months_paid = 'Months paid must be 1 to 6.'
   if (!agent) fieldErrors.agent = 'Agent is required.'
 
+  // The business date, as in recordPayment: midday in the server's zone, used
+  // for the calendar date only. What payment_date is written from is decided
+  // below, once the company's timezone is known.
   const paymentDate = paymentDateRaw
     ? new Date(paymentDateRaw + 'T12:00:00')
     : new Date(payment.payment_date)
@@ -1592,13 +1609,29 @@ export async function updatePayment(
 
   const previousAmount = Number(payment.amount ?? 0)
 
-  const caps = await getSchemaCapabilities()
+  const [caps, { data: tzRow }] = await Promise.all([
+    getSchemaCapabilities(),
+    db.from('settings').select('timezone').eq('company_id', company.id).maybeSingle(),
+  ])
+  const timeZone = (tzRow as { timezone: string | null } | null)?.timezone ?? 'America/Jamaica'
+
+  // AN EDIT THAT LEAVES THE DATE ALONE LEAVES THE TIME ALONE. Correcting an
+  // amount must not move a payment's real time to the moment of the edit —
+  // and every stamp this used to write was noon in the server's zone, so the
+  // stored instant is only restated when the date itself changes. Then the
+  // same rule as recordPayment: now for today, noon in the company's zone for
+  // a back-dated one. lib/format.ts#paymentInstant.
+  const heldOn = instantToDateOnly(new Date(payment.payment_date), timeZone)
+  const stampedAt =
+    ymd(paymentDate) === heldOn
+      ? new Date(payment.payment_date)
+      : paymentInstant(ymd(paymentDate), new Date(), timeZone) ?? paymentDate
 
   const patch: Record<string, unknown> = {
     amount: amount as number,
     months_paid: monthsPaid,
     payment_type: paymentType,
-    payment_date: paymentDate.toISOString(),
+    payment_date: stampedAt.toISOString(),
     agent,
     notes: notes || null,
   }
