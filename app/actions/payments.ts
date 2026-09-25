@@ -450,25 +450,22 @@ export async function recordPayment(
   const monthlyCharge = Number(customer.monthly_rate ?? 0) + addonTotal
   const carriedBefore = caps.billing ? Number(customer.carried_balance ?? 0) : 0
 
-  // The company grace period is what carries a customer past their cut-off day
-  // before they are actually taken off the network.
+  // The company's bill day. Read before the pricing because it names the
+  // period this payment settles, and the one-month-per-period guard below is
+  // keyed on that.
   //
-  // The company's bill day rides on the same read. `settings.bill_date`
-  // predates 0007, so it is selected whether or not the grace column exists.
-  // Read before the pricing because the bill day names the period this payment
-  // settles, and the one-month-per-period guard below is keyed on that.
+  // NOT grace_period_days. It used to ride on this read and be added to the
+  // expiry; grace is no longer part of the billing model and nothing on the
+  // expiry path reads it — see lib/billing.ts#serviceExpiry.
   const { data: settingsRow } = await db
     .from('settings')
-    .select(caps.generalSettings ? 'bill_date, grace_period_days' : 'bill_date')
+    .select('bill_date')
     .eq('company_id', company.id)
     .maybeSingle()
 
   const companySettings = settingsRow as unknown as {
     bill_date: number | null
-    grace_period_days?: number | null
   } | null
-
-  const gracePeriodDays = Number(companySettings?.grace_period_days ?? 0)
 
   // --- Where access currently ends -----------------------------------------
   //
@@ -580,7 +577,6 @@ export async function recordPayment(
           anchorThen: await grantAnchor(company.id, customer.id, grant),
           registryExpiry,
           cutOffDay: customer.cut_off_date ?? null,
-          gracePeriodDays,
         })
       : null
 
@@ -648,7 +644,6 @@ export async function recordPayment(
           // registry expiry so settling the bill rolls the customer PAST the
           // cut-off that bill was due at rather than up to it.
           cutOffDay: customer.cut_off_date ?? null,
-          gracePeriodDays,
           currentExpiry: walkFrom,
           from: paymentDate,
           // A prepayment moves the expiry the WHOLE distance now, not one month

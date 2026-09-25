@@ -631,7 +631,7 @@ export function proportionalDate(opts: {
 
 /**
  * Expiry a full payment reaches: the CUT-OFF DAY AFTER THE ONE THE CUSTOMER IS
- * CURRENTLY PAID THROUGH, plus the company grace period.
+ * CURRENTLY PAID THROUGH. The walk to the next cut-off day stands on its own.
  *
  * Was `postpaidExpiry`. It is now the only expiry calculation there is — the
  * retired prepaid arm used a months-from-expiry walk instead, driven by the
@@ -661,10 +661,13 @@ export function proportionalDate(opts: {
  * land in the past and leave a paying customer offline — so those anchor on the
  * payment date, which is also what an unprovisioned customer gets.
  *
- * The grace period is added on top of the cut-off day, which is where a company
- * that runs one wants it: cut off on the 8th with 5 days' grace disconnects on
- * the 13th. It is added AFTER the walk, so the held expiry it produced last
- * month still anchors to the right cut-off this month.
+ * NO GRACE PERIOD. Until 25 September 2026 `settings.grace_period_days` was
+ * added on top of the walk, and it was wrong the one place it was set: JMEDIA,
+ * prepaid, cut off on the 24th with 4 days' grace, had every renewal land on
+ * the 28th and corrected by hand. Grace is not part of the billing model —
+ * the daily engine never reads it (docs/billing-engine.md), provisioning never
+ * added it, and the cut-off day is the day access ends. The column and the
+ * General Settings field still exist; nothing on the expiry path reads them.
  *
  * nextCutOff clamps a day longer than the target month, so a cut-off of 31 lands
  * on 30 September rather than rolling into October. Falls back to whole months
@@ -672,7 +675,6 @@ export function proportionalDate(opts: {
  */
 export function serviceExpiry(opts: {
   cutOffDay: number | null
-  gracePeriodDays: number
   /** Expiry held in the network registry. Null when unprovisioned. */
   currentExpiry: Date | null
   from: Date
@@ -686,9 +688,8 @@ export function serviceExpiry(opts: {
    */
   months?: number
 }): Date {
-  const { cutOffDay, gracePeriodDays, currentExpiry, from, months = 1 } = opts
+  const { cutOffDay, currentExpiry, from, months = 1 } = opts
 
-  const grace = Math.max(0, Math.floor(safe(gracePeriodDays)))
   const count = Math.max(1, Math.floor(safe(months)))
   const today = startOfDay(from)
 
@@ -706,9 +707,7 @@ export function serviceExpiry(opts: {
   //
   // Both branches are strictly after the anchor and the anchor is never behind
   // today, so this can never return a date that has already passed.
-  const next = advanceCutOff(anchor, cutOffDay, count) ?? addMonths(anchor, count)
-  next.setDate(next.getDate() + grace)
-  return next
+  return advanceCutOff(anchor, cutOffDay, count) ?? addMonths(anchor, count)
 }
 
 // ---------------------------------------------------------------------------
@@ -829,9 +828,8 @@ export function periodCompletion(opts: {
   /** Registry expiry NOW. */
   registryExpiry: Date | null
   cutOffDay: number | null
-  gracePeriodDays: number
 }): Date | null {
-  const { grant, anchorThen, registryExpiry, cutOffDay, gracePeriodDays } = opts
+  const { grant, anchorThen, registryExpiry, cutOffDay } = opts
 
   if (grant.decision !== 'date_selected') return null
   if (!anchorThen || !registryExpiry) return null
@@ -843,7 +841,6 @@ export function periodCompletion(opts: {
 
   const full = serviceExpiry({
     cutOffDay,
-    gracePeriodDays,
     currentExpiry: anchorThen,
     from: paidOn,
     months: 1,

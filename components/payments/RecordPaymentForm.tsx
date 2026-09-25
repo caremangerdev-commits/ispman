@@ -122,7 +122,6 @@ function SubmitButton() {
 export function RecordPaymentForm({
   initialCustomer,
   currency,
-  gracePeriodDays,
   companyBillDate,
   paymentCategories,
   otherPaymentsAvailable,
@@ -130,8 +129,6 @@ export function RecordPaymentForm({
 }: {
   initialCustomer: SearchHit | null
   currency: string
-  /** Company-wide grace period, added to a postpaid customer's bill date. */
-  gracePeriodDays: number
   /** settings.bill_date — the bill day of a customer who has none of their
    *  own, which is most of them. See lib/billing.ts#effectiveBillDay. */
   companyBillDate: number | null
@@ -578,7 +575,6 @@ export function RecordPaymentForm({
           anchorThen: parseYmd(priorGrant.anchorThen),
           registryExpiry: currentExpiry,
           cutOffDay: selected.cut_off_date,
-          gracePeriodDays,
         })
       : null
 
@@ -623,7 +619,6 @@ export function RecordPaymentForm({
         // cut-off day ends access. Anchored on the registry expiry so paying
         // rolls the customer past the cut-off the bill was due at.
           cutOffDay: selected.cut_off_date,
-          gracePeriodDays,
           currentExpiry: walkFrom,
           from: today,
           months: monthsBought,

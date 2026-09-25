@@ -188,7 +188,6 @@ export default async function RecordPaymentPage({
       <PaymentWorkspace
         initialCustomer={initialCustomer}
         currency={settings.currency}
-        gracePeriodDays={settings.gracePeriodDays}
         companyBillDate={settings.billDate}
         paymentCategories={paymentCategories}
         otherPaymentsAvailable={caps.otherPayments}
