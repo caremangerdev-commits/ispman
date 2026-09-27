@@ -41,32 +41,26 @@ export type RadiusStatus = {
   expiresAt: Date | null
   /** `expiry` as the calendar date it names, "YYYY-MM-DD". Display path. */
   expiryDate: string | null
+  /**
+   * The latest start or stop time radacct holds for them. The one time the
+   * card shows for when the customer was last on.
+   */
   lastSeen: Date | null
+  /**
+   * The newest session has no stop record. Weak evidence — measured
+   * 2026-09-27: the NASes send no interim updates (acctinterval null,
+   * acctupdatetime = acctstarttime on every open row) and routinely drop stop
+   * records, 94k open rows untouched for over a week, while real sessions run
+   * a median 25h and past 11 days at p90. No age cut-off separates live from
+   * abandoned, so the card shows lastSeen beside it for the reader to judge.
+   */
   online: boolean
   bytesThisMonth: number | null
   sessionsThisMonth: number | null
-  /** The address the NAS last handed out, or null when radacct has none. */
-  ip: RadiusIp | null
+  /** Framed-IP-Address of the newest session carrying one, or null. */
+  ip: string | null
   /** Populated when the lookup failed, for the card's diagnostic line. */
   error: string | null
-}
-
-/**
- * Framed-IP-Address from radacct. `open` follows the same rule as `online`:
- * the session is still open. `seenAt` is the last moment the address is known
- * to have been in use — the stop time for a closed session, else the latest
- * interim update, else the start.
- *
- * `open` is weak evidence. Measured 2026-09-27: the NASes send no interim
- * updates (acctinterval null, acctupdatetime = acctstarttime on every open
- * row) and routinely drop stop records — 94k open rows untouched for over a
- * week — while real sessions run a median 25h and past 11 days at p90. No age
- * cut-off separates live from abandoned, so the card shows the age instead.
- */
-export type RadiusIp = {
-  address: string
-  open: boolean
-  seenAt: Date
 }
 
 /**

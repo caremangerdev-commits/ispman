@@ -263,7 +263,7 @@ export function CustomerDetail({
   // two zones. A UTC server and a Jamaica browser is exactly that gap, which is
   // why this and the list disagreed on every midnight expiry.
   const networkDaysLeft = daysUntilDateOnly(radius.expiryDate)
-  const ipLink = radius.ip ? ipHref(radius.ip.address) : null
+  const ipLink = radius.ip ? ipHref(radius.ip) : null
 
   // WHAT THE CUSTOMER OWES, FOR BOTH BILLING TYPES — and it is carried_balance,
   // not `balance`.
@@ -960,27 +960,18 @@ export function CustomerDetail({
                 label="IP Address"
                 mono
                 value={
-                  <>
-                    {ipLink ? (
-                      <a
-                        href={ipLink}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-400 transition hover:text-blue-300 hover:underline"
-                      >
-                        {radius.ip.address}
-                      </a>
-                    ) : (
-                      radius.ip.address
-                    )}
-                    {/* The age shows even for an open session: routers here
-                        send no interim updates and often no stop record, so
-                        "open" alone cannot tell live from abandoned. */}
-                    <span className="ml-1.5 font-sans text-[11px] text-gray-600">
-                      {radius.ip.open ? 'session since ' : 'last seen '}
-                      {new Date(radius.ip.seenAt).toLocaleString()}
-                    </span>
-                  </>
+                  ipLink ? (
+                    <a
+                      href={ipLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-400 transition hover:text-blue-300 hover:underline"
+                    >
+                      {radius.ip}
+                    </a>
+                  ) : (
+                    radius.ip
+                  )
                 }
               />
             ) : null}

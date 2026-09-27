@@ -4,7 +4,6 @@ import mysql from 'mysql2/promise'
 
 import {
   formatRadiusExpiration, normaliseUsername, parseRadiusExpiration, usernameKey,
-  type RadiusIp,
 } from '@/lib/radius/format'
 import type { CustomerStatus } from '@/lib/status'
 
@@ -467,7 +466,10 @@ export async function getProvisionedIdentities(
 }
 
 export type RadiusUsage = {
-  /** Most recent session start from radacct, or null if never seen. */
+  /**
+   * The latest timestamp radacct holds for them, start or stop — the last
+   * moment they are known to have been on. Null if never seen.
+   */
   lastSeen: Date | null
   /** True while a session is open (acctstoptime IS NULL). */
   online: boolean
@@ -495,12 +497,23 @@ export async function getRadiusUsage(identity: string): Promise<RadiusUsage> {
   // 'this month' query read the same rows twice for no gain.
   //
   // last_open_start is the newest session that has no stop time. Comparing it
-  // to last_seen answers 'is the MOST RECENT session still open' — which is
+  // to last_start answers 'is the MOST RECENT session still open' — which is
   // what online means here, and is not the same as 'any session is open'.
+  //
+  // last_seen_at is what the card displays: the latest timestamp radacct holds
+  // for them, start or stop. It used to be last_start alone, which for a
+  // closed session is days early — sessions here run a median 25h and past 11
+  // days at p90. The stop column cannot be taken on its own either: measured
+  // 2026-09-27, 89k rows stop BEFORE they start (usually by one second, even
+  // with a 36-day acctsessiontime) and 61k stop exactly at the start. None lie
+  // in the future. GREATEST keeps a real stop and falls back to the start for
+  // a bogus one. acctupdatetime is left out: it always equals the start.
   const [rows] = await withRetry(() =>
     radiusPool().execute(
-      `SELECT MAX(acctstarttime)                                         AS last_seen,
+      `SELECT MAX(acctstarttime)                                         AS last_start,
               MAX(CASE WHEN acctstoptime IS NULL THEN acctstarttime END) AS last_open_start,
+              MAX(GREATEST(acctstarttime,
+                           COALESCE(acctstoptime, acctstarttime)))       AS last_seen_at,
               COALESCE(SUM(CASE WHEN acctstarttime >= DATE_FORMAT(NOW(), '%Y-%m-01')
                                 THEN acctinputoctets + acctoutputoctets END), 0) AS bytes_month,
               COALESCE(SUM(CASE WHEN acctstarttime >= DATE_FORMAT(NOW(), '%Y-%m-01')
@@ -512,19 +525,18 @@ export async function getRadiusUsage(identity: string): Promise<RadiusUsage> {
   )
 
   const r = (rows as {
-    last_seen: Date | null
+    last_start: Date | null
     last_open_start: Date | null
+    last_seen_at: Date | null
     bytes_month: string | number
     sessions_month: string | number
   }[])[0]
 
-  const lastSeen = r?.last_seen ? new Date(r.last_seen) : null
-
   return {
-    lastSeen,
+    lastSeen: r?.last_seen_at ? new Date(r.last_seen_at) : null,
     online: Boolean(
-      r?.last_open_start && lastSeen &&
-      new Date(r.last_open_start).getTime() === lastSeen.getTime()
+      r?.last_open_start && r.last_start &&
+      new Date(r.last_open_start).getTime() === new Date(r.last_start).getTime()
     ),
     // SUM() of a BIGINT comes back as a string from the driver.
     bytesThisMonth: Number(r?.bytes_month ?? 0),
@@ -539,19 +551,18 @@ export async function getRadiusUsage(identity: string): Promise<RadiusUsage> {
  * NEWEST, NOT "ANY OPEN". A NAS that never sends a stop record leaves a session
  * open forever, so preferring any open row would put a days-old address on the
  * card as current while Last Seen says otherwise. When the customer is really
- * online their open session is the newest row, so this returns it anyway; when
- * they are not, it returns the last address known, flagged closed. `open` uses
- * the same test as RadiusUsage.online.
+ * online their open session is the newest row, so this returns it anyway. When
+ * that address was in use is the Last Seen row's job, not this one's.
  *
  * Null when radacct holds no address for them — some routers send no
  * accounting, and some send it without Framed-IP-Address.
  */
-export async function getRadiusIp(identity: string): Promise<RadiusIp | null> {
+export async function getRadiusIp(identity: string): Promise<string | null> {
   const username = normaliseUsername(identity)
 
   const [rows] = await withRetry(() =>
     radiusPool().execute(
-      `SELECT framedipaddress, acctstarttime, acctupdatetime, acctstoptime
+      `SELECT framedipaddress
          FROM radacct
         WHERE username = ? AND framedipaddress <> ''
         ORDER BY acctstarttime DESC
@@ -560,20 +571,6 @@ export async function getRadiusIp(identity: string): Promise<RadiusIp | null> {
     )
   )
 
-  const r = (rows as {
-    framedipaddress: string
-    acctstarttime: Date | null
-    acctupdatetime: Date | null
-    acctstoptime: Date | null
-  }[])[0]
-  if (!r) return null
-
-  const seenAt = r.acctstoptime ?? r.acctupdatetime ?? r.acctstarttime
-  if (!seenAt) return null
-
-  return {
-    address: r.framedipaddress.trim(),
-    open: r.acctstoptime === null,
-    seenAt: new Date(seenAt),
-  }
+  const address = (rows as { framedipaddress: string }[])[0]?.framedipaddress.trim()
+  return address || null
 }
