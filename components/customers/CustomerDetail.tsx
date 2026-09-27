@@ -25,7 +25,7 @@ import { can, type Role } from '@/lib/permissions'
 import { ChannelOptOut, SmsOptOut } from '@/components/customers/SmsOptOut'
 // From format.ts, not client.ts: this is a client component and client.ts
 // pulls in mysql2.
-import { formatBytes, type RadiusStatus } from '@/lib/radius/format'
+import { formatBytes, ipHref, type RadiusStatus } from '@/lib/radius/format'
 import {
   CONNECTION_TYPES, CONNECTION_TYPE_LABELS, CUSTOMER_CATEGORIES,
   CUSTOMER_CATEGORY_LABELS, CUSTOMER_TYPES, CUSTOMER_TYPE_LABELS, describePlan,
@@ -263,6 +263,7 @@ export function CustomerDetail({
   // two zones. A UTC server and a Jamaica browser is exactly that gap, which is
   // why this and the list disagreed on every midnight expiry.
   const networkDaysLeft = daysUntilDateOnly(radius.expiryDate)
+  const ipLink = radius.ip ? ipHref(radius.ip.address) : null
 
   // WHAT THE CUSTOMER OWES, FOR BOTH BILLING TYPES — and it is carried_balance,
   // not `balance`.
@@ -952,6 +953,37 @@ export function CustomerDetail({
                 )
               }
             />
+            {/* Absent, not blank, when radacct has no address: some routers
+                send no accounting, and an empty field would read as a fault. */}
+            {radius.ip ? (
+              <Row
+                label="IP Address"
+                mono
+                value={
+                  <>
+                    {ipLink ? (
+                      <a
+                        href={ipLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-400 transition hover:text-blue-300 hover:underline"
+                      >
+                        {radius.ip.address}
+                      </a>
+                    ) : (
+                      radius.ip.address
+                    )}
+                    {/* The age shows even for an open session: routers here
+                        send no interim updates and often no stop record, so
+                        "open" alone cannot tell live from abandoned. */}
+                    <span className="ml-1.5 font-sans text-[11px] text-gray-600">
+                      {radius.ip.open ? 'session since ' : 'last seen '}
+                      {new Date(radius.ip.seenAt).toLocaleString()}
+                    </span>
+                  </>
+                }
+              />
+            ) : null}
             <Row
               label="Data Used (month)"
               value={

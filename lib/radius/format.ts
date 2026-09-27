@@ -45,8 +45,40 @@ export type RadiusStatus = {
   online: boolean
   bytesThisMonth: number | null
   sessionsThisMonth: number | null
+  /** The address the NAS last handed out, or null when radacct has none. */
+  ip: RadiusIp | null
   /** Populated when the lookup failed, for the card's diagnostic line. */
   error: string | null
+}
+
+/**
+ * Framed-IP-Address from radacct. `open` follows the same rule as `online`:
+ * the session is still open. `seenAt` is the last moment the address is known
+ * to have been in use — the stop time for a closed session, else the latest
+ * interim update, else the start.
+ *
+ * `open` is weak evidence. Measured 2026-09-27: the NASes send no interim
+ * updates (acctinterval null, acctupdatetime = acctstarttime on every open
+ * row) and routinely drop stop records — 94k open rows untouched for over a
+ * week — while real sessions run a median 25h and past 11 days at p90. No age
+ * cut-off separates live from abandoned, so the card shows the age instead.
+ */
+export type RadiusIp = {
+  address: string
+  open: boolean
+  seenAt: Date
+}
+
+/**
+ * The http:// link for a Framed-IP-Address, or null if it is not a dotted IPv4
+ * address. radacct is written by the NAS, not by this app, so its text is not
+ * put into an href unchecked.
+ */
+export function ipHref(address: string): string | null {
+  const octet = '(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)'
+  return new RegExp('^' + octet + '(\\.' + octet + '){3}$').test(address)
+    ? 'http://' + address
+    : null
 }
 
 export const RADIUS_UNAVAILABLE: RadiusStatus = {
@@ -59,6 +91,7 @@ export const RADIUS_UNAVAILABLE: RadiusStatus = {
   online: false,
   bytesThisMonth: null,
   sessionsThisMonth: null,
+  ip: null,
   error: null,
 }
 

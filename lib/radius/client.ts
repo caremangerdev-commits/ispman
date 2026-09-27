@@ -2,6 +2,7 @@ import 'server-only'
 
 import {
   getRadiusStatus as readRegistry,
+  getRadiusIp,
   getRadiusUsage,
   radiusConfigured,
 } from '@/lib/radius-db'
@@ -56,8 +57,9 @@ export async function getRadiusStatus(
     }
 
     // Only worth hitting the accounting table once we know they are registered.
-    const [usage, lastEvent] = await Promise.all([
+    const [usage, ip, lastEvent] = await Promise.all([
       getRadiusUsage(macAddress),
+      getRadiusIp(macAddress),
       customer
         ? lastNetworkEvent(customer.companyId, customer.customerId)
         : Promise.resolve(null),
@@ -75,6 +77,7 @@ export async function getRadiusStatus(
       online: usage.online,
       bytesThisMonth: usage.bytesThisMonth,
       sessionsThisMonth: usage.sessionsThisMonth,
+      ip,
       error: null,
     }
   } catch (err) {

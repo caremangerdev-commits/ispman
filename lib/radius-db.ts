@@ -4,6 +4,7 @@ import mysql from 'mysql2/promise'
 
 import {
   formatRadiusExpiration, normaliseUsername, parseRadiusExpiration, usernameKey,
+  type RadiusIp,
 } from '@/lib/radius/format'
 import type { CustomerStatus } from '@/lib/status'
 
@@ -528,5 +529,51 @@ export async function getRadiusUsage(identity: string): Promise<RadiusUsage> {
     // SUM() of a BIGINT comes back as a string from the driver.
     bytesThisMonth: Number(r?.bytes_month ?? 0),
     sessionsThisMonth: Number(r?.sessions_month ?? 0),
+  }
+}
+
+/**
+ * The Framed-IP-Address of one identity's newest session that carries one.
+ * Read only.
+ *
+ * NEWEST, NOT "ANY OPEN". A NAS that never sends a stop record leaves a session
+ * open forever, so preferring any open row would put a days-old address on the
+ * card as current while Last Seen says otherwise. When the customer is really
+ * online their open session is the newest row, so this returns it anyway; when
+ * they are not, it returns the last address known, flagged closed. `open` uses
+ * the same test as RadiusUsage.online.
+ *
+ * Null when radacct holds no address for them — some routers send no
+ * accounting, and some send it without Framed-IP-Address.
+ */
+export async function getRadiusIp(identity: string): Promise<RadiusIp | null> {
+  const username = normaliseUsername(identity)
+
+  const [rows] = await withRetry(() =>
+    radiusPool().execute(
+      `SELECT framedipaddress, acctstarttime, acctupdatetime, acctstoptime
+         FROM radacct
+        WHERE username = ? AND framedipaddress <> ''
+        ORDER BY acctstarttime DESC
+        LIMIT 1`,
+      [username]
+    )
+  )
+
+  const r = (rows as {
+    framedipaddress: string
+    acctstarttime: Date | null
+    acctupdatetime: Date | null
+    acctstoptime: Date | null
+  }[])[0]
+  if (!r) return null
+
+  const seenAt = r.acctstoptime ?? r.acctupdatetime ?? r.acctstarttime
+  if (!seenAt) return null
+
+  return {
+    address: r.framedipaddress.trim(),
+    open: r.acctstoptime === null,
+    seenAt: new Date(seenAt),
   }
 }
