@@ -132,6 +132,15 @@ export type SchemaCapabilities = {
    * the fallback is the ordinary path and not a degraded one.
    */
   branding: boolean
+  /**
+   * Migration 0025: the `customer_charges` table and the three payments columns
+   * that settle one (`charge_id`, `visit_id`, `charge_outstanding_before`).
+   * Required together, and on top of `otherPayments`: a charge is paid by an
+   * "other" payment against a payment category, both from 0013. Absent, the
+   * charges card, the till's charges block and the visit receipt all hide, and
+   * nothing reads or writes the columns.
+   */
+  charges: boolean
 }
 
 /**
@@ -162,6 +171,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     smsOutboxRes, smsSettingRes, smsOptOutRes,
     messagingOutboxRes, messagingSettingRes, messagingOptOutRes,
     brandingRes, engineRunsRes, engineChargesRes,
+    chargesTableRes, chargePaymentRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -232,6 +242,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     // 0024: the engine's two tables.
     db.from('bill_runs').select('id').limit(1),
     db.from('bill_charges').select('id').limit(1),
+    // 0025: the charges table and the payments columns that settle one.
+    db.from('customer_charges').select('id').limit(1),
+    db.from('payments').select('charge_id, visit_id, charge_outstanding_before').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -419,6 +432,22 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for account_counters: ' + accountCounterRes.error.message)
   }
 
+  // 0025 is one CREATE TABLE and one ALTER; either missing disables it.
+  const missingCharges =
+    chargesTableRes.error?.code === 'PGRST205' ||
+    chargesTableRes.error?.code === '42P01' ||
+    chargePaymentRes.error?.code === '42703'
+  if (
+    chargesTableRes.error &&
+    chargesTableRes.error.code !== 'PGRST205' &&
+    chargesTableRes.error.code !== '42P01'
+  ) {
+    throw new Error('Schema probe failed for customer_charges: ' + chargesTableRes.error.message)
+  }
+  if (chargePaymentRes.error && chargePaymentRes.error.code !== '42703') {
+    throw new Error('Schema probe failed for payments charge columns: ' + chargePaymentRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -445,6 +474,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     sms: !missingSms,
     messaging: !missingSms && !missingMessaging,
     branding: brandingRes.error?.code !== '42703',
+    charges: !missingOtherPaymentCols && !missingPaymentCategories && !missingCharges,
   }
 })
 

@@ -19,6 +19,7 @@ export type Permission =
   | 'extend_disconnect_customer'
   | 'correct_expiry'
   | 'adjust_carried_balance'
+  | 'manage_charges'
   | 'record_payment'
   | 'view_all_payments'
   | 'edit_payment'
@@ -73,6 +74,10 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // on the same line — and pointedly excludes cashier, who may take money but
   // may not decide what is owed.
   adjust_carried_balance: ['super_admin', 'company_admin', 'manager'],
+  // Putting a one-off charge on a customer, or voiding one, decides what they
+  // owe — the same authority as adjusting the carried balance, for the same
+  // reason. Anyone who may record a payment may TAKE money against a charge.
+  manage_charges: ['super_admin', 'company_admin', 'manager'],
   record_payment: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
   // The whole payments book — every payment the company has ever taken, by
   // anyone. NARROWED FROM csr AND cashier, who used to hold this.

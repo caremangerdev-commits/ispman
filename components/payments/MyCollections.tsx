@@ -6,7 +6,7 @@ import { useMemo, useState } from 'react'
 
 import { ReceiptButton } from '@/components/payments/ReceiptModal'
 import {
-  PAYMENT_METHOD_LABELS, type CollectionSummary, type PaymentMethod,
+  PAYMENT_METHOD_LABELS, type CollectionSummary, type KindSplit, type PaymentMethod,
 } from '@/lib/data/checkoff'
 import { currencySymbol } from '@/lib/format'
 
@@ -55,8 +55,17 @@ export function CollectionStats({
 
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <Stat label="Total Since Checkoff" value={money(symbol, summary.sinceCheckoffTotal)} accent />
-      <Stat label="Total Today" value={money(symbol, summary.todayTotal)} />
+      <Stat
+        label="Total Since Checkoff"
+        value={money(symbol, summary.sinceCheckoffTotal)}
+        accent
+        detail={splitLine(symbol, summary.sinceCheckoffSplit)}
+      />
+      <Stat
+        label="Total Today"
+        value={money(symbol, summary.todayTotal)}
+        detail={splitLine(symbol, summary.todaySplit)}
+      />
       <Stat label="Customers Since Checkoff" value={String(summary.sinceCheckoffCustomers)} />
       <Stat label="Customers Today" value={String(summary.todayCustomers)} />
     </div>
@@ -184,6 +193,7 @@ export function CollectionsList({
                     >
                       {PAYMENT_METHOD_LABELS[p.method]}
                     </span>
+                    <PurposeTag purpose={p.purpose} />
                     <span className="truncate">{shortStamp(p.payment_date)}</span>
                   </div>
                   {/* The same reprint as the table's last column — see the
@@ -234,6 +244,7 @@ export function CollectionsList({
                     >
                       {PAYMENT_METHOD_LABELS[p.method]}
                     </span>
+                    {p.purpose ? <span className="ml-1.5"><PurposeTag purpose={p.purpose} /></span> : null}
                   </td>
                   <td className="px-5 py-2.5 text-gray-500">{stamp(p.payment_date)}</td>
                   <td className="px-5 py-2.5 text-right font-semibold tabular-nums text-white">
@@ -259,7 +270,33 @@ export function CollectionsList({
   )
 }
 
-function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+/**
+ * "Service J$9,000 · One-off J$4,000", or null when there is no one-off money
+ * in the set — then the total is all service and the line would only repeat it.
+ */
+export function splitLine(symbol: string, split: KindSplit): string | null {
+  if (split.oneOff === 0) return null
+  return 'Service ' + money(symbol, split.service) + ' · One-off ' + money(symbol, split.oneOff)
+}
+
+/** The category tag a one-off payment carries in a collections list. */
+export function PurposeTag({ purpose }: { purpose: string | null }) {
+  if (!purpose) return null
+  return (
+    <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-400">
+      {purpose}
+    </span>
+  )
+}
+
+function Stat({
+  label, value, accent, detail,
+}: {
+  label: string
+  value: string
+  accent?: boolean
+  detail?: string | null
+}) {
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
       <p className="text-[11px] font-medium text-gray-500">{label}</p>
@@ -271,6 +308,7 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
       >
         {value}
       </p>
+      {detail ? <p className="mt-0.5 text-[11px] text-gray-500">{detail}</p> : null}
     </div>
   )
 }

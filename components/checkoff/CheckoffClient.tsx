@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import { confirmCheckoff, confirmCheckoffAll } from '@/app/actions/checkoff'
+import { PurposeTag } from '@/components/payments/MyCollections'
 import { Modal } from '@/components/settings/Modal'
 import {
   PAYMENT_METHOD_LABELS, type AgentOption, type AllAgentsRow, type CollectionSummary,
@@ -265,6 +266,31 @@ export function CheckoffClient({
             </div>
           ) : null}
 
+          {/* Service money and one-off money (installations, hardware, charges
+              paid off) side by side, so the owner never reads one as the other.
+              They sum to Total Since Checkoff. */}
+          {summary.payments.length > 0 ? (
+            <div className="border-t border-gray-800 px-5 py-4">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                Service and one-off
+              </h3>
+              <dl className="space-y-1.5 text-sm">
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-gray-300">Service</dt>
+                  <dd className="tabular-nums text-gray-200">
+                    {symbol}{fmt(summary.sinceCheckoffSplit.service)}
+                  </dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-gray-300">One-off</dt>
+                  <dd className="tabular-nums text-gray-200">
+                    {symbol}{fmt(summary.sinceCheckoffSplit.oneOff)}
+                  </dd>
+                </div>
+              </dl>
+            </div>
+          ) : null}
+
           <div className="border-t border-gray-800">
             {summary.payments.length === 0 ? (
               <p className="px-5 py-10 text-center text-sm text-gray-600">
@@ -284,7 +310,10 @@ export function CheckoffClient({
                   <tbody className="divide-y divide-gray-800">
                     {summary.payments.map((p) => (
                       <tr key={p.id}>
-                        <td className="px-5 py-2 text-gray-200">{p.customerName}</td>
+                        <td className="px-5 py-2 text-gray-200">
+                          {p.customerName}
+                          {p.purpose ? <span className="ml-1.5"><PurposeTag purpose={p.purpose} /></span> : null}
+                        </td>
                         <td className="px-5 py-2 text-right font-medium tabular-nums text-gray-100">
                           {symbol}{fmt(p.amount)}
                         </td>
@@ -348,6 +377,8 @@ export function CheckoffClient({
                   <tr className="border-b border-gray-800 bg-gray-950/60 text-[11px] uppercase tracking-wider text-gray-500">
                     <th scope="col" className="px-3 py-2 font-semibold">Agent</th>
                     <th scope="col" className="px-3 py-2 text-right font-semibold">Total</th>
+                    <th scope="col" className="px-3 py-2 text-right font-semibold">Service</th>
+                    <th scope="col" className="px-3 py-2 text-right font-semibold">One-off</th>
                     <th scope="col" className="px-3 py-2 text-right font-semibold">Customers</th>
                   </tr>
                 </thead>
@@ -357,6 +388,12 @@ export function CheckoffClient({
                       <td className="px-3 py-2 text-gray-200">{r.agent.name}</td>
                       <td className="px-3 py-2 text-right tabular-nums text-gray-100">
                         {symbol}{fmt(r.total)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-400">
+                        {symbol}{fmt(r.split.service)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-400">
+                        {symbol}{fmt(r.split.oneOff)}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums text-gray-400">
                         {r.customers}

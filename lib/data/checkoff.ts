@@ -54,7 +54,17 @@ export type CollectionPayment = {
   customerId: number | null
   customerName: string
   notes: string | null
+  /**
+   * 'other' is one-off money — a charge paid off, or an installation taken
+   * with no charge on file. Kept apart so an owner never reads it as service.
+   */
+  kind: 'service' | 'other'
+  /** The category name for one-off money; null for service. */
+  purpose: string | null
 }
+
+/** Service money and one-off money, side by side. They always sum to the total. */
+export type KindSplit = { service: number; oneOff: number }
 
 export type CollectionSummary = {
   /** False when migration 0010 has not been applied. */
@@ -66,6 +76,10 @@ export type CollectionSummary = {
   payments: CollectionPayment[]
   /** Totals per method across the un-checked-off set. */
   byMethod: { method: PaymentMethod; total: number; count: number }[]
+  /** sinceCheckoffTotal, split into service and one-off. */
+  sinceCheckoffSplit: KindSplit
+  /** todayTotal, split the same way. */
+  todaySplit: KindSplit
 }
 
 export const EMPTY_COLLECTION: CollectionSummary = {
@@ -76,6 +90,18 @@ export const EMPTY_COLLECTION: CollectionSummary = {
   todayCustomers: 0,
   payments: [],
   byMethod: [],
+  sinceCheckoffSplit: { service: 0, oneOff: 0 },
+  todaySplit: { service: 0, oneOff: 0 },
+}
+
+/** The service / one-off split of a set of payments. */
+export function splitByKind(list: { kind: 'service' | 'other'; amount: number }[]): KindSplit {
+  const out = { service: 0, oneOff: 0 }
+  for (const p of list) {
+    if (p.kind === 'other') out.oneOff += p.amount
+    else out.service += p.amount
+  }
+  return out
 }
 
 /**
@@ -138,6 +164,8 @@ type PaymentRow = {
   user_id: number | null
   agent: string | null
   customers: { first_name: string | null; last_name: string | null } | null
+  payment_kind?: string | null
+  payment_categories?: { name: string } | null
 }
 
 function shape(rows: PaymentRow[]): CollectionPayment[] {
@@ -152,6 +180,8 @@ function shape(rows: PaymentRow[]): CollectionPayment[] {
     customerName:
       [r.customers?.first_name, r.customers?.last_name].filter(Boolean).join(' ') || 'Unknown',
     notes: r.notes,
+    kind: r.payment_kind === 'other' ? 'other' : 'service',
+    purpose: r.payment_kind === 'other' ? r.payment_categories?.name ?? 'Other' : null,
   }))
 }
 
@@ -188,6 +218,8 @@ function summarise(
     byMethod: [...methodMap.entries()]
       .map(([method, v]) => ({ method, ...v }))
       .sort((a, b) => b.total - a.total),
+    sinceCheckoffSplit: splitByKind(payments),
+    todaySplit: splitByKind(today),
   }
 }
 
@@ -200,7 +232,11 @@ const BASE_SELECT =
  * yesterday counts against yesterday's takings rather than inflating today's.
  */
 function selectFor(caps: { otherPayments: boolean }) {
-  return caps.otherPayments ? BASE_SELECT + ', paid_on' : BASE_SELECT
+  // payment_kind and the category name ride along so every collection total
+  // can be split into service and one-off money.
+  return caps.otherPayments
+    ? BASE_SELECT + ', paid_on, payment_kind, payment_categories(name)'
+    : BASE_SELECT
 }
 
 /**
@@ -292,6 +328,8 @@ export async function getCheckoffSummary(opts: {
 export type AllAgentsRow = {
   agent: AgentOption
   total: number
+  /** total, split into service and one-off. */
+  split: KindSplit
   customers: number
   count: number
 }
@@ -305,9 +343,13 @@ export type AllAgentsRow = {
 export async function getAllAgentsSummary(opts: {
   companyId: number
   timezone: string
-}): Promise<{ available: boolean; rows: AllAgentsRow[]; total: number; customers: number }> {
+}): Promise<{
+  available: boolean; rows: AllAgentsRow[]; total: number; split: KindSplit; customers: number
+}> {
   const caps = await getSchemaCapabilities()
-  if (!caps.checkoff) return { available: false, rows: [], total: 0, customers: 0 }
+  if (!caps.checkoff) {
+    return { available: false, rows: [], total: 0, split: { service: 0, oneOff: 0 }, customers: 0 }
+  }
 
   const [agents, db] = [await listAgents(opts.companyId), tenantClient()]
 
@@ -337,6 +379,7 @@ export async function getAllAgentsSummary(opts: {
       return {
         agent,
         total: list.reduce((s, p) => s + p.amount, 0),
+        split: splitByKind(list),
         customers: new Set(list.map((p) => p.customerId ?? 'anon-' + p.id)).size,
         count: list.length,
       }
@@ -348,6 +391,10 @@ export async function getAllAgentsSummary(opts: {
     available: true,
     rows,
     total: rows.reduce((s, r) => s + r.total, 0),
+    split: {
+      service: rows.reduce((s, r) => s + r.split.service, 0),
+      oneOff: rows.reduce((s, r) => s + r.split.oneOff, 0),
+    },
     customers: rows.reduce((s, r) => s + r.customers, 0),
   }
 }

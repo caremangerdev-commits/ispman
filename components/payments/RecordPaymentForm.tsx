@@ -158,6 +158,12 @@ export function RecordPaymentForm({
   // NEVER AUTOMATIC. A short first period is charged in full unless the cashier
   // ticks this, which is why it starts false on every customer.
   const [discountTicked, setDiscountTicked] = useState(false)
+  // One-off charges the customer can pay against (migration 0025), and what the
+  // cashier is taking against each, keyed by charge id. Empty for almost
+  // everybody. Nothing here is trusted on submit: the server re-reads every
+  // charge, and the database refuses an overpayment outright.
+  const [openCharges, setOpenCharges] = useState<PaymentContext['charges']>([])
+  const [chargePay, setChargePay] = useState<Record<number, string>>({})
   // Who is selected RIGHT NOW, for the lookup callback to check against. State
   // would be a render behind by the time a response lands.
   const selectedIdRef = useRef<number | null>(initialCustomer?.id ?? null)
@@ -306,6 +312,7 @@ export function RecordPaymentForm({
         // in a callback, never during render.
         if (selectedIdRef.current !== customer.id) return
         setPriorGrant(context.grant)
+        setOpenCharges(context.charges)
 
         const period = context.firstPeriod
         if (!period) return
@@ -338,6 +345,7 @@ export function RecordPaymentForm({
       .then((context) => {
         if (!live) return
         setPriorGrant(context.grant)
+        setOpenCharges(context.charges)
 
         const period = context.firstPeriod
         if (!period) return
@@ -365,6 +373,8 @@ export function RecordPaymentForm({
     setFirstPeriod(null)
     setPriorGrant(null)
     setDiscountTicked(false)
+    setOpenCharges([])
+    setChargePay({})
     lookupContext(hit, months)
     setAmount(next)
     // Seeded rather than debounced-into, so a preloaded short amount does not
@@ -395,6 +405,8 @@ export function RecordPaymentForm({
     setFirstPeriod(null)
     setPriorGrant(null)
     setDiscountTicked(false)
+    setOpenCharges([])
+    setChargePay({})
     setTerm('')
     setAmount('')
     setDebouncedAmount('')
@@ -426,6 +438,23 @@ export function RecordPaymentForm({
           {new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(state.amount ?? 0)}
           {' '}recorded for {state.customerName}
         </p>
+
+        {/* A visit that paid one-off charges says where the money went, and
+            what each charge still owes — the figures the cashier repeats to
+            the customer. The service lines below are about service only. */}
+        {state.oneOff && state.oneOff.length > 0 ? (
+          <div className="mx-auto mt-2 max-w-md space-y-0.5 text-sm text-gray-300">
+            {state.servicePaid ? <p>{money(state.servicePaid)} to service</p> : null}
+            {state.oneOff.map((c, i) => (
+              <p key={i}>
+                {money(c.paid)} to {c.category}
+                <span className={c.owing > 0 ? ' text-orange-400' : ' text-gray-500'}>
+                  {c.owing > 0 ? ' · ' + money(c.owing) + ' still owing' : ' · paid off'}
+                </span>
+              </p>
+            ))}
+          </div>
+        ) : null}
 
         {/* The payment always saved. Whether access moved is a separate fact,
             and is never implied. */}
@@ -531,7 +560,22 @@ export function RecordPaymentForm({
   const askingFor = amountDueForMonths(owed, monthlyCharge, months)
 
   const paid = Number(debouncedAmount)
+
+  // ONE-OFF CHARGES (migration 0025). With any on file the service amount may
+  // be left at zero — the visit pays charges only — and then none of the
+  // service questions below apply: nothing is short, and access does not move.
+  // With none on file this is always true and the form behaves as it always did.
+  const hasCharges = !isOther && openCharges.length > 0
+  const chargeTotal = hasCharges
+    ? openCharges.reduce((s, c) => {
+        const v = Number(chargePay[c.id] || 0)
+        return s + (Number.isFinite(v) && v > 0 ? v : 0)
+      }, 0)
+    : 0
+  const serviceIncluded = !hasCharges || paid > 0
+
   const partial =
+    serviceIncluded &&
     selected !== null && Number.isFinite(paid) && isPartialPayment(owed, paid)
 
   const currentExpiry = selected ? networkExpiry(selected) : null
@@ -930,6 +974,24 @@ export function RecordPaymentForm({
                     tone={carried > 0 ? 'text-orange-400' : undefined}
                   />
                 </dl>
+
+                {/* Owed separately: none of it is in the balance above, and
+                    none of it decides access. */}
+                {hasCharges ? (
+                  <>
+                    <div className="my-3 border-t border-gray-700" />
+                    <dl className="space-y-1.5 text-sm">
+                      {openCharges.map((c) => (
+                        <Line
+                          key={c.id}
+                          label={c.category + ' (one-off)'}
+                          value={money(c.outstanding)}
+                          tone="text-orange-400"
+                        />
+                      ))}
+                    </dl>
+                  </>
+                ) : null}
               </>
             )}
 
@@ -1253,7 +1315,7 @@ export function RecordPaymentForm({
                 htmlFor="amount"
                 className="block text-xs font-semibold uppercase tracking-wider text-gray-400"
               >
-                Amount
+                {hasCharges ? 'Service Amount' : 'Amount'}
               </label>
               {/* The cashier’s tick, and the only thing that applies the
                   discount. The server re-derives whether a discount is even
@@ -1274,9 +1336,11 @@ export function RecordPaymentForm({
                   type="number"
                   // Same as the "other" amount above: digit keypad on a phone.
                   inputMode="numeric"
-                  min="1"
+                  // Zero is allowed only when there are charges to pay
+                  // instead; the server applies the same rule.
+                  min={hasCharges ? '0' : '1'}
                   step="1"
-                  required
+                  required={!hasCharges}
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   aria-describedby={partial ? 'partial-payment' : undefined}
@@ -1293,6 +1357,87 @@ export function RecordPaymentForm({
               ) : null}
             </div>
           </div>
+
+          {/* ---------------- One-off charges ----------------
+              Owed separately from service (migration 0025). Each open charge
+              gets its own amount; the service amount above is for service
+              only. Paying a charge moves nothing on the service balance and
+              no expiry — the preview below is about the service amount alone.
+              One visit, one receipt, whatever is paid here. */}
+          {hasCharges ? (
+            <div className="mt-4 rounded-lg border border-gray-700 bg-gray-800/50 p-4">
+              <p className="text-sm font-semibold text-white">One-off charges</p>
+              <p className="mt-0.5 text-xs text-gray-500">
+                Separate from service. Leave at 0 to pay none.
+              </p>
+
+              <div className="mt-3 space-y-3">
+                {openCharges.map((c) => {
+                  const field = 'charge_amount_' + c.id
+                  const value = chargePay[c.id] ?? ''
+                  const over = Number(value) > c.outstanding
+                  return (
+                    <div key={c.id} className="space-y-1">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <label htmlFor={field} className="text-sm text-gray-200">
+                          {c.category}
+                        </label>
+                        <span className="text-xs text-gray-400">
+                          owes <span className="font-medium text-orange-400">{money(c.outstanding)}</span>
+                        </span>
+                      </div>
+                      {c.note ? <p className="text-[11px] text-gray-500">{c.note}</p> : null}
+                      <div className="flex gap-2">
+                        <input
+                          id={field}
+                          name={field}
+                          type="number"
+                          inputMode="decimal"
+                          min="0"
+                          max={c.outstanding}
+                          step="0.01"
+                          value={value}
+                          placeholder="0"
+                          onChange={(e) =>
+                            setChargePay((prev) => ({ ...prev, [c.id]: e.target.value }))
+                          }
+                          className={inputBase + (over || errors[field] ? inputBad : inputOk)}
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setChargePay((prev) => ({ ...prev, [c.id]: String(c.outstanding) }))
+                          }
+                          className="inline-flex min-h-11 shrink-0 items-center rounded-lg bg-gray-700 px-3 text-xs font-semibold text-gray-200 transition hover:bg-gray-600 sm:min-h-0"
+                        >
+                          Pay in full
+                        </button>
+                      </div>
+                      {over ? (
+                        <p role="alert" className="text-xs text-red-400">
+                          Only {money(c.outstanding)} is owed on this charge.
+                        </p>
+                      ) : errors[field] ? (
+                        <p role="alert" className="text-xs text-red-400">{errors[field]}</p>
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+
+              {/* What the cashier asks for in total, split so the customer
+                  can see what goes where. */}
+              <dl className="mt-3 space-y-1 border-t border-gray-700 pt-3 text-sm">
+                <Line label="Service" value={money(Number.isFinite(Number(amount)) ? Number(amount) || 0 : 0)} muted />
+                <Line label="One-off charges" value={money(chargeTotal)} muted />
+                <Line
+                  label="Total to collect"
+                  value={money((Number(amount) || 0) + chargeTotal)}
+                  emphasis
+                />
+              </dl>
+            </div>
+          ) : null}
 
           {/* ---------------- Partial payment ----------------
               No button opens this. Anything short of the amount due is a
@@ -1430,7 +1575,7 @@ export function RecordPaymentForm({
                 </p>
               )}
             </div>
-          ) : newExpiry ? (
+          ) : newExpiry && serviceIncluded ? (
             <div className="mt-4 rounded-lg border border-green-900/50 bg-green-950/20 px-3 py-2.5">
               <p className="text-sm font-semibold text-green-400">
                 {dateChosen ? 'Access granted until: ' : 'New expiry will be: '}

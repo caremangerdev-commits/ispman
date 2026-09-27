@@ -100,7 +100,18 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
 
       {/* Summary — computed across the whole filtered set, not just this page. */}
       <div className="grid gap-4 sm:grid-cols-3">
-        <Summary label="Total Collected" value={formatCurrency(result.totalCollected)} />
+        <Summary
+          label="Total Collected"
+          value={formatCurrency(result.totalCollected)}
+          // Service and one-off money under the one figure, so an owner can
+          // see what came in for service without subtracting installations.
+          detail={
+            caps.otherPayments
+              ? 'Service ' + formatCurrency(result.collectedSplit.service) +
+                ' · One-off ' + formatCurrency(result.collectedSplit.oneOff)
+              : undefined
+          }
+        />
         <Summary label="Number of Payments" value={String(result.total)} />
         <Summary label="Average Payment" value={formatCurrency(result.averagePayment)} />
       </div>
@@ -267,11 +278,18 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
   )
 }
 
-function Summary({ label, value }: { label: string; value: string }) {
+function Summary({
+  label, value, detail,
+}: {
+  label: string
+  value: string
+  detail?: React.ReactNode
+}) {
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
       <p className="text-xs font-medium text-gray-400">{label}</p>
       <p className="mt-1.5 text-2xl font-semibold tracking-tight text-white">{value}</p>
+      {detail ? <p className="mt-1 text-xs text-gray-500">{detail}</p> : null}
     </div>
   )
 }

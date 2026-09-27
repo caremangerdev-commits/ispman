@@ -47,7 +47,10 @@ export type Receipt = {
    * stamped on the payment, so a corrected address appears on reprints.
    */
   companyAddress: string | null
-  /** The payments row id, zero padded to 8. */
+  /**
+   * The payments row id, zero padded to 8. For a visit that wrote several rows,
+   * the lowest of them, so a reprint from any row prints the same number.
+   */
   number: string
   /** paid_on, with the time the payment was recorded. */
   dateLabel: string
@@ -85,8 +88,21 @@ export type Receipt = {
   /** e.g. "Paid (Cash)". */
   paidLabel: string
   paid: number
+  /**
+   * Where the money went, when one visit paid more than one thing: "to service",
+   * "to Installation". Null for a payment that settled one thing, where the
+   * line above already says so. Migration 0025.
+   */
+  allocations: ReceiptLine[] | null
   /** Service only. Always printed when present, including at 0.00. */
   balance: number | null
+  /**
+   * What each one-off charge paid in this visit still owes afterwards
+   * ("Installation owing"). Printed at 0.00 too: a charge cleared today is the
+   * line the customer is looking for, the same reason Balance is. Empty when
+   * the visit paid no charge. Migration 0025.
+   */
+  owing: ReceiptLine[]
   /**
    * Money this payment carried forward as account credit, when it made any.
    *
@@ -281,10 +297,23 @@ export function renderReceipt(r: Receipt): string[] {
 
   out.push(columns(r.paidLabel, receiptMoney(r.paid)))
 
+  // Indented under the amount paid, because they ARE the amount paid, split.
+  for (const line of r.allocations ?? []) {
+    out.push(columns('  ' + line.label, receiptMoney(line.amount)))
+  }
+
   // Service only. Printed even at zero — "Balance 0.00" is the line the
   // customer is looking for, and omitting it reads as an oversight.
+  // Named "Service balance" when a one-off charge prints beside it, so the two
+  // owed figures cannot be read as one. Alone, it stays "Balance" as it was.
   if (r.balance !== null) {
-    out.push(columns('Balance', receiptMoney(r.balance)))
+    out.push(columns(r.owing.length > 0 ? 'Service balance' : 'Balance', receiptMoney(r.balance)))
+  }
+
+  // Beside the service balance but never added to it: a one-off charge is owed
+  // separately and does not decide access.
+  for (const line of r.owing) {
+    out.push(columns(line.label, receiptMoney(line.amount)))
   }
 
   // Below the balance, because it is not part of settling it: the balance went

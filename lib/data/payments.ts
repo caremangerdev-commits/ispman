@@ -1,5 +1,5 @@
 import {
-  PAYMENT_METHODS, toPaymentMethod, type PaymentMethod,
+  PAYMENT_METHODS, splitByKind, toPaymentMethod, type KindSplit, type PaymentMethod,
 } from '@/lib/data/checkoff'
 import { radiusIdentity } from '@/lib/radius/format'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -42,6 +42,11 @@ export type PaymentListResult = {
   pageCount: number
   /** Totals across the whole filtered set, not just the visible page. */
   totalCollected: number
+  /**
+   * totalCollected split into service money and one-off money (installations,
+   * hardware, charges paid off). From the same rows, so it sums back to it.
+   */
+  collectedSplit: KindSplit
   averagePayment: number
   /**
    * Income split by the customer segment (misc category) the payment belongs
@@ -287,6 +292,7 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
     page: safePage,
     pageCount,
     totalCollected,
+    collectedSplit: splitByKind(matched),
     averagePayment: matched.length ? totalCollected / matched.length : 0,
     categories,
   }

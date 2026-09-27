@@ -9,6 +9,9 @@ import { ArrowLeft, Plus } from 'lucide-react'
 import { CustomerDetail } from '@/components/customers/CustomerDetail'
 import { ChangeHistory } from '@/components/customers/ChangeHistory'
 import { NetworkHistory } from '@/components/customers/NetworkHistory'
+import { OneOffCharges } from '@/components/customers/OneOffCharges'
+import { listCustomerCharges } from '@/lib/data/charges'
+import { listPaymentCategories } from '@/lib/data/payment-categories'
 import { TicketPriorityBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges'
 import { lastBalanceAdjustment } from '@/lib/data/balance-adjustments'
 import { lastChargeFor } from '@/lib/data/billing-engine'
@@ -41,7 +44,7 @@ export default async function CustomerDetailPage({
 
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
-    balanceAdjustment, changeHistory, settings, caps, lastCharge,
+    balanceAdjustment, changeHistory, settings, caps, lastCharge, charges, paymentCategories,
   ] = await Promise.all([
       getCustomerPayments(company.id, customerId),
       getCustomerTickets(company.id, customerId),
@@ -72,6 +75,10 @@ export default async function CustomerDetailPage({
       getSchemaCapabilities(),
       // The engine's latest charge (migration 0024), for the Last Billed row.
       lastChargeFor(company.id, customerId),
+      // One-off charges (0025), and the category list a new one is filed
+      // under. Both empty until 0025 is applied, and the card then hides.
+      listCustomerCharges(company.id, customerId),
+      listPaymentCategories(company.id),
     ])
 
   const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
@@ -143,6 +150,19 @@ export default async function CustomerDetailPage({
         miscCategories={miscCats}
         selectedAddonIds={selectedAddonIds}
       />
+
+      {/* Money owed that is not service. Beside the record rather than inside
+          its billing card, because it does not decide access and must not
+          read as part of the service balance. */}
+      {caps.charges ? (
+        <OneOffCharges
+          customerId={customer.id}
+          customerName={fullName(customer)}
+          charges={charges}
+          categories={paymentCategories}
+          canManage={can(profile.role, 'manage_charges')}
+        />
+      ) : null}
 
       <NetworkHistory entries={networkHistory} />
 

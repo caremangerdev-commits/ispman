@@ -13,6 +13,7 @@ import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
 import { instantToDateOnly, paymentInstant } from '@/lib/format'
 import { getFirstPeriodRules } from '@/lib/data/company'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
+import { getChargesById, listOpenCharges, type OpenCharge } from '@/lib/data/charges'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
 import { getReversalSubject } from '@/lib/data/payments'
 import { grantAnchor, latestGrant } from '@/lib/data/period-grants'
@@ -57,6 +58,13 @@ export type PaymentResult =
        * code path. See lib/data/receipts.ts.
        */
       paymentId?: number
+      /**
+       * Migration 0025: what this visit paid against one-off charges, and what
+       * each still owes afterwards. Absent or empty when none were paid.
+       * `amount` above is the whole visit; `servicePaid` is the service part.
+       */
+      oneOff?: { category: string; paid: number; owing: number }[]
+      servicePaid?: number
     }
   | { ok: false; error: string; fieldErrors?: Record<string, string> }
 
@@ -84,6 +92,246 @@ const money = (n: number) =>
 
 /** Sentinel the Purpose dropdown submits for its "+ Add new category" row. */
 const NEW_CATEGORY = '__new__'
+
+// ---------------------------------------------------------------------------
+// One-off charges at the till (migration 0025)
+//
+// A visit can pay service, one-off charges, or both. Every row it writes
+// carries one visit_id, so the receipt reads them as one piece of paper
+// (lib/data/receipts.ts). The charge rows are ordinary "other" payments with
+// charge_id set: they go through NONE of the service code — no balance, no
+// credit, no expiry, no RADIUS — exactly like recordOtherPayment.
+//
+// ALL ROWS OF A VISIT ARE ONE INSERT STATEMENT, so Postgres writes all of them
+// or none. The guard trigger checks each charge row as it goes in; if one would
+// overpay its charge the whole visit is refused and nothing is recorded — no
+// service payment on its own, no half a visit.
+// ---------------------------------------------------------------------------
+
+/** Form fields the till posts per charge: charge_amount_<id>. */
+const CHARGE_FIELD = 'charge_amount_'
+
+type Allocation = { chargeId: number; amount: number }
+
+/** The non-zero charge amounts a submission carries. */
+function readAllocations(formData: FormData): Allocation[] {
+  const out: Allocation[] = []
+  for (const [key, value] of formData.entries()) {
+    if (!key.startsWith(CHARGE_FIELD) || typeof value !== 'string') continue
+    const chargeId = Number(key.slice(CHARGE_FIELD.length))
+    const raw = value.trim()
+    if (!Number.isInteger(chargeId) || !raw) continue
+    out.push({ chargeId, amount: Number(raw) })
+  }
+  return out
+}
+
+type CheckedAllocation = Allocation & {
+  categoryId: number
+  category: string
+  outstandingBefore: number
+}
+
+/**
+ * Checks a submission's charge amounts against the charges as they stand.
+ *
+ * A courtesy, not the guard: it turns the common mistakes into field errors
+ * the cashier can fix. The trigger is what actually refuses an overpayment,
+ * including one made possible by another cashier between this read and the
+ * insert.
+ */
+async function checkAllocations(
+  companyId: number,
+  customerId: number,
+  allocations: Allocation[]
+): Promise<{ rows: CheckedAllocation[]; fieldErrors: Record<string, string> }> {
+  const fieldErrors: Record<string, string> = {}
+  const rows: CheckedAllocation[] = []
+
+  const nonZero = allocations.filter((a) => a.amount !== 0)
+  for (const a of allocations) {
+    if (!Number.isFinite(a.amount) || a.amount < 0) {
+      fieldErrors[CHARGE_FIELD + a.chargeId] = 'Enter an amount of zero or more.'
+    }
+  }
+  if (nonZero.length === 0) return { rows, fieldErrors }
+
+  const charges = await getChargesById(companyId, nonZero.map((a) => a.chargeId))
+  for (const a of nonZero) {
+    if (!Number.isFinite(a.amount) || a.amount < 0) continue
+    // Company-scoped by getChargesById. The ids are posted by the browser, so
+    // the customer is matched here too (and again by the trigger).
+    const c = charges.find((x) => x.id === a.chargeId && x.customerId === customerId)
+    const key = CHARGE_FIELD + a.chargeId
+    if (!c || c.status === 'voided') {
+      fieldErrors[key] = 'This charge is no longer open.'
+    } else if (round2(a.amount) > c.outstanding) {
+      fieldErrors[key] = 'Only ' + money(c.outstanding) + ' is owed on this charge.'
+    } else {
+      rows.push({
+        chargeId: c.id,
+        amount: round2(a.amount),
+        categoryId: c.categoryId,
+        category: c.category,
+        outstandingBefore: c.outstanding,
+      })
+    }
+  }
+
+  return { rows, fieldErrors }
+}
+
+/** The payments rows for a visit's charge amounts. No billing column is set. */
+function chargePaymentRows(opts: {
+  companyId: number
+  customerId: number
+  checked: CheckedAllocation[]
+  visitId: string
+  paidOn: string
+  stampedAt: Date
+  method: ReturnType<typeof toPaymentMethod>
+  agent: string
+  notes: string
+  userId: number
+  segmentId: number | null
+  caps: SchemaCapabilities
+}): Record<string, unknown>[] {
+  return opts.checked.map((a) => {
+    const row: Record<string, unknown> = {
+      company_id: opts.companyId,
+      customer_id: opts.customerId,
+      amount: a.amount,
+      // Bought no months of service, same as any "other" payment.
+      months_paid: 0,
+      payment_kind: 'other',
+      payment_category_id: a.categoryId,
+      charge_id: a.chargeId,
+      visit_id: opts.visitId,
+      charge_outstanding_before: a.outstandingBefore,
+      paid_on: opts.paidOn,
+      payment_date: opts.stampedAt.toISOString(),
+      payment_type: legacyPaymentType(opts.method),
+      agent: opts.agent,
+      notes: opts.notes || null,
+    }
+    if (opts.caps.checkoff) {
+      row.payment_method = opts.method
+      row.checked_off = false
+      row.user_id = opts.userId
+    }
+    if (opts.caps.paymentSegment) row.customer_misc_category_id = opts.segmentId
+    return row
+  })
+}
+
+/**
+ * The trigger's refusal, in the cashier's words. Anything else passes through.
+ */
+function visitInsertError(message: string): string {
+  return message.includes('charge_guard:')
+    ? 'A one-off charge changed while this payment was being entered — it was ' +
+      'paid or voided at another till. Nothing was recorded. Reselect the ' +
+      'customer and try again.'
+    : 'Could not record payment: ' + message
+}
+
+/** What the success panel says about the charges a visit paid. */
+function oneOffSummary(checked: CheckedAllocation[]) {
+  return checked.map((a) => ({
+    category: a.category,
+    paid: a.amount,
+    owing: round2(a.outstandingBefore - a.amount),
+  }))
+}
+
+/**
+ * A visit that pays one-off charges and no service.
+ *
+ * Nothing on the customer record is read for billing or written at all, and
+ * nothing reaches the network: the same promise recordOtherPayment makes.
+ */
+async function recordChargeVisit(opts: {
+  formData: FormData
+  session: Session
+  caps: SchemaCapabilities
+  customerId: number
+  checked: CheckedAllocation[]
+  paymentDate: Date
+}): Promise<PaymentResult> {
+  const { formData, session, caps, customerId, checked, paymentDate } = opts
+  const { company, profile } = session
+  const db = tenantClient()
+
+  const { data: customerRow } = await db
+    .from('customers')
+    .select('id, first_name, last_name' + (caps.catalog ? ', misc_category_id' : ''))
+    .eq('company_id', company.id)
+    .eq('id', customerId)
+    .maybeSingle()
+  const customer = customerRow as unknown as {
+    id: number
+    first_name: string | null
+    last_name: string | null
+    misc_category_id?: number | null
+  } | null
+  if (!customer) return { ok: false, error: 'That customer no longer exists.' }
+
+  const { data: tzRow } = await db
+    .from('settings').select('timezone').eq('company_id', company.id).maybeSingle()
+  const timeZone = (tzRow as { timezone: string | null } | null)?.timezone ?? 'America/Jamaica'
+  const stampedAt = paymentInstant(ymd(paymentDate), new Date(), timeZone) ?? paymentDate
+
+  const method = toPaymentMethod(str(formData, 'payment_method') || 'cash')
+  const rows = chargePaymentRows({
+    companyId: company.id,
+    customerId: customer.id,
+    checked,
+    visitId: crypto.randomUUID(),
+    paidOn: ymd(paymentDate),
+    stampedAt,
+    method,
+    agent: str(formData, 'agent') || displayName(profile),
+    notes: str(formData, 'notes'),
+    userId: profile.id,
+    segmentId: customer.misc_category_id ?? null,
+    caps,
+  })
+
+  const { data: inserted, error } = await db.from('payments').insert(rows).select('id')
+  if (error) return { ok: false, error: visitInsertError(error.message) }
+
+  const ids = ((inserted ?? []) as unknown as { id: number }[]).map((r) => r.id)
+  const firstId = Math.min(...ids)
+  const total = round2(checked.reduce((s, a) => s + a.amount, 0))
+
+  await notifyPaymentReceipt({
+    companyId: company.id,
+    companyName: company.name,
+    customerId: customer.id,
+    paymentId: firstId,
+    amount: total,
+  })
+
+  revalidatePath('/dashboard/customers/' + customer.id)
+  revalidatePath('/dashboard/payments')
+  revalidatePath('/dashboard/payments/new')
+  revalidatePath('/dashboard')
+
+  return {
+    ok: true as const,
+    amount: total,
+    servicePaid: 0,
+    customerId: customer.id,
+    customerName:
+      [customer.first_name, customer.last_name].filter(Boolean).join(' ') || 'Customer',
+    newExpiryIso: null,
+    networkExtended: false,
+    warning: null,
+    carriedBalance: 0,
+    paymentId: firstId,
+    oneOff: oneOffSummary(checked),
+  }
+}
 
 /**
  * Records an "other" payment: a one-off charge that is not for service.
@@ -360,7 +608,23 @@ export async function recordPayment(
   if (paymentMethodRaw === 'other' && !notes) {
     fieldErrors.notes = 'Describe the payment method.'
   }
-  if (amount === null || amount <= 0) fieldErrors.amount = 'Enter an amount greater than zero.'
+
+  // ONE-OFF CHARGES PAID IN THE SAME VISIT (migration 0025). Checked up front
+  // so every mistake on the form comes back at once, before anything is
+  // written. The service amount may then be zero: a visit can pay for an
+  // installation and nothing else.
+  const charges = caps.charges
+    ? await checkAllocations(company.id, customerId, readAllocations(formData))
+    : { rows: [], fieldErrors: {} }
+  Object.assign(fieldErrors, charges.fieldErrors)
+  const chargeTotal = round2(charges.rows.reduce((s, a) => s + a.amount, 0))
+  const serviceTaken = amount !== null && amount > 0
+
+  if (amount !== null && amount < 0) {
+    fieldErrors.amount = 'Enter an amount of zero or more.'
+  } else if (!serviceTaken && chargeTotal === 0 && Object.keys(charges.fieldErrors).length === 0) {
+    fieldErrors.amount = 'Enter an amount greater than zero.'
+  }
 
   const chosenDate = parseYmd(accessDateRaw)
   if (accessDecisionRaw === 'date_selected' && !chosenDate) {
@@ -386,6 +650,14 @@ export async function recordPayment(
 
   if (Object.keys(fieldErrors).length > 0) {
     return { ok: false, error: 'Please correct the highlighted fields.', fieldErrors }
+  }
+
+  // No service money: the visit pays charges only, and none of the service
+  // path below — balance, credit, expiry, network — is reachable.
+  if (!serviceTaken) {
+    return recordChargeVisit({
+      formData, session, caps, customerId, checked: charges.rows, paymentDate,
+    })
   }
 
   const db = tenantClient()
@@ -805,15 +1077,44 @@ export async function recordPayment(
     insertRow.credit_applied = creditAdded
   }
 
-  const { data: inserted, error: insertError } = await db
-    .from('payments')
-    .insert(insertRow)
-    .select('id')
-    .single()
+  // THE VISIT'S CHARGE ROWS GO IN WITH THE SERVICE ROW, IN ONE STATEMENT. If
+  // the guard refuses one, the service payment is refused with it, so a
+  // cashier never has a visit that is half on record. See the note at the top
+  // of this file.
+  const visitId = charges.rows.length > 0 ? crypto.randomUUID() : null
+  if (visitId) insertRow.visit_id = visitId
 
-  if (insertError) return { ok: false, error: 'Could not record payment: ' + insertError.message }
+  const chargeRows = visitId
+    ? chargePaymentRows({
+        companyId: company.id,
+        customerId: customer.id,
+        checked: charges.rows,
+        visitId,
+        paidOn: ymd(paymentDate),
+        stampedAt,
+        method,
+        agent,
+        notes,
+        userId: profile.id,
+        segmentId: customer.misc_category_id ?? null,
+        caps,
+      })
+    : []
 
-  const paymentId = (inserted as unknown as { id: number }).id
+  const { data: inserted, error: insertError } = chargeRows.length > 0
+    ? await db
+        .from('payments')
+        // defaultToNull false: the service row and the charge rows carry
+        // different columns, and a column one of them leaves out must take
+        // its database default, not an explicit NULL.
+        .insert([insertRow, ...chargeRows], { defaultToNull: false })
+        .select('id, charge_id')
+    : await db.from('payments').insert(insertRow).select('id')
+
+  if (insertError) return { ok: false, error: visitInsertError(insertError.message) }
+
+  const paymentId = ((inserted ?? []) as unknown as { id: number; charge_id?: number | null }[])
+    .find((r) => !r.charge_id)?.id as number
 
   // A SHORT FIRST PERIOD IS CHARGED AT FULL RATE UNLESS SOMEONE DECIDES
   // OTHERWISE, and this row is the record of who decided. The reduction is open
@@ -1013,13 +1314,14 @@ export async function recordPayment(
   }
 
   // Same as the "other" path above: queued after the money is recorded, and
-  // never able to fail the payment.
+  // never able to fail the payment. ONE per visit: the receipt it attaches is
+  // read by the service row's id and covers every row the visit wrote.
   await notifyPaymentReceipt({
     companyId: company.id,
     companyName: company.name,
     customerId: customer.id,
     paymentId,
-    amount: paidAmount,
+    amount: round2(paidAmount + chargeTotal),
   })
 
   revalidatePath('/dashboard/customers/' + customer.id)
@@ -1033,7 +1335,9 @@ export async function recordPayment(
   // place. Redirecting away would lose both.
   return {
     ok: true as const,
-    amount: paidAmount,
+    amount: round2(paidAmount + chargeTotal),
+    servicePaid: paidAmount,
+    oneOff: oneOffSummary(charges.rows),
     customerId: customer.id,
     customerName: fullName,
     // Only surfaced when access actually moved, so the panel never promises an
@@ -1114,10 +1418,15 @@ export type PaymentContext = {
    * where a completion would run to with lib/billing.ts#periodCompletion.
    */
   grant: (PriorGrant & { anchorThen: string | null }) | null
+  /**
+   * One-off charges the customer can still pay against (migration 0025),
+   * oldest first. Empty for almost everybody, and before 0025 is applied.
+   */
+  charges: OpenCharge[]
 }
 
 export async function loadPaymentContext(customerId: number): Promise<PaymentContext> {
-  const none: PaymentContext = { firstPeriod: null, grant: null }
+  const none: PaymentContext = { firstPeriod: null, grant: null, charges: [] }
 
   const { company, profile } = await getSession()
   if (!can(profile.role, 'record_payment')) return none
@@ -1182,12 +1491,14 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
   // provisioning), so the read is skipped rather than made and ignored.
   const prior = period ? null : await latestGrant(company.id, customer.id)
   const anchor = prior ? await grantAnchor(company.id, customer.id, prior) : null
+  const charges = await listOpenCharges(company.id, customer.id)
 
   return {
     firstPeriod: period
       ? { days: period.days, charge: period.charge, discount: period.discount }
       : null,
     grant: prior ? { ...prior, anchorThen: anchor ? ymd(anchor) : null } : null,
+    charges,
   }
 }
 async function resolveFirstPeriod(opts: {
