@@ -1251,7 +1251,8 @@ async function loadForMutation(
     'id, amount, customer_id, months_paid, payment_type, payment_date, agent, notes' +
     (caps.checkoff ? ', payment_method' : '') +
     (caps.billing ? ', carried_balance_before, carried_balance_after' : '') +
-    (caps.creditReversal ? ', credit_applied' : '')
+    (caps.creditReversal ? ', credit_applied' : '') +
+    (caps.otherPayments ? ', payment_kind' : '')
 
   const { data, error } = await db
     .from('payments')
@@ -1275,6 +1276,7 @@ async function loadForMutation(
     carried_balance_before?: number | string | null
     carried_balance_after?: number | string | null
     credit_applied?: number | string | null
+    payment_kind?: string | null
   } | null
 
   if (!payment) return { ok: false as const, error: 'That payment no longer exists.' }
@@ -1498,12 +1500,14 @@ function reversalDetails(opts: {
   paymentDate: string
   effect: PaymentEffect
   restated: { shortfall: number } | null
+  /** An "other" payment: no service balance or credit was touched. */
+  other: boolean
   expiry: string
   actor: string
 }): string {
   const {
     action, paymentId, customer, oldAmount, newAmount, method, paymentDate,
-    effect, restated, expiry, actor,
+    effect, restated, other, expiry, actor,
   } = opts
 
   // A pipe inside a value would split into a field that was never written.
@@ -1525,8 +1529,13 @@ function reversalDetails(opts: {
   // Credit: reversed, partly reversed, or knowingly not reversed at all. The
   // last case must be stated — silence there reads exactly like a payment that
   // never created credit, and the two need different follow-up.
+  //
+  // An "other" payment has no credit record because it never made any, and
+  // the credit line would wrongly send someone to check account_credit by hand.
   const credit =
-    effect.creditApplied === null
+    other
+      ? field('balance_action', 'none (other payment; service balance and credit untouched)')
+      : effect.creditApplied === null
       ? field('credit_reversed', 'NOT REVERSED (payment predates the credit record; check account_credit by hand)')
       : effect.creditApplied === 0
         ? ''
@@ -1575,6 +1584,7 @@ export async function updatePayment(
   if (!loaded.ok) return { ok: false, error: loaded.error }
 
   const { company, profile, db, payment, customer } = loaded
+  const isOther = payment.payment_kind === 'other'
 
   const fieldErrors: Record<string, string> = {}
 
@@ -1582,14 +1592,20 @@ export async function updatePayment(
   // Read from the form HERE, unlike recordPayment: this is a correction to the
   // months_paid RECORDED on an existing row, not a decision about how much
   // access to grant. See the note on updatePayment.
-  const monthsPaid = num(formData, 'months_paid') ?? 1
+  //
+  // An "other" payment bought no months and keeps 0 whatever the form posts:
+  // the edit form's months control starts at 1, and a 1 would read as a month
+  // of service paid everywhere months_paid shows.
+  const monthsPaid = isOther ? 0 : num(formData, 'months_paid') ?? 1
   const paymentType = str(formData, 'payment_type') || 'cash'
   const paymentDateRaw = str(formData, 'payment_date')
   const agent = str(formData, 'agent')
   const notes = str(formData, 'notes')
 
   if (amount === null || amount <= 0) fieldErrors.amount = 'Enter an amount greater than zero.'
-  if (monthsPaid < 1 || monthsPaid > 6) fieldErrors.months_paid = 'Months paid must be 1 to 6.'
+  if (!isOther && (monthsPaid < 1 || monthsPaid > 6)) {
+    fieldErrors.months_paid = 'Months paid must be 1 to 6.'
+  }
   if (!agent) fieldErrors.agent = 'Agent is required.'
 
   // The business date, as in recordPayment: midday in the server's zone, used
@@ -1659,7 +1675,13 @@ export async function updatePayment(
   const effect = paymentEffect(payment)
   let restated: { shortfall: number } | null = null
 
-  if (effect.carriedBefore !== null && effect.carriedAfter !== null) {
+  if (isOther) {
+    // AN "OTHER" PAYMENT NEVER TOUCHED THE SERVICE BALANCE, so correcting it
+    // restates nothing there. It carries no before/after stamps, and without
+    // this branch it fell to the amount-delta fallback below — meant for
+    // pre-0011 SERVICE rows — and moved carried_balance by money that was never
+    // service money.
+  } else if (effect.carriedBefore !== null && effect.carriedAfter !== null) {
     const newCarriedAfter = outstandingBalance(effect.carriedBefore, amount as number)
     const newCredit = prepaymentCredit(effect.carriedBefore, amount as number)
 
@@ -1703,6 +1725,7 @@ export async function updatePayment(
       paymentDate: payment.payment_date,
       effect,
       restated,
+      other: isOther,
       expiry: await standingExpiry(customer?.identity ?? null),
       actor: profile.email,
     }),
@@ -1759,8 +1782,12 @@ export async function deletePayment(formData: FormData): Promise<void> {
   // created is taken back. A deletion reverses the WHOLE effect, which is what
   // separates it from a correction — there is no new amount to restate against.
   let restated: { shortfall: number } | null = null
+  const isOther = payment.payment_kind === 'other'
 
-  if (effect.carriedBefore !== null && effect.carriedAfter !== null) {
+  if (isOther) {
+    // Nothing to undo on the service balance: an "other" payment never touched
+    // it. See the same branch in updatePayment for what the fallback did here.
+  } else if (effect.carriedBefore !== null && effect.carriedAfter !== null) {
     restated = await restateBalances({
       db,
       companyId: company.id,
@@ -1788,6 +1815,7 @@ export async function deletePayment(formData: FormData): Promise<void> {
       paymentDate: payment.payment_date,
       effect,
       restated,
+      other: isOther,
       expiry: expiryAtChange,
       actor: profile.email,
     }),
