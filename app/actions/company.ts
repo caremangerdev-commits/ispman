@@ -9,8 +9,6 @@ import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { toCompanyBillingType, toEngineMode } from '@/lib/billing-engine'
-import { dryRunCycleComplete, engineSettingsFor } from '@/lib/data/billing-engine'
-import { instantToDateOnly } from '@/lib/format'
 import { toExpiryMode } from '@/lib/types'
 
 export type CompanyResult = { ok: true } | { ok: false; error: string }
@@ -185,19 +183,6 @@ export async function saveCompanyProfile(
         error:
           'A start date is required to run the billing engine. Charge dates before it are never ' +
           'charged, so set it after the last date this company was billed by hand.',
-      }
-    }
-
-    // A FULL DRY-RUN CYCLE BEFORE LIVE. Checked only on the transition, so a
-    // company already live can be saved without re-proving it.
-    if (mode === 'live') {
-      const current = await engineSettingsFor(company.id)
-      if (current?.mode !== 'live') {
-        const today = instantToDateOnly(new Date(), timezone)
-        const cycle = await dryRunCycleComplete(company.id, today)
-        if (!cycle.ok) {
-          return { ok: false, error: 'Cannot go live yet. ' + cycle.reason }
-        }
       }
     }
 

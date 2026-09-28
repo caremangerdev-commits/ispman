@@ -32,8 +32,7 @@ const ENGINE_MODE_LABELS: Record<EngineMode, string> = {
 const ENGINE_MODE_HELP: Record<EngineMode, string> = {
   off: 'The engine does nothing for this company. Run Bills works as before.',
   dry_run:
-    'Every day the engine records what it WOULD charge on Billing Runs and charges nothing. ' +
-    'A full cycle (one month, including a real charge date) must complete before Live is allowed.',
+    'Every day the engine records what it WOULD charge on Billing Runs and charges nothing.',
   live:
     'The engine charges carried balances on each charge date and Run Bills is disabled for ' +
     'this company. It never touches expiry dates or the network.',

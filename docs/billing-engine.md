@@ -69,18 +69,11 @@ only, like the rest of that page.
   billed by hand or by Run Bills**, or the engine charges the period that was
   running when it was switched on. JMEDIA: 21 September 2026 or later.
 
-## The dry run is a full cycle, not a day
+## Going live
 
-The settings page refuses Live until the company's dry run has:
-
-1. its earliest completed dry-run day at least one calendar month ago, and
-2. at least one completed dry-run day that reached a charge date and
-   previewed real charges.
-
-Ezmze's cycle ends on the 1st, when the tick is 988 customers. A dry run
-started on 25 September can go live on 25 October, after a real 1 October has
-been previewed. Read that day's row on Billing Runs before flipping the
-switch: the preview lists every customer and amount.
+A company can be set to Live at any time; no dry-run history is required.
+A dry run is optional: it previews every customer and amount on Billing Runs
+without charging, which is worth reading before the first real charge date.
 
 ## Reading it
 

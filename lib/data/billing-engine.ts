@@ -688,66 +688,6 @@ export async function lastChargeFor(companyId: number, customerId: number): Prom
     : null
 }
 
-// ---------------------------------------------------------------------------
-// Going live
-// ---------------------------------------------------------------------------
-
-/**
- * Whether a company may switch to LIVE: a FULL DRY-RUN CYCLE must have
- * completed first. A cycle is a month: the earliest completed dry run must be
- * at least one calendar month ago, AND at least one completed dry run must
- * have reached a charge date and previewed real charges. Ezmze's cycle ends
- * on the 1st, when the tick is 988 customers; going live before a dry run has
- * covered a real 1st is exactly the thing this refuses.
- *
- * `today` is the company's date; the caller passes it so this stays testable.
- */
-export async function dryRunCycleComplete(
-  companyId: number,
-  today: string
-): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const { data, error } = await tenantClient()
-    .from('bill_runs')
-    .select('run_date, charged')
-    .eq('company_id', companyId)
-    .eq('mode', 'dry_run')
-    .eq('status', 'done')
-    .order('run_date', { ascending: true })
-  if (error) throw new Error('Could not read the dry runs: ' + error.message)
-
-  const runs = (data ?? []) as { run_date: string; charged: number }[]
-  if (runs.length === 0) {
-    return { ok: false, reason: 'No dry run has completed yet. Set the mode to dry run and let a full cycle pass.' }
-  }
-  const earliest = runs[0].run_date
-  const needed = oneMonthBefore(today)
-  if (earliest > needed) {
-    return {
-      ok: false,
-      reason:
-        'The dry run has only covered ' + earliest + ' to ' + today +
-        '. A full cycle is one month; live is available from ' + oneMonthAfter(earliest) + '.',
-    }
-  }
-  if (!runs.some((r) => Number(r.charged) > 0)) {
-    return {
-      ok: false,
-      reason: 'No completed dry run has reached a charge date yet, so nothing has been previewed as charged.',
-    }
-  }
-  return { ok: true }
-}
-
-function shiftMonth(ymd: string, by: number): string {
-  const [y, m, d] = ymd.split('-').map(Number)
-  const t = new Date(y, m - 1 + by, 1)
-  const last = new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return t.getFullYear() + '-' + pad(t.getMonth() + 1) + '-' + pad(Math.min(d, last))
-}
-const oneMonthBefore = (ymd: string) => shiftMonth(ymd, -1)
-const oneMonthAfter = (ymd: string) => shiftMonth(ymd, 1)
-
 function round2(n: number): number {
   return Math.round(n * 100) / 100
 }
