@@ -89,6 +89,15 @@ const PAYMENTS = [
   { legacyPaymentId: 19213, legacyCustomerId: 191,  ispmanCustomerId: 1733, amount: 3500, paidOn: '2026-09-16', method: 'cash', agent: 'Jillian Brissitte', userId: 161 },
   { legacyPaymentId: 19215, legacyCustomerId: 2247, ispmanCustomerId: 2003, amount: 3500, paidOn: '2026-09-22', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
   { legacyPaymentId: 19216, legacyCustomerId: 1749, ispmanCustomerId: 1874, amount: 3500, paidOn: '2026-09-22', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
+  // Added 2026-09-29 at the owner's request: six of the seven left in legacy on 25 Sep, whose
+  // customers still read J$3,500 owing in ISPMan for a month they paid for. The seventh,
+  // #19204 Kamar Campbell, is still left in legacy. Legacy agent 87 is Michelle Bennett.
+  { legacyPaymentId: 19205, legacyCustomerId: 2233, ispmanCustomerId: 1991, amount: 3500, paidOn: '2026-09-10', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
+  { legacyPaymentId: 19206, legacyCustomerId: 607,  ispmanCustomerId: 1774, amount: 3500, paidOn: '2026-09-10', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
+  { legacyPaymentId: 19209, legacyCustomerId: 1357, ispmanCustomerId: 1815, amount: 3500, paidOn: '2026-09-11', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
+  { legacyPaymentId: 19210, legacyCustomerId: 1967, ispmanCustomerId: 1922, amount: 3500, paidOn: '2026-09-12', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
+  { legacyPaymentId: 19211, legacyCustomerId: 2272, ispmanCustomerId: 2026, amount: 3500, paidOn: '2026-09-14', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
+  { legacyPaymentId: 19212, legacyCustomerId: 2022, ispmanCustomerId: 1936, amount: 3500, paidOn: '2026-09-14', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
 ]
 
 // --- Shapes shared with the app, restated here because a script cannot import TypeScript ---
