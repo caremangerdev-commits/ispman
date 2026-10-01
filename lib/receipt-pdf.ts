@@ -27,6 +27,12 @@ const MARGIN_X = (PAGE_WIDTH - 32 * CHAR_WIDTH) / 2
 const MARGIN_Y = 14
 
 /**
+ * Room under the last baseline: Courier-Bold's deepest glyph reaches 2.5pt
+ * below it at this size. The page ends there and not a line lower.
+ */
+const DESCENT = 3
+
+/**
  * Escapes a string for a PDF literal.
  *
  * Backslash first, or the escapes this adds get escaped in turn. Anything
@@ -49,12 +55,18 @@ export function pdfString(text: string): string {
 /**
  * Builds the PDF for a rendered receipt.
  *
- * The page grows with the content — `@page { size: 80mm auto }` in the print
- * stylesheet does the same thing, and a receipt should never be padded out to
- * a fixed sheet.
+ * The page is as tall as the content and no taller — the printed page is sized
+ * the same way (lib/receipt-page.ts), and a receipt should never be padded out
+ * to a fixed sheet. It ends under the last line that prints: there is no
+ * bottom margin and no minimum height, because on a thermal printer either one
+ * is blank paper fed after the receipt.
  */
 export function receiptPdf(lines: string[]): Uint8Array {
-  const pageHeight = Math.max(120, lines.length * LINE_HEIGHT + MARGIN_Y * 2)
+  // The last line with ink on it. Trailing blanks would only be feed.
+  let last = lines.length - 1
+  while (last > 0 && !lines[last].trim()) last--
+
+  const pageHeight = MARGIN_Y + FONT_SIZE + Math.max(last, 0) * LINE_HEIGHT + DESCENT
 
   // Text runs top-down; PDF's origin is bottom-left, so the first line sits a
   // full line-height below the top edge.

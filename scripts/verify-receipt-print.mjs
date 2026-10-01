@@ -2,16 +2,26 @@
 // the real ancestor chain, prints it through headless Chrome and Edge, and
 // reads font, weight, stroke and glyph extents back out of the PDFs.
 //
+// It also ASSERTS the page: one page, 80mm wide, exactly as tall as the
+// receipt. A second page or a page longer than the content is paper fed after
+// the last line, and the run exits 1.
+//
 //   node scripts/verify-receipt-print.mjs <label>
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { inflateSync } from 'node:zlib'
 import postcss from 'postcss'
 import tailwind from '@tailwindcss/postcss'
 
+// The real page rule, not a copy of it: the same function the modal renders.
+import { receiptPageCss, receiptPageHeightMm } from '../lib/receipt-page.ts'
+
 const label = process.argv[2] ?? 'run'
-const OUT = 'C:/Users/wcnetja/AppData/Local/Temp/claude/c--Users-wcnetja-Documents-ispman/28f68db1-a1cd-457b-914b-23cfa3914a32/scratchpad/print/' + label
+const OUT = tmpdir().split('\\').join('/') + '/ispman-receipt-print/' + label
 mkdirSync(OUT, { recursive: true })
+
+const failures = []
 
 // --- 1. the real CSS, through the real pipeline ---------------------------------
 const cssSource = readFileSync('app/globals.css', 'utf8')
@@ -40,13 +50,16 @@ const lines = [
   'Thank you for your business'.padEnd(W),
   'MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM',
 ]
-const html = `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head>
-<body class="bg-gray-950">
-<div class="min-h-screen"><aside class="fixed w-64"></aside><main class="ml-64 pt-16"><div class="p-6">
+// html and body carry what app/layout.tsx gives them, and the shell its
+// `min-h-screen` — the three things that could hold a page open.
+const html = `<!doctype html><html class="h-full antialiased"><head><meta charset="utf-8"><style>${css}</style></head>
+<body class="min-h-full flex flex-col">
+<div class="min-h-screen bg-gray-950"><aside class="fixed w-64"></aside><main class="ml-64 pt-16"><div class="p-6">
 <table><tbody><tr><td class="px-4 py-2.5"><div class="overflow-x-auto">
 <div class="receipt-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog">
 <div class="max-h-full w-full max-w-sm overflow-y-auto rounded-xl border border-gray-800 bg-gray-900 shadow-2xl">
 <div class="p-5"><div class="overflow-x-auto rounded-lg bg-white p-4">
+<style>${receiptPageCss(lines.length)}</style>
 <pre class="receipt-print whitespace-pre font-mono text-[13px] leading-[1.45] text-black">${lines.join('\n')}</pre>
 </div></div></div></div></div></td></tr></tbody></table></div></main></div></body></html>`
 const fixture = OUT + '/fixture.html'
@@ -67,6 +80,12 @@ for (const [name, exe] of Object.entries(browsers)) {
   report(name, readFileSync(pdf))
 }
 
+if (failures.length) {
+  for (const f of failures) console.error('FAIL ' + f)
+  process.exit(1)
+}
+console.log('[' + label + '] page OK: one page, 80mm wide, ' + receiptPageHeightMm(lines.length).toFixed(1) + 'mm for ' + lines.length + ' lines')
+
 // --- 4. read the PDF back ----------------------------------------------------------
 function report(name, buf) {
   const raw = buf.toString('latin1')
@@ -85,6 +104,15 @@ function report(name, buf) {
   const mb = /\/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(raw)
   const pageW = mb ? Number(mb[3]) - Number(mb[1]) : NaN
   const pageH = mb ? Number(mb[4]) - Number(mb[2]) : NaN
+
+  // The page itself. Chrome snaps a page to whole CSS pixels, so the sizes are
+  // compared to within a pixel (0.26mm) rather than exactly.
+  const pages = (raw.match(/\/Type\s*\/Page(?!s)/g) ?? []).length
+  const toMm = (pt) => (pt / 72) * 25.4
+  const wantH = receiptPageHeightMm(lines.length)
+  if (pages !== 1) failures.push(name + ': ' + pages + ' pages, expected 1')
+  if (!(Math.abs(toMm(pageW) - 80) <= 0.3)) failures.push(name + ': page is ' + toMm(pageW).toFixed(2) + 'mm wide, expected 80')
+  if (!(Math.abs(toMm(pageH) - wantH) <= 0.3)) failures.push(name + ': page is ' + toMm(pageH).toFixed(2) + 'mm tall, expected ' + wantH.toFixed(1))
 
   // Walk text: track Tm, Td, Tf, Tr, w and every Tj/TJ advance. Courier New
   // (either weight) advances 600/1000 em per glyph, which is what makes the

@@ -36,9 +36,19 @@ body {
    height from the driver, and the driver reports a roll as its whole length —
    "Printer2 80(72.1) x 3276". Both browsers then laid the document out on a
    3276mm page: Firefox shrank the receipt to fit and printed it postage-stamp
-   sized in the corner, and Chrome gave up with "Print preview failed". A fixed
-   200mm page ends that. A receipt longer than 200mm simply flows onto a second
-   page, which on a continuous roll is just more paper.
+   sized in the corner, and Chrome gave up with "Print preview failed". (`80mm
+   auto` is not valid CSS at all — the declaration is dropped, which is how the
+   driver's page got in.)
+
+   THAT HEIGHT IS THE RECEIPT'S OWN. A fixed 200mm page ended the 3276mm one
+   but fed 200mm of paper for an 80mm receipt. The receipt modal now writes its
+   own `@page` after this stylesheet, sized from its line count
+   (lib/receipt-page.ts), and the 200mm below is only what is left if that rule
+   is ever absent.
+
+   NOTHING HOLDS THE PAGE OPEN. `min-h-full` on body and `min-h-screen` on the
+   dashboard shell both ask for a full page however short the receipt is, and
+   body is a flex column. All three are cleared for print.
 
    NOTHING OUTSIDE THE RECEIPT IS LAID OUT AT ALL. This used to hide the app
    with `visibility: hidden`, which stops it painting but NOT from taking up
@@ -56,15 +66,21 @@ body {
    --------------------------------------------------------------------------- */
 @media print {
   @page {
-    /* Explicit height. Never `auto` — see above. */
+    /* Explicit height. Never `auto` — see above. The fallback only: the
+       receipt modal overrides it with the receipt's own height. */
     size: 80mm 200mm;
     margin: 0;
   }
 
   html,
   body {
+    /* Plain blocks with no floor: body is `min-h-full flex flex-col` on
+       screen, and a flex column a page tall is a page however little is in
+       it. */
+    display: block;
     width: 80mm;
     height: auto;
+    min-height: 0;
     margin: 0;
     padding: 0;
     background: #fff;
@@ -123,6 +139,9 @@ body {
     overflow: visible !important;
     width: auto !important;
     height: auto !important;
+    /* `min-h-screen` on the dashboard shell is one of these ancestors, and
+       100vh in print is a whole page. */
+    min-height: 0 !important;
     max-width: none !important;
     max-height: none !important;
     margin: 0 !important;
@@ -147,8 +166,10 @@ body {
 
      NOT absolutely positioned. An absolutely positioned box does not paginate
      — a long receipt would be clipped at the page edge rather than continuing
-     onto the next one, which is exactly what the fixed page height needs it to
-     do. */
+     onto the next one, which is what the fallback page height needs it to do.
+
+     The 2mm top margin and the 13pt line (10pt x 1.3) are the two figures
+     lib/receipt-page.ts computes the page height from. Change them there too. */
   .receipt-print {
     display: block !important;
     position: static !important;

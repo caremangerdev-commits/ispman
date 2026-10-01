@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react'
 
 import { loadReceipt } from '@/app/actions/receipts'
 import { renderReceipt, type Receipt } from '@/lib/receipt'
+import { receiptPageCss } from '@/lib/receipt-page'
 import { receiptFilename, receiptPdf } from '@/lib/receipt-pdf'
 
 /**
@@ -18,12 +19,20 @@ import { receiptFilename, receiptPdf } from '@/lib/receipt-pdf'
  *
  * `receipt-print` is the hook the print stylesheet uses to make this the only
  * thing on the page (app/globals.css).
+ *
+ * The `<style>` beside it sizes the printed page to this receipt's own line
+ * count, so the paper stops at the last line — see lib/receipt-page.ts.
  */
 function ReceiptBody({ receipt }: { receipt: Receipt }) {
+  const lines = renderReceipt(receipt)
+
   return (
-    <pre className="receipt-print whitespace-pre font-mono text-[13px] leading-[1.45] text-black">
-      {renderReceipt(receipt).join('\n')}
-    </pre>
+    <>
+      <style>{receiptPageCss(lines.length)}</style>
+      <pre className="receipt-print whitespace-pre font-mono text-[13px] leading-[1.45] text-black">
+        {lines.join('\n')}
+      </pre>
+    </>
   )
 }
 
