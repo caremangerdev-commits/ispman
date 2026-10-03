@@ -11,8 +11,8 @@ import {
 } from '@/lib/billing'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
 import { instantToDateOnly, paymentInstant } from '@/lib/format'
-import { getExpiryTime, getFirstPeriodRules } from '@/lib/data/company'
-import { withExpiryTime } from '@/lib/radius/format'
+import { getExpiryClock, getFirstPeriodRules } from '@/lib/data/company'
+import { applyExpiryClock } from '@/lib/radius/format'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
 import { getChargesById, listOpenCharges, type OpenCharge } from '@/lib/data/charges'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
@@ -1205,7 +1205,7 @@ export async function recordPayment(
       const result = await applyRadiusWrite(
         'extend',
         identity,
-        withExpiryTime(newExpiry, await getExpiryTime(company.id))
+        applyExpiryClock(newExpiry, await getExpiryClock(company.id))
       )
 
       if (result.ok) {

@@ -120,16 +120,24 @@ export function formatRadiusExpiration(date: Date): string {
 }
 
 /**
- * The time of day a company's expiries are written at, as the RADIUS machine's
- * own wall clock, "HH:MM". `settings.expiry_time` (migration 0026).
+ * WHEN A COMPANY'S ACCESS ENDS ON THE EXPIRY DAY.
  *
- * radcheck holds wall-clock text with no zone and FreeRADIUS reads it on the
- * NAS box's clock, which is UTC (checked 2026-10-03: MySQL there reports
- * now() = utc_timestamp()). So a company that wants access to end at 8:00 AM
- * Jamaica time (UTC-5, no daylight saving) stores "13:00". The default,
- * "00:00", is what every company had before the setting existed.
+ * `settings.expiry_time` (migration 0026) is a time of day on the COMPANY'S OWN
+ * clock, in `settings.timezone` - "08:00" means 8:00 AM where the company is.
+ * It is converted here to the one thing radcheck can hold.
+ *
+ * radcheck stores wall-clock text with no zone, and FreeRADIUS reads it on the
+ * NAS box's clock. That clock is UTC (checked 2026-10-03: MySQL there reports
+ * now() = utc_timestamp(), and one radcheck table serves every company). So
+ * 8:00 AM Jamaica (UTC-5, no daylight saving) is written "13:00". A company in
+ * another zone, or one that observes daylight saving, gets its own hour, worked
+ * out for the expiry date itself rather than assumed. The RADIUS clock being UTC
+ * is built into applyExpiryClock below; if the NAS box ever moves zone, that is
+ * the one function to change.
  */
-export const DEFAULT_EXPIRY_TIME = '00:00'
+
+/** A company's expiry time and the zone it is measured in. */
+export type ExpiryClock = { time: string; timeZone: string }
 
 /** "HH:MM" -> [hours, minutes], or null when it is not a valid 24-hour time. */
 export function parseExpiryTime(value: string | null | undefined): [number, number] | null {
@@ -142,20 +150,55 @@ export function parseExpiryTime(value: string | null | undefined): [number, numb
   return [hours, minutes]
 }
 
+/** Minutes the zone is ahead of UTC at `at` (Jamaica is -300). */
+function zoneOffsetMinutes(timeZone: string, at: Date): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(at)
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value)
+  const asUtc = Date.UTC(
+    get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')
+  )
+  return Math.round((asUtc - at.getTime()) / 60_000)
+}
+
 /**
- * The same calendar day as `date`, at the company's expiry time.
+ * `date`'s calendar day at the company's expiry time, as the wall-clock fields
+ * the RADIUS machine should read.
  *
  * The expiry arithmetic (lib/expiry.ts, lib/billing.ts) works in whole days at
  * midnight and must keep doing so; this is applied once, at the last step
- * before a value is written to radcheck. An unreadable time leaves the date
- * untouched rather than guessing.
+ * before a value is written to radcheck.
+ *
+ * The result is a Date whose LOCAL getters carry the RADIUS clock's fields,
+ * because formatRadiusExpiration prints local getters - it is a carrier for
+ * "13:00 on 8 Oct", not an instant. An unreadable time or zone leaves the date
+ * untouched (midnight, as before) rather than guessing.
  */
-export function withExpiryTime(date: Date, time: string | null | undefined): Date {
-  const parsed = parseExpiryTime(time)
+export function applyExpiryClock(date: Date, clock: ExpiryClock | null): Date {
+  if (!clock) return date
+  const parsed = parseExpiryTime(clock.time)
   if (!parsed) return date
-  const next = new Date(date.getTime())
-  next.setHours(parsed[0], parsed[1], 0, 0)
-  return next
+
+  try {
+    // The company's wall time for that day, taken as if it were UTC, then
+    // corrected by the zone's offset at that moment. Offset is read again at the
+    // corrected instant so a daylight-saving change on the day cannot skew it.
+    const naive = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), parsed[0], parsed[1])
+    let instant = naive - zoneOffsetMinutes(clock.timeZone, new Date(naive)) * 60_000
+    instant = naive - zoneOffsetMinutes(clock.timeZone, new Date(instant)) * 60_000
+
+    const at = new Date(instant)
+    return new Date(
+      at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate(), at.getUTCHours(), at.getUTCMinutes()
+    )
+  } catch {
+    // An unknown time zone name throws RangeError from Intl.
+    return date
+  }
 }
 
 /** Parses "05 Sep 2026 23:06" back into a Date. Returns null if malformed. */

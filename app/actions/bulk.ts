@@ -12,7 +12,7 @@ import { can } from '@/lib/permissions'
 import { getSession, type Session } from '@/lib/session'
 import { STATUS_LABELS } from '@/lib/status'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { getExpiryTime, getGeneralSettings } from '@/lib/data/company'
+import { getExpiryClock, getGeneralSettings } from '@/lib/data/company'
 import {
   bulkCustomerName, countAllCustomers, findProvisioned, getProvisionPlan,
   readCustomersByIds, readBillableByIds, readBillableCustomers,
@@ -23,7 +23,7 @@ import { activateInRadius, radiusConfigured } from '@/lib/radius-db'
 import { usernameKey } from '@/lib/radius/format'
 import { serviceStateFor } from '@/lib/radius/service-state'
 import { isEngineLive } from '@/lib/data/billing-engine'
-import { formatRadiusExpiration, radiusIdentity, withExpiryTime } from '@/lib/radius/format'
+import { applyExpiryClock, formatRadiusExpiration, radiusIdentity } from '@/lib/radius/format'
 import {
   applyCredit, billRunVerdict, type BillRunVerdict, type BillScope,
 } from '@/lib/billing'
@@ -367,7 +367,7 @@ export async function provisionBatch(input: {
   const anchor = todayAnchor()
   // Read once for the whole batch, and BEFORE any radcheck write: a failed
   // lookup must stop the run, not provision half of it at midnight.
-  const expiryTime = await getExpiryTime(company.id)
+  const expiryClock = await getExpiryClock(company.id)
   const customers = await readCustomersByIds(company.id, input.ids)
   const byId = new Map(customers.map((c) => [c.id, c]))
 
@@ -444,7 +444,7 @@ export async function provisionBatch(input: {
       // an Auth-Type := Accept row.
       await activateInRadius(
         target.identity,
-        formatRadiusExpiration(withExpiryTime(target.expiry, expiryTime))
+        formatRadiusExpiration(applyExpiryClock(target.expiry, expiryClock))
       )
       outcomes.push({
         id: target.id,
