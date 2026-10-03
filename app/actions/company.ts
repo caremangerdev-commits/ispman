@@ -36,11 +36,43 @@ function numInRange(fd: FormData, k: string, lo: number, hi: number) {
 }
 
 /**
- * Saves the general settings.
+ * Writes a patch to the company's `settings` row, creating the row if there is
+ * none. 0007 guarantees one per company, but the settings pages must still work
+ * before that migration runs.
+ *
+ * Shared by both settings forms. Each one patches ONLY its own columns, so
+ * saving General Settings never touches a billing field and saving Billing never
+ * touches a general one.
+ */
+async function writeSettings(
+  companyId: number,
+  patch: Record<string, unknown>
+): Promise<string | null> {
+  const db = tenantClient()
+
+  const { data: existing } = await db
+    .from('settings')
+    .select('id')
+    .eq('company_id', companyId)
+    .maybeSingle()
+
+  const { error } = existing
+    ? await db.from('settings').update(patch).eq('company_id', companyId)
+    : await db.from('settings').insert({ ...patch, company_id: companyId })
+
+  return error ? error.message : null
+}
+
+/**
+ * Saves the general settings: who the company is, where it is, and its network.
  *
  * Company identity lives on `companies`, everything else on `settings`, so
  * this writes both. Restricted to company_admin — managers may edit the
  * catalogue but not the company record.
+ *
+ * Billing fields are NOT here any more — see saveBillingSettings. They moved to
+ * Settings > Billing on 2026-10-03 and the validation and the columns written
+ * moved with them unchanged.
  */
 export async function saveCompanyProfile(
   _prev: CompanyResult | null,
@@ -79,6 +111,86 @@ export async function saveCompanyProfile(
     return { ok: false, error: 'Choose a supported date format.' }
   }
 
+  const warning = intInRange(formData, 'expiry_warning_days', 1, 14)
+  if (caps.generalSettings && Number.isNaN(warning)) {
+    return { ok: false, error: 'Expiry warning must be 1 to 14 days.' }
+  }
+
+  const db = tenantClient()
+
+  const { error: companyError } = await db
+    .from('companies')
+    .update({
+      name,
+      email: email || null,
+      phone: str(formData, 'phone') || null,
+      address: str(formData, 'address') || null,
+    })
+    .eq('id', company.id)
+
+  if (companyError) return { ok: false, error: 'Could not save company: ' + companyError.message }
+
+  const patch: Record<string, unknown> = {
+    currency,
+    timezone,
+    sms_enabled: bool(formData, 'sms_enabled'),
+    email_enabled: bool(formData, 'email_enabled'),
+  }
+
+  // Only write the 0007 columns once they exist; PostgREST rejects the whole
+  // update otherwise.
+  if (caps.generalSettings) {
+    patch.date_format = dateFormat
+    patch.expiry_warning_days = warning ?? 3
+    patch.ddns_hostname = str(formData, 'ddns_hostname') || null
+    patch.radius_secret = str(formData, 'radius_secret') || null
+  }
+
+  if (caps.taxId) {
+    // Uppercased and length-checked here rather than trusted from the select:
+    // a server action is a public POST endpoint and the CHECK constraint in
+    // 0019 would otherwise reject the whole save with a raw database error.
+    const country = str(formData, 'country').toUpperCase()
+    patch.country = /^[A-Z]{2}$/.test(country) ? country : null
+    patch.tax_id_label = str(formData, 'tax_id_label').slice(0, 40) || null
+  }
+
+  if (caps.accountNumbers) {
+    // Normalised to what can be read aloud — see normalisePrefix. Changing it
+    // renames nothing already issued; it applies to numbers taken from here on.
+    patch.account_number_prefix = normalisePrefix(str(formData, 'account_number_prefix'))
+  }
+
+  const settingsError = await writeSettings(company.id, patch)
+  if (settingsError) {
+    return { ok: false, error: 'Company saved but settings failed: ' + settingsError }
+  }
+
+  revalidatePath('/dashboard/settings/company')
+  revalidatePath('/dashboard')
+  return { ok: true }
+}
+
+/**
+ * Saves the billing settings: the billing model and engine, bill and cut-off
+ * days, grace, first-period rules, tax, the default rate and the thresholds.
+ *
+ * The same fields, validated by the same rules and written to the same columns
+ * as when they lived in General Settings; only the form they are posted from
+ * changed. Same permission as the general settings.
+ */
+export async function saveBillingSettings(
+  _prev: CompanyResult | null,
+  formData: FormData
+): Promise<CompanyResult> {
+  const { company, profile } = await getSession()
+
+  if (!can(profile.role, 'manage_company_settings')) {
+    throw new Error('Forbidden: role "' + profile.role + '" cannot edit company settings.')
+  }
+
+  const caps = await getSchemaCapabilities()
+
   const cutOff = intInRange(formData, 'cut_off_date', 1, 28)
   const billDate = intInRange(formData, 'bill_date', 1, 28)
   if (Number.isNaN(cutOff) || Number.isNaN(billDate)) {
@@ -100,11 +212,6 @@ export async function saveCompanyProfile(
     return { ok: false, error: 'Default monthly rate must be zero or more.' }
   }
 
-  const warning = intInRange(formData, 'expiry_warning_days', 1, 14)
-  if (caps.generalSettings && Number.isNaN(warning)) {
-    return { ok: false, error: 'Expiry warning must be 1 to 14 days.' }
-  }
-
   // Ranges mirror the CHECK constraints in migration 0012, so a value the form
   // accepts is always a value the column will take.
   const lateCredit = intInRange(formData, 'late_credit_threshold', 0, 90)
@@ -123,27 +230,9 @@ export async function saveCompanyProfile(
     }
   }
 
-  const db = tenantClient()
-
-  const { error: companyError } = await db
-    .from('companies')
-    .update({
-      name,
-      email: email || null,
-      phone: str(formData, 'phone') || null,
-      address: str(formData, 'address') || null,
-    })
-    .eq('id', company.id)
-
-  if (companyError) return { ok: false, error: 'Could not save company: ' + companyError.message }
-
   const patch: Record<string, unknown> = {
-    currency,
-    timezone,
     cut_off_date: cutOff,
     bill_date: billDate,
-    sms_enabled: bool(formData, 'sms_enabled'),
-    email_enabled: bool(formData, 'email_enabled'),
   }
 
   if (caps.expiryMode) {
@@ -153,12 +242,8 @@ export async function saveCompanyProfile(
   // Only write the 0007 columns once they exist; PostgREST rejects the whole
   // update otherwise.
   if (caps.generalSettings) {
-    patch.date_format = dateFormat
     patch.grace_period_days = grace ?? 0
     patch.tax_rate = tax ?? 0
-    patch.expiry_warning_days = warning ?? 3
-    patch.ddns_hostname = str(formData, 'ddns_hostname') || null
-    patch.radius_secret = str(formData, 'radius_secret') || null
   }
 
   if (caps.defaultMonthlyRate) {
@@ -205,38 +290,12 @@ export async function saveCompanyProfile(
     patch.prorata_first_payment_enabled = bool(formData, 'prorata_first_payment_enabled')
   }
 
-  if (caps.taxId) {
-    // Uppercased and length-checked here rather than trusted from the select:
-    // a server action is a public POST endpoint and the CHECK constraint in
-    // 0019 would otherwise reject the whole save with a raw database error.
-    const country = str(formData, 'country').toUpperCase()
-    patch.country = /^[A-Z]{2}$/.test(country) ? country : null
-    patch.tax_id_label = str(formData, 'tax_id_label').slice(0, 40) || null
-  }
-
-  if (caps.accountNumbers) {
-    // Normalised to what can be read aloud — see normalisePrefix. Changing it
-    // renames nothing already issued; it applies to numbers taken from here on.
-    patch.account_number_prefix = normalisePrefix(str(formData, 'account_number_prefix'))
-  }
-
-  // 0007 guarantees a settings row per company, but this page must still work
-  // before that migration runs.
-  const { data: existing } = await db
-    .from('settings')
-    .select('id')
-    .eq('company_id', company.id)
-    .maybeSingle()
-
-  const { error: settingsError } = existing
-    ? await db.from('settings').update(patch).eq('company_id', company.id)
-    : await db.from('settings').insert({ ...patch, company_id: company.id })
-
+  const settingsError = await writeSettings(company.id, patch)
   if (settingsError) {
-    return { ok: false, error: 'Company saved but settings failed: ' + settingsError.message }
+    return { ok: false, error: 'Could not save billing settings: ' + settingsError }
   }
 
-  revalidatePath('/dashboard/settings/company')
+  revalidatePath('/dashboard/settings/billing')
   revalidatePath('/dashboard')
   return { ok: true }
 }

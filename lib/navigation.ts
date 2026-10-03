@@ -119,6 +119,7 @@ const TITLES: { match: RegExp; title: string }[] = [
   // which one it is — the left-hand nav shows the active section, but the
   // title above it should not disagree with it.
   { match: /^\/dashboard\/settings\/company$/, title: 'General Settings' },
+  { match: /^\/dashboard\/settings\/billing$/, title: 'Billing' },
   { match: /^\/dashboard\/settings\/service-plans$/, title: 'Service Plans' },
   { match: /^\/dashboard\/settings\/additional-services$/, title: 'Additional Services' },
   { match: /^\/dashboard\/settings\/misc-categories$/, title: 'Misc Categories' },

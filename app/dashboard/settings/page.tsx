@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import {
-  Building2, Gauge, MessageSquare, Package, Tags, UserCog, Users, type LucideIcon,
+  Building2, Gauge, MessageSquare, Package, Receipt, Tags, UserCog, Users, type LucideIcon,
 } from 'lucide-react'
 
 import { CATALOG_HINT, getSchemaCapabilities } from '@/lib/schema'
@@ -12,6 +12,7 @@ import { visibleSettings, type SettingsIcon } from '@/lib/settings-nav'
 export const metadata: Metadata = { title: 'Settings · ISPMan' }
 
 const ICONS: Record<SettingsIcon, LucideIcon> = {
+  receipt: Receipt,
   building: Building2,
   gauge: Gauge,
   package: Package,
@@ -52,6 +53,7 @@ async function counts(companyId: number, hasCatalog: boolean) {
     'additional-services': addons,
     'misc-categories': misc,
     company: null as number | null,
+    billing: null as number | null,
   } as Record<string, number | null>
 }
 

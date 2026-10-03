@@ -667,7 +667,7 @@ export function proportionalDate(opts: {
  * the 28th and corrected by hand. Grace is not part of the billing model —
  * the daily engine never reads it (docs/billing-engine.md), provisioning never
  * added it, and the cut-off day is the day access ends. The column and the
- * General Settings field still exist; nothing on the expiry path reads them.
+ * Billing settings field still exist; nothing on the expiry path reads them.
  *
  * nextCutOff clamps a day longer than the target month, so a cut-off of 31 lands
  * on 30 September rather than rolling into October. Falls back to whole months

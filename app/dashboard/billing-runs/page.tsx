@@ -97,7 +97,7 @@ export default async function BillingRunsPage() {
             </p>
           </div>
           <Link
-            href="/dashboard/settings/company"
+            href="/dashboard/settings/billing"
             className="rounded-lg bg-gray-800 px-3 py-1.5 text-xs font-semibold text-gray-300 transition hover:bg-gray-700"
           >
             Settings

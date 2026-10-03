@@ -8,7 +8,6 @@ import {
   CURRENCIES, DATE_FORMATS, getGeneralSettings, TIMEZONES,
 } from '@/lib/data/company'
 import { getMessagingSettings } from '@/lib/data/sms'
-import { currencySymbol } from '@/lib/format'
 import { GENERAL_SETTINGS_HINT, getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { canOpenSetting } from '@/lib/settings-nav'
@@ -58,15 +57,15 @@ export default async function GeneralSettingsPage() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-500">
-        Profile, regional, billing and network defaults for {company.name}.
+        Profile, regional and network settings for {company.name}. Billing has its own page.
       </p>
 
       {!caps.generalSettings ? (
         <div className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-4 py-3">
           <p className="text-sm font-semibold text-amber-300">Migration 0007 not applied</p>
           <p className="mt-1 text-xs leading-relaxed text-amber-300/80">
-            Date format, grace period, tax rate, expiry warning, DDNS hostname and network
-            secret are disabled until their columns exist. {GENERAL_SETTINGS_HINT}
+            Date format, expiry warning, DDNS hostname and network secret are disabled until
+            their columns exist. {GENERAL_SETTINGS_HINT}
           </p>
         </div>
       ) : null}
@@ -76,15 +75,9 @@ export default async function GeneralSettingsPage() {
         currencies={CURRENCIES}
         timezones={TIMEZONES}
         dateFormats={DATE_FORMATS}
-        expiryModeAvailable={caps.expiryMode}
         generalAvailable={caps.generalSettings}
-        defaultRateAvailable={caps.defaultMonthlyRate}
-        thresholdsAvailable={caps.billingThresholds}
-        firstPeriodAvailable={caps.firstPeriod}
         taxIdAvailable={caps.taxId}
         accountNumbersAvailable={caps.accountNumbers}
-        billingEngineAvailable={caps.billingEngine}
-        currencySymbol={currencySymbol(settings.currency)}
       />
 
       <BrandingCard

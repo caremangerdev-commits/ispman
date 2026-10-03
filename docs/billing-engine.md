@@ -55,8 +55,9 @@ The old settings column goes on being ignored.
 
 ## Per-company controls
 
-General Settings → Billing Defaults → Billing Model & Engine. Company admin
-only, like the rest of that page.
+Settings → Billing → Billing Model & Engine. Company admin only, like the
+rest of that page. (These fields were under General Settings → Billing
+Defaults until 2026-10-03.)
 
 - **Billing model.** Postpaid: the calendar month, charged on the company's
   bill day while the month runs. Prepaid: each customer's bill date to the

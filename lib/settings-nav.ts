@@ -1,7 +1,7 @@
 import { can, type Permission, type Role } from '@/lib/permissions'
 
 export type SettingsIcon =
-  | 'building' | 'gauge' | 'package' | 'tags' | 'users' | 'userCog' | 'messageSquare'
+  | 'building' | 'gauge' | 'package' | 'tags' | 'users' | 'userCog' | 'messageSquare' | 'receipt'
 
 export type SettingsSection = {
   key: string
@@ -26,7 +26,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: 'General Settings',
     href: '/dashboard/settings/company',
     icon: 'building',
-    description: 'Company profile, regional, billing and network defaults.',
+    description: 'Company profile, branding, regional and network settings.',
+    permission: 'manage_company_settings',
+  },
+  {
+    key: 'billing',
+    label: 'Billing',
+    href: '/dashboard/settings/billing',
+    icon: 'receipt',
+    description: 'Billing model and engine, bill and cut-off days, first period, tax, rates and thresholds.',
     permission: 'manage_company_settings',
   },
   {

@@ -3,13 +3,14 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-  ArrowLeft, Building2, Gauge, MessageSquare, Package, Tags, UserCog, Users,
+  ArrowLeft, Building2, Gauge, MessageSquare, Package, Receipt, Tags, UserCog, Users,
   type LucideIcon,
 } from 'lucide-react'
 
 import type { SettingsIcon, SettingsSection } from '@/lib/settings-nav'
 
 const ICONS: Record<SettingsIcon, LucideIcon> = {
+  receipt: Receipt,
   building: Building2,
   gauge: Gauge,
   package: Package,
