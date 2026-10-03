@@ -11,7 +11,8 @@ import {
 } from '@/lib/billing'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
 import { instantToDateOnly, paymentInstant } from '@/lib/format'
-import { getFirstPeriodRules } from '@/lib/data/company'
+import { getExpiryTime, getFirstPeriodRules } from '@/lib/data/company'
+import { withExpiryTime } from '@/lib/radius/format'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
 import { getChargesById, listOpenCharges, type OpenCharge } from '@/lib/data/charges'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
@@ -1198,7 +1199,14 @@ export async function recordPayment(
       // extendInRadius still refuses to move an expiry backwards. A cashier who
       // picks a date earlier than the customer already holds lands here and is
       // told so — the guard is not relaxed for partial payments.
-      const result = await applyRadiusWrite('extend', identity, newExpiry)
+      //
+      // The company's expiry time goes on at this last step; the walk above works
+      // in whole days at midnight and stays that way.
+      const result = await applyRadiusWrite(
+        'extend',
+        identity,
+        withExpiryTime(newExpiry, await getExpiryTime(company.id))
+      )
 
       if (result.ok) {
         networkExtended = true

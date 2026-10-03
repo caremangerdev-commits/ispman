@@ -185,7 +185,8 @@ export async function applyRadiusWrite(
  * A radcheck Expiration value ("05 Sep 2026 23:06") as a plain date.
  *
  * The log is read by people, and the time of day on an expiry is noise: every
- * expiry this app writes is either midnight or the moment of a disconnect.
+ * expiry this app writes is the company's expiry time (settings.expiry_time,
+ * midnight by default) or the moment of a disconnect.
  */
 function isoDay(value: string | null): string {
   const parsed = parseRadiusExpiration(value)

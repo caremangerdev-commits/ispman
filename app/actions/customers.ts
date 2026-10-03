@@ -16,7 +16,8 @@ import {
 import { formatCurrency } from '@/lib/format'
 import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
-import { getFirstPeriodRules } from '@/lib/data/company'
+import { getExpiryTime, getFirstPeriodRules } from '@/lib/data/company'
+import { withExpiryTime } from '@/lib/radius/format'
 import { getSchemaCapabilities } from '@/lib/schema'
 import {
   ACTION_EVENT_TYPE, applyRadiusWrite, networkEventDetails, networkFailureDetails,
@@ -860,7 +861,15 @@ async function runNetworkAction(opts: {
   if (typeof expiry === 'string') toast(back, expiry, 'error')
 
   // --- 1. radcheck ---------------------------------------------------------
-  const result = await applyRadiusWrite(action, target.identity, expiry ?? undefined)
+  //
+  // The date arrives at midnight; the company's expiry time is put on it here,
+  // at the last step, so the arithmetic upstream stays in whole days. Disconnect
+  // writes the current moment and is left alone.
+  const expiryAt =
+    expiry && action !== 'disconnect'
+      ? withExpiryTime(expiry, await getExpiryTime(company.id))
+      : expiry
+  const result = await applyRadiusWrite(action, target.identity, expiryAt ?? undefined)
 
   if (!result.ok) {
     await logNetworkEvent({

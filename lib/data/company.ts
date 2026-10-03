@@ -4,6 +4,7 @@ import {
   toCompanyBillingType, toEngineMode, type CompanyBillingType, type EngineMode,
 } from '@/lib/billing-engine'
 import { toExpiryMode, type ExpiryMode } from '@/lib/types'
+import { DEFAULT_EXPIRY_TIME, parseExpiryTime } from '@/lib/radius/format'
 
 /** Caribbean currencies this platform bills in. */
 export const CURRENCIES = ['JMD', 'USD', 'TTD', 'BBD', 'GYD', 'XCD'] as const
@@ -181,6 +182,36 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
     ddnsHostname: s?.ddns_hostname ?? null,
     radiusSecret: s?.radius_secret ?? null,
   }
+}
+
+/**
+ * The time of day this company's expiries are written at, "HH:MM" on the RADIUS
+ * machine's clock (see lib/radius/format.ts#DEFAULT_EXPIRY_TIME).
+ *
+ * `settings.expiry_time` is migration 0026. Until it is applied, and for any
+ * company that never set it, this is "00:00" — exactly what was written before
+ * the column existed — so deploying the code ahead of the migration changes
+ * nothing. Read on every expiry write rather than cached: it is one indexed
+ * lookup on a path that already makes several, and a changed setting must
+ * apply to the very next payment.
+ */
+export async function getExpiryTime(companyId: number): Promise<string> {
+  const { data, error } = await tenantClient()
+    .from('settings')
+    .select('expiry_time')
+    .eq('company_id', companyId)
+    .maybeSingle()
+
+  // 42703 = the column does not exist yet. Anything else is a real failure, and
+  // silently falling back to midnight would write the wrong time for a company
+  // that has set one — so it throws and the write is refused.
+  if (error) {
+    if (error.code === '42703') return DEFAULT_EXPIRY_TIME
+    throw new Error('Failed to load the expiry time: ' + error.message)
+  }
+
+  const value = (data as { expiry_time?: string | null } | null)?.expiry_time
+  return parseExpiryTime(value) ? (value as string) : DEFAULT_EXPIRY_TIME
 }
 
 /**

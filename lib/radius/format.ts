@@ -119,6 +119,45 @@ export function formatRadiusExpiration(date: Date): string {
   )
 }
 
+/**
+ * The time of day a company's expiries are written at, as the RADIUS machine's
+ * own wall clock, "HH:MM". `settings.expiry_time` (migration 0026).
+ *
+ * radcheck holds wall-clock text with no zone and FreeRADIUS reads it on the
+ * NAS box's clock, which is UTC (checked 2026-10-03: MySQL there reports
+ * now() = utc_timestamp()). So a company that wants access to end at 8:00 AM
+ * Jamaica time (UTC-5, no daylight saving) stores "13:00". The default,
+ * "00:00", is what every company had before the setting existed.
+ */
+export const DEFAULT_EXPIRY_TIME = '00:00'
+
+/** "HH:MM" -> [hours, minutes], or null when it is not a valid 24-hour time. */
+export function parseExpiryTime(value: string | null | undefined): [number, number] | null {
+  const parts = (value ?? '').trim().split(':')
+  if (parts.length !== 2) return null
+  const hours = Number(parts[0])
+  const minutes = Number(parts[1])
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null
+  return [hours, minutes]
+}
+
+/**
+ * The same calendar day as `date`, at the company's expiry time.
+ *
+ * The expiry arithmetic (lib/expiry.ts, lib/billing.ts) works in whole days at
+ * midnight and must keep doing so; this is applied once, at the last step
+ * before a value is written to radcheck. An unreadable time leaves the date
+ * untouched rather than guessing.
+ */
+export function withExpiryTime(date: Date, time: string | null | undefined): Date {
+  const parsed = parseExpiryTime(time)
+  if (!parsed) return date
+  const next = new Date(date.getTime())
+  next.setHours(parsed[0], parsed[1], 0, 0)
+  return next
+}
+
 /** Parses "05 Sep 2026 23:06" back into a Date. Returns null if malformed. */
 export function parseRadiusExpiration(value: string | null): Date | null {
   if (!value) return null

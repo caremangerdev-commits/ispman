@@ -12,7 +12,7 @@ import { can } from '@/lib/permissions'
 import { getSession, type Session } from '@/lib/session'
 import { STATUS_LABELS } from '@/lib/status'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { getGeneralSettings } from '@/lib/data/company'
+import { getExpiryTime, getGeneralSettings } from '@/lib/data/company'
 import {
   bulkCustomerName, countAllCustomers, findProvisioned, getProvisionPlan,
   readCustomersByIds, readBillableByIds, readBillableCustomers,
@@ -23,7 +23,7 @@ import { activateInRadius, radiusConfigured } from '@/lib/radius-db'
 import { usernameKey } from '@/lib/radius/format'
 import { serviceStateFor } from '@/lib/radius/service-state'
 import { isEngineLive } from '@/lib/data/billing-engine'
-import { formatRadiusExpiration, radiusIdentity } from '@/lib/radius/format'
+import { formatRadiusExpiration, radiusIdentity, withExpiryTime } from '@/lib/radius/format'
 import {
   applyCredit, billRunVerdict, type BillRunVerdict, type BillScope,
 } from '@/lib/billing'
@@ -365,6 +365,9 @@ export async function provisionBatch(input: {
     choice.mode === 'per_cut_off' ? (await getGeneralSettings(company.id)).cutOffDate : null
 
   const anchor = todayAnchor()
+  // Read once for the whole batch, and BEFORE any radcheck write: a failed
+  // lookup must stop the run, not provision half of it at midnight.
+  const expiryTime = await getExpiryTime(company.id)
   const customers = await readCustomersByIds(company.id, input.ids)
   const byId = new Map(customers.map((c) => [c.id, c]))
 
@@ -439,7 +442,10 @@ export async function provisionBatch(input: {
       // transaction, clearing any prior rows first. Not extendInRadius, which
       // only ever touches Expiration and would leave these customers without
       // an Auth-Type := Accept row.
-      await activateInRadius(target.identity, formatRadiusExpiration(target.expiry))
+      await activateInRadius(
+        target.identity,
+        formatRadiusExpiration(withExpiryTime(target.expiry, expiryTime))
+      )
       outcomes.push({
         id: target.id,
         name: target.name,
