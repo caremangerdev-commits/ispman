@@ -57,7 +57,7 @@ export default async function GeneralSettingsPage() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-500">
-        Profile, regional and network settings for {company.name}. Billing has its own page.
+        Profile, regional and network settings for {company.name}.
       </p>
 
       {!caps.generalSettings ? (
