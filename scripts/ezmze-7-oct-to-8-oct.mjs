@@ -75,11 +75,18 @@ const db = createClient(need('NEXT_PUBLIC_SUPABASE_URL'), need('SUPABASE_SERVICE
 })
 
 const COMPANY = 27 // Ezmze
-const CUT_OFF = 8
-const FROM = '07 Oct 2026 00:00'
-const TO = '08 Oct 2026 00:00'
+// Defaults are the original 7 Oct -> 8 Oct run; --cut=15 --from=14 --to=15 is the second.
+// Only an expiry holding EXACTLY the --from value is matched, so lapsed customers
+// (whose expiry is in the past) are never in a run.
+const CUT_OFF = Number(arg('cut') ?? 8)
+const dayText = (n) => String(n).padStart(2, '0') + ' Oct 2026 00:00'
+const FROM_DAY = Number(arg('from') ?? 7)
+const TO_DAY = Number(arg('to') ?? 8)
+const FROM = dayText(FROM_DAY)
+const TO = dayText(TO_DAY)
 const RUN_ID = randomUUID()
-const REASON = 'Expiry sat one day before the cut-off day of 8, so a month paid bought one day; set to the cut-off day'
+const REASON =
+  'Expiry sat one day before the cut-off day of ' + CUT_OFF + ', so a month paid bought one day; set to the cut-off day'
 
 async function main() {
   const my = await mysql.createConnection({
@@ -150,7 +157,7 @@ async function main() {
       type: 'network_extend',
       correlation_id: RUN_ID,
       details:
-        'Access extended for ' + p.identity + '. Expiry 2026-10-07 -> 2026-10-08. By ' + actor.email +
+        'Access extended for ' + p.identity + '. Expiry 2026-10-' + String(FROM_DAY).padStart(2, '0') + ' -> 2026-10-' + String(TO_DAY).padStart(2, '0') + '. By ' + actor.email +
         ' | reason=' + REASON + ' | run=' + RUN_ID,
     })
     if (logErr) console.log(tag + 'radcheck moved, but the log row failed: ' + logErr.message)
