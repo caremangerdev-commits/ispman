@@ -31,8 +31,10 @@
  *   3. The expiry is LIVE: later than now on the RADIUS clock.
  *   4. The expiry's day is the cut-off day. It then moves to that day at the
  *      company's 8:00 AM.
- *   FORWARD ONLY. A row already holding a later time that day is left alone and
- *   printed, so nobody loses service they hold.
+ *   A row already holding a LATER time that day is PULLED BACK to 8:00 AM, on
+ *   the owner's instruction (2026-10-03). That is hours, never a day, and it is
+ *   logged as network_expiry_corrected rather than network_extend. The dry run
+ *   counts forward and backward moves apart.
  *
  * ONE CUSTOMER CHANGES CUT-OFF DAY, named and not derived: Ezmze #1720 (cut-off
  * 14, holds 14 Oct) is put on the 15th on the owner's instruction (2026-10-03):
@@ -41,9 +43,9 @@
  * LEFT UNTOUCHED, counted per company so the numbers are visible
  *   - lapsed customers (expiry not later than now);
  *   - live customers whose expiry day is NOT their cut-off day. Their dates were
- *     set by hand or by a legacy till, and moving them onto the cut-off day is
- *     free service of up to a month, which is a separate decision from the time
- *     of day. They keep their stored time as well;
+ *     set by hand or by a legacy till, and some are extensions someone granted
+ *     on purpose (owner, 2026-10-03), so neither their day nor their time is
+ *     touched;
  *   - customers with no cut-off day or no radcheck expiry.
  *
  * WHAT --apply WRITES, per READY row
@@ -227,15 +229,19 @@ async function main() {
       company: c.company_id, id: c.id, name, username: rows[0].username, movesCutOff,
       from: rows[0].value, fromYmd: ymd(held.y, held.m, held.d), to: target.text, toYmd: target.ymd,
     }
-    if (target.at < held.at) { s.later++; plan.push({ ...row, status: 'SKIPPED', why: 'already later (' + rows[0].value + '); left alone' }); continue }
     if (target.at === held.at) { s.same++; continue }
-    s.ready++
-    plan.push({ ...row, status: 'READY' })
+    // A held time LATER than 8:00 AM that day is pulled back to it - the owner's
+    // instruction (2026-10-03). It is the same calendar day, so the customer
+    // loses hours, never a day; logged as a correction, not an extension.
+    const back = target.at < held.at
+    if (back) s.later++
+    else s.ready++
+    plan.push({ ...row, back, status: 'READY' })
   }
 
   for (const [id, s] of [...stats.entries()].sort((a, b) => a[0] - b[0])) {
     console.log(String(id).padStart(3) + ' ' + (nameOf.get(id) ?? '?').padEnd(36) + ' tz=' + zoneOf.get(id) +
-      '  READY ' + s.ready + '  already there ' + s.same + '  later-kept ' + s.later +
+      '  READY forward ' + s.ready + ', pulled back ' + s.later + '  already there ' + s.same +
       '  | untouched: lapsed ' + s.lapsed + ', off cut-off day ' + s.offDay +
       ', no cut-off ' + s.noCut + ', no expiry ' + s.noExpiry + ', duplicate rows ' + s.multi)
   }
@@ -250,7 +256,8 @@ async function main() {
   for (const p of plan.filter((x) => x.status === 'SKIPPED')) {
     console.log('SKIPPED | ' + p.company + ' #' + p.id + ' ' + p.name + ' | ' + p.why)
   }
-  console.log('\nREADY ' + ready.length + '   SKIPPED ' + (plan.length - ready.length) +
+  console.log('\nREADY ' + ready.length + ' (forward ' + ready.filter((p) => !p.back).length +
+    ', pulled back to 8:00 AM the same day ' + ready.filter((p) => p.back).length + ')' +
     '   live but off their cut-off day (left alone) ' + offDay.length)
   const moving = ready.find((p) => p.movesCutOff)
   console.log(moving
@@ -286,11 +293,21 @@ async function main() {
       }
     }
     const { error: logErr } = await db.from('log').insert({
-      company_id: p.company, user_id: actor.id, customer_id: p.id,
-      type: 'network_extend', correlation_id: RUN_ID,
-      details:
-        'Access extended for ' + p.username + '. Expiry ' + p.fromYmd + ' -> ' + p.toYmd +
-        '. By ' + actor.email + ' | reason=' + REASON + ' | run=' + RUN_ID,
+      company_id: p.company, user_id: actor.id, customer_id: p.id, correlation_id: RUN_ID,
+      ...(p.back
+        ? {
+            type: 'network_expiry_corrected',
+            details:
+              'Expiry corrected for ' + p.username + '. Expiry ' + p.fromYmd + ' -> ' + p.toYmd +
+              '. By ' + actor.email + ' | reason=' + REASON + ' (was ' + p.from + ', now ' + p.to +
+              ' RADIUS clock) | run=' + RUN_ID,
+          }
+        : {
+            type: 'network_extend',
+            details:
+              'Access extended for ' + p.username + '. Expiry ' + p.fromYmd + ' -> ' + p.toYmd +
+              '. By ' + actor.email + ' | reason=' + REASON + ' | run=' + RUN_ID,
+          }),
     })
     if (logErr) console.log(tag + 'radcheck moved, but the log row failed: ' + logErr.message)
     done += 1
