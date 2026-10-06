@@ -15,6 +15,10 @@
 
 # next.js
 /.next/
+# deploy.sh: .next becomes a symlink to the live build slot, and the slots are
+# .next-a / .next-b (plus .next-previous after the first switch-over).
+/.next
+/.next-*/
 /out/
 
 # production

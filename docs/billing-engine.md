@@ -17,9 +17,9 @@ renames a column the old code's schema probe selects.
 ```sh
 # 1. CODE. Pull, build, restart the app. Nothing changes yet: the engine's
 #    probe reads "not applied" and every control stays hidden.
-git pull
-npm run build
-pm2 restart ispman --update-env
+#    Since 6 Oct 2026 use deploy.sh, never a bare `npm run build`: building in
+#    place deletes the running app's CSS/JS mid-build and takes the site down.
+./deploy.sh
 
 # 2. MIGRATION. Paste supabase/migrations/0024_billing_engine.sql into the
 #    Supabase SQL editor and run it. Then the verify queries at its foot.

@@ -2,6 +2,17 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /**
+   * Where `next build` writes. `.next` unless NEXT_DIST_DIR says otherwise.
+   *
+   * deploy.sh builds into `.next-staging` so the build never touches the
+   * `.next` the running app is serving from, then swaps the folders only once
+   * the build has succeeded. Building in place deletes the live app's CSS and
+   * JS mid-build — that is what took the site down on 6 Oct 2026. Nothing else
+   * sets this, so `next dev`, `next start` and a plain `npm run build` behave
+   * exactly as before.
+   */
+  distDir: process.env.NEXT_DIST_DIR || ".next",
+  /**
    * mysql2 must not be bundled.
    *
    * It builds protocol commands with dynamic requires and code generation; when
