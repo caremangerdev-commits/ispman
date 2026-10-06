@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { createPortal, useFormStatus } from 'react-dom'
 
 import { adjustCarriedBalance } from '@/app/actions/customers'
-import { formatCurrency } from '@/lib/format'
+import { formatCurrencyExact } from '@/lib/format'
 import { Modal } from '@/components/settings/Modal'
 
 function ConfirmButton() {
@@ -48,8 +48,8 @@ export function AdjustBalanceModal({
   const [reason, setReason] = useState('')
 
   const parsed = Number(value)
-  // Negative is allowed: it means the customer is IN CREDIT. The server stores
-  // it as nothing owed plus that much account credit (adjustCarriedBalance).
+  // Negative is allowed: the customer is owed money. Saved as typed, to the
+  // cent (adjustCarriedBalance; needs migration 0027).
   const valid = value !== '' && Number.isFinite(parsed)
   const unchanged = valid && Math.round(parsed * 100) === Math.round(currentBalance * 100)
   const ready = valid && !unchanged && reason.trim() !== ''
@@ -81,8 +81,7 @@ export function AdjustBalanceModal({
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-xs text-gray-500">Current balance</span>
                   <span className={'font-mono ' + (currentBalance < 0 ? 'text-emerald-400' : 'text-gray-300')}>
-                    {formatCurrency(currentBalance)}
-                    {currentBalance < 0 ? ' (in credit)' : ''}
+                    {formatCurrencyExact(currentBalance)}
                   </span>
                 </div>
               </div>
@@ -108,27 +107,21 @@ export function AdjustBalanceModal({
                 />
                 {!valid ? (
                   <p role="alert" className="text-xs text-red-400">
-                    Enter an amount. Use a minus sign for credit, e.g. -2000.
+                    Enter an amount. A negative amount is allowed, e.g. -2000.
                   </p>
                 ) : unchanged ? (
                   <p role="alert" className="text-xs text-red-400">
                     That is already the balance — nothing to adjust.
                   </p>
-                ) : parsed < 0 ? (
-                  <p className="text-xs text-emerald-400/90">
-                    Nothing will be owed, and {formatCurrency(-parsed)} will be held as credit.
-                    The next bill uses it up before charging anything.
-                  </p>
                 ) : (
                   <p className="text-xs text-gray-500">
-                    {delta > 0
-                      ? formatCurrency(delta) + ' more will be owed.'
-                      : formatCurrency(-delta) + ' less will be owed.'}
-                    {currentBalance < 0 ? ' Their credit is cleared.' : ''}
+                    New balance {formatCurrencyExact(parsed)}
+                    {' '}({delta > 0 ? '+' : '-'}{formatCurrencyExact(Math.abs(delta))}).
+                    {parsed < 0 ? ' The customer will be owed money; the next bill is taken from it first.' : ''}
                   </p>
                 )}
                 <p className="text-[11px] text-gray-600">
-                  A negative balance means the customer is in credit.
+                  Negative balances are allowed. Saved exactly as typed, to the cent.
                 </p>
               </div>
 

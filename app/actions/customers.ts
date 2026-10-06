@@ -13,7 +13,7 @@ import {
   safeValue, sameValue,
   type FieldChange,
 } from '@/lib/customer-changes'
-import { formatCurrency } from '@/lib/format'
+import { formatCurrencyExact } from '@/lib/format'
 import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
 import { getExpiryClock, getFirstPeriodRules } from '@/lib/data/company'
@@ -1109,9 +1109,9 @@ export async function disconnectCustomer(formData: FormData) {
  * which is permanently, because every later charge and payment is applied on
  * top of the adjusted figure rather than replacing it.
  *
- * A NEGATIVE BALANCE IS CREDIT. It is accepted and stored as carried_balance 0
- * plus account_credit, never as a negative column (see below). Refuses a no-op
- * so the log does not fill with rows that changed nothing.
+ * A NEGATIVE BALANCE IS ALLOWED (migration 0027): the customer is owed money.
+ * Stored as typed, to the cent. Refuses a no-op so the log does not fill with
+ * rows that changed nothing.
  */
 export async function adjustCarriedBalance(formData: FormData) {
   const { company, profile } = await authorize('adjust_carried_balance')
@@ -1130,17 +1130,11 @@ export async function adjustCarriedBalance(formData: FormData) {
   if (!reason) toast(back, 'A reason is required to adjust a carried balance.', 'error')
   if (reason.length > 500) toast(back, 'Keep the reason under 500 characters.', 'error')
 
-  // THE BALANCE TYPED IS THE CUSTOMER'S NET POSITION: what they owe less what
-  // they hold in credit. NEGATIVE MEANS IN CREDIT (allowed since 6 Oct 2026).
-  //
-  // It is stored the way the rest of billing already understands, never as a
-  // negative number: customers_carried_balance_check and _account_credit_check
-  // (migration 0011) keep both columns at zero or more, and every calculation
-  // on the payment path (amountDue, settledMonths, isPartialPayment) relies on
-  // that. So a negative figure becomes carried_balance 0 plus that much
-  // account_credit, which the next bill run or engine charge draws down before
-  // adding anything (lib/billing.ts#applyCredit). A positive figure is owed, and
-  // clears any credit: the operator stated the whole position.
+  // NEGATIVE IS ALLOWED (owner, 6 Oct 2026): the customer is owed money. It is
+  // written to carried_balance as typed — migration 0027 drops the >= 0 CHECK —
+  // and to the cent, never rounded. Until 0027 is applied the database refuses
+  // a negative figure and the error below says so; nothing is changed.
+  // account_credit is not touched.
   const next = numOrNull(formData, 'balance')
   if (next === null) toast(back, 'Enter the corrected balance.', 'error')
   if (Math.abs(next) > 99_999_999.99) toast(back, 'That balance is too large.', 'error')
@@ -1148,7 +1142,7 @@ export async function adjustCarriedBalance(formData: FormData) {
   const db = tenantClient()
   const { data } = await db
     .from('customers')
-    .select('first_name, last_name, carried_balance, account_credit')
+    .select('first_name, last_name, carried_balance')
     .eq('company_id', company.id)
     .eq('id', id)
     .maybeSingle()
@@ -1157,55 +1151,47 @@ export async function adjustCarriedBalance(formData: FormData) {
     first_name: string | null
     last_name: string | null
     carried_balance: number | string | null
-    account_credit: number | string | null
   } | null
 
   if (!row) toast(back, 'That customer could not be found.', 'error')
 
   const fullName =
     [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Customer #' + id
-  const round2 = (n: number) => Math.round(n * 100) / 100
-  const carriedBefore = Number(row.carried_balance ?? 0)
-  const creditBefore = Number(row.account_credit ?? 0)
-  const before = round2(carriedBefore - creditBefore)
-  const after = round2(next)
-  const carriedAfter = Math.max(0, after)
-  const creditAfter = Math.max(0, -after)
+  const before = Number(row.carried_balance ?? 0)
+  const after = Math.round(next * 100) / 100
 
-  if (carriedBefore === carriedAfter && creditBefore === creditAfter) {
-    toast(back, fullName + ': the balance is already ' + formatCurrency(after) + '.', 'error')
+  if (before === after) {
+    toast(back, fullName + ': the balance is already ' + formatCurrencyExact(after) + '.', 'error')
   }
 
   const { error: updateError } = await db
     .from('customers')
-    .update({ carried_balance: carriedAfter, account_credit: creditAfter })
+    .update({ carried_balance: after })
     .eq('company_id', company.id)
     .eq('id', id)
 
   if (updateError) {
-    toast(back, 'Could not adjust the balance: ' + updateError.message, 'error')
+    const blockedByCheck = after < 0 && /carried_balance_check/.test(updateError.message)
+    toast(
+      back,
+      blockedByCheck
+        ? 'A negative balance needs migration 0027 applied first. Nothing was changed.'
+        : 'Could not adjust the balance: ' + updateError.message,
+      'error'
+    )
   }
 
   // Written AFTER the update, like every other audit row in this app: the
   // change is what the operator asked for, and a failed log write must not undo
   // it. logEvent never throws (lib/audit.ts).
-  //
-  // old= and new= are the NET figures (negative = in credit). The two stored
-  // columns ride along whenever credit is involved, so the row says exactly
-  // what was written.
-  const creditInvolved = creditBefore > 0 || creditAfter > 0
   await logEvent({
     customerId: id,
     type: BALANCE_ADJUSTED,
     tag: '[billing]',
     details:
       'Carried balance adjusted for ' + fullName +
-      ' | old=' + formatCurrency(before) +
-      ' | new=' + formatCurrency(after) +
-      (creditInvolved
-        ? ' | owed=' + formatCurrency(carriedBefore) + ' -> ' + formatCurrency(carriedAfter) +
-          ' | credit=' + formatCurrency(creditBefore) + ' -> ' + formatCurrency(creditAfter)
-        : '') +
+      ' | old=' + formatCurrencyExact(before) +
+      ' | new=' + formatCurrencyExact(after) +
       ' | by=' + profile.email +
       ' | reason=' + reason,
   })
@@ -1216,8 +1202,8 @@ export async function adjustCarriedBalance(formData: FormData) {
 
   toast(
     back,
-    fullName + ': balance adjusted from ' + formatCurrency(before) +
-    ' to ' + formatCurrency(after) + '.'
+    fullName + ': balance adjusted from ' + formatCurrencyExact(before) +
+    ' to ' + formatCurrencyExact(after) + '.'
   )
 }
 

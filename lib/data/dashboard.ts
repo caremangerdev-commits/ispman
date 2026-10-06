@@ -107,9 +107,14 @@ const num = (v: unknown) => {
  * showed nothing.
  *
  * NOT the sum of the two columns, and never was. See lib/billing.ts.
+ *
+ * NEVER BELOW ZERO. Since migration 0027 a balance may be negative — the
+ * customer is owed money — and that is not money owed TO the company, so it
+ * must not shrink Outstanding Balance. Same rule as lib/customer-filter.ts
+ * #amountOwing.
  */
 function amountOwed(c: Customer): number {
-  return num(c.carried_balance)
+  return Math.max(0, num(c.carried_balance))
 }
 
 export async function getDashboardData(companyId: number): Promise<DashboardData> {

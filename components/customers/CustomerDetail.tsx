@@ -20,7 +20,9 @@ import { StatusBadge } from '@/components/customers/StatusBadge'
 import { GpsField } from '@/components/ui/GpsField'
 import { GpsLink } from '@/components/ui/GpsLink'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
-import { daysUntilDateOnly, formatCurrency, formatDateOnly, timeAgo } from '@/lib/format'
+import {
+  daysUntilDateOnly, formatCurrency, formatCurrencyExact, formatDateOnly, timeAgo,
+} from '@/lib/format'
 import { can, type Role } from '@/lib/permissions'
 import { ChannelOptOut, SmsOptOut } from '@/components/customers/SmsOptOut'
 // From format.ts, not client.ts: this is a client component and client.ts
@@ -281,12 +283,11 @@ export function CustomerDetail({
   // does not exist and balance is the only figure there is.
   const owed = c.billingAvailable ? c.carried_balance : Number(c.balance ?? 0)
 
-  // THE BALANCE SHOWN IS THE NET POSITION: owed less credit held. Negative means
-  // the customer is in credit — which an admin can now set by hand (Adjust
-  // Balance accepts a negative figure). Credit was never shown here before, so a
-  // customer holding it read as a plain J$0.
+  // Prepaid money held for the next charge (account_credit). Shown beside the
+  // balance, never folded into it: the balance is carried_balance exactly as
+  // stored, which may now be negative (migration 0027) when the customer is
+  // owed money.
   const credit = c.billingAvailable ? Number(c.account_credit ?? 0) : 0
-  const netBalance = Math.round((owed - credit) * 100) / 100
 
   // The four network actions. Each is CSR-or-above and applies to a distinct
   // set of statuses, so at most two are ever offered at once. The server action
@@ -744,14 +745,18 @@ export function CustomerDetail({
             label="Balance"
             value={
               <span className="inline-flex items-center gap-2">
+                {/* To the cent, never rounded, and negative when the customer is
+                    owed money. */}
                 <span
-                  className={
-                    netBalance > 0 ? 'text-orange-400' : netBalance < 0 ? 'text-emerald-400' : 'text-gray-200'
-                  }
+                  className={owed > 0 ? 'text-orange-400' : owed < 0 ? 'text-emerald-400' : 'text-gray-200'}
                 >
-                  {formatCurrency(netBalance)}
-                  {netBalance < 0 ? ' in credit' : ''}
+                  {formatCurrencyExact(owed)}
                 </span>
+                {credit > 0 ? (
+                  <span className="text-[11px] text-gray-500">
+                    + {formatCurrencyExact(credit)} credit
+                  </span>
+                ) : null}
 
                 {/* NEVER SILENT. A balance someone typed must not look like one
                     the bill run produced. The mark is permanent by design: a
@@ -773,7 +778,7 @@ export function CustomerDetail({
                   <AdjustBalanceModal
                     customerId={c.id}
                     customerName={name}
-                    currentBalance={netBalance}
+                    currentBalance={owed}
                   />
                 ) : null}
               </span>

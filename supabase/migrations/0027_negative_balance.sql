@@ -1,0 +1,31 @@
+-- ISPMan: a customer's carried balance may be negative.
+--
+-- RUN THIS IN THE SUPABASE SQL EDITOR. Safe before or after the code: until it
+-- runs, saving a negative balance in Adjust Balance is refused by the database
+-- with an error and nothing changes.
+--
+-- WHAT THIS DOES. Drops customers_carried_balance_check (migration 0011), so an
+-- admin can set a balance below zero — the customer is owed money / in credit.
+-- The owner asked for this on 6 Oct 2026: the negative figure is the balance
+-- itself, not converted to account_credit.
+--
+-- WHY THE BILLING MATHS IS ALREADY SAFE WITH IT
+--   - A bill run or the engine ADDS its charge to the balance
+--     (lib/billing.ts#applyCredit): -2,000 plus a 5,000 charge leaves 3,000.
+--   - A payment against a negative balance owes nothing, so every dollar of it
+--     plus the negative amount counts towards months and is held as credit
+--     (lib/billing.ts#prepaymentCredit); the net position is preserved.
+--   - Correcting or deleting a payment no longer clamps the balance at zero
+--     (app/actions/payments.ts).
+--   - The dashboard's "outstanding" counts only money actually owed.
+--
+-- account_credit keeps its own >= 0 CHECK; nothing here touches it.
+
+ALTER TABLE public.customers DROP CONSTRAINT IF EXISTS customers_carried_balance_check;
+
+-- ---------------------------------------------------------------------------
+-- Verify afterwards. Expected results in comments.
+-- ---------------------------------------------------------------------------
+--   SELECT conname FROM pg_constraint
+--    WHERE conrelid = 'public.customers'::regclass AND conname LIKE '%carried_balance%';
+--     -> no rows

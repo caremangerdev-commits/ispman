@@ -1675,9 +1675,11 @@ async function adjustCarriedBalance(
   const current = Number(
     (data as unknown as { carried_balance: number | string | null }).carried_balance ?? 0
   )
+  // NOT clamped at zero since migration 0027: a balance may be negative (the
+  // customer is owed money), and clamping would silently erase that amount.
   await db
     .from('customers')
-    .update({ carried_balance: Math.max(0, current + delta) })
+    .update({ carried_balance: Math.round((current + delta) * 100) / 100 })
     .eq('company_id', companyId)
     .eq('id', customerId)
 }
@@ -1764,8 +1766,9 @@ async function restateBalances(opts: {
   const currentCarried = Number(row.carried_balance ?? 0)
   const currentCredit = billing ? Number(row.account_credit ?? 0) : 0
 
-  // Clamped at zero to match customers_carried_balance_check (migration 0011).
-  const carriedBase = Math.max(0, round2(currentCarried + carriedDelta))
+  // Not clamped at zero: since migration 0027 a balance may be negative (the
+  // customer is owed money), and clamping would silently erase that amount.
+  const carriedBase = round2(currentCarried + carriedDelta)
 
   const settled =
     creditDelta < 0

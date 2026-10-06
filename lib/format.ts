@@ -49,6 +49,21 @@ export function formatCurrency(value: number | string | null | undefined): strin
   return (safe < 0 ? '-' : '') + SYMBOL + digits
 }
 
+/**
+ * Money to the cent, never rounded: "J$4,966.67", "-J$2,000.00".
+ *
+ * For a balance someone is reading or setting by hand, where formatCurrency's
+ * whole dollars would hide what is actually stored (J$0.67 printed as J$1).
+ */
+export function formatCurrencyExact(value: number | string | null | undefined): string {
+  const n = Number(value ?? 0)
+  const safe = Number.isFinite(n) ? n : 0
+  const digits = new Intl.NumberFormat(LOCALE, {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(Math.abs(safe))
+  return (safe < 0 ? '-' : '') + SYMBOL + digits
+}
+
 /** Compact form for chart axes: "J$120k". */
 export function formatCompactCurrency(value: number): string {
   if (Math.abs(value) >= 1000) return SYMBOL + Math.round(value / 1000) + 'k'
