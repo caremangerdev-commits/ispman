@@ -23,12 +23,23 @@
 const LINE_HEIGHT_PT = 13
 const TOP_MARGIN_MM = 2
 
+/**
+ * NEVER SHORTER THAN IT IS WIDE. A page wider than it is tall IS landscape to
+ * every browser and printer driver, which then turns the receipt sideways on
+ * the roll. At 13pt a line, anything under 17 lines came out shorter than its
+ * 80mm width and printed horizontally (reported 6 Oct 2026). So the height is
+ * the content's, with a floor 1mm above the width: a short receipt feeds a
+ * little blank paper at the foot, and every receipt prints upright.
+ */
+export const RECEIPT_WIDTH_MM = 80
+export const RECEIPT_MIN_HEIGHT_MM = RECEIPT_WIDTH_MM + 1
+
 /** Page height for a receipt of `lineCount` lines, in mm. */
 export function receiptPageHeightMm(lineCount: number): number {
   const mm = (Math.max(lineCount, 1) * LINE_HEIGHT_PT * 25.4) / 72 + TOP_MARGIN_MM
   // Rounded UP to a tenth of a millimetre. Rounded down, the last line is a
   // hair taller than the page and becomes a second page of its own.
-  return Math.ceil(mm * 10) / 10
+  return Math.max(RECEIPT_MIN_HEIGHT_MM, Math.ceil(mm * 10) / 10)
 }
 
 /**
@@ -38,5 +49,5 @@ export function receiptPageHeightMm(lineCount: number): number {
  * size in app/globals.css. The width is that rule's 80mm, unchanged.
  */
 export function receiptPageCss(lineCount: number): string {
-  return `@media print { @page { size: 80mm ${receiptPageHeightMm(lineCount).toFixed(1)}mm; margin: 0; } }`
+  return `@media print { @page { size: ${RECEIPT_WIDTH_MM}mm ${receiptPageHeightMm(lineCount).toFixed(1)}mm; margin: 0; } }`
 }

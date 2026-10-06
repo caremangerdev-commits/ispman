@@ -2,11 +2,13 @@
 // the real ancestor chain, prints it through headless Chrome and Edge, and
 // reads font, weight, stroke and glyph extents back out of the PDFs.
 //
-// It also ASSERTS the page: one page, 80mm wide, exactly as tall as the
-// receipt. A second page or a page longer than the content is paper fed after
-// the last line, and the run exits 1.
+// It also ASSERTS the page: one page, 80mm wide, as tall as the receipt and
+// never shorter than it is wide. A second page, a page longer than it needs to
+// be, or a LANDSCAPE page (it prints sideways) and the run exits 1.
 //
-//   node scripts/verify-receipt-print.mjs <label>
+//   node scripts/verify-receipt-print.mjs <label>            the 18-line receipt
+//   node scripts/verify-receipt-print.mjs <label> --short    an 8-line receipt,
+//                                                             the case that printed sideways
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -17,7 +19,8 @@ import tailwind from '@tailwindcss/postcss'
 // The real page rule, not a copy of it: the same function the modal renders.
 import { receiptPageCss, receiptPageHeightMm } from '../lib/receipt-page.ts'
 
-const label = process.argv[2] ?? 'run'
+const SHORT = process.argv.includes('--short')
+const label = process.argv.slice(2).find((a) => !a.startsWith('--')) ?? (SHORT ? 'short' : 'run')
 const OUT = tmpdir().split('\\').join('/') + '/ispman-receipt-print/' + label
 mkdirSync(OUT, { recursive: true })
 
@@ -50,6 +53,9 @@ const lines = [
   'Thank you for your business'.padEnd(W),
   'MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM',
 ]
+// Short enough that its content is far less than 80mm tall — the receipt that
+// printed sideways before the height floor.
+if (SHORT) lines.splice(8)
 // html and body carry what app/layout.tsx gives them, and the shell its
 // `min-h-screen` — the three things that could hold a page open.
 const html = `<!doctype html><html class="h-full antialiased"><head><meta charset="utf-8"><style>${css}</style></head>
@@ -113,6 +119,7 @@ function report(name, buf) {
   if (pages !== 1) failures.push(name + ': ' + pages + ' pages, expected 1')
   if (!(Math.abs(toMm(pageW) - 80) <= 0.3)) failures.push(name + ': page is ' + toMm(pageW).toFixed(2) + 'mm wide, expected 80')
   if (!(Math.abs(toMm(pageH) - wantH) <= 0.3)) failures.push(name + ': page is ' + toMm(pageH).toFixed(2) + 'mm tall, expected ' + wantH.toFixed(1))
+  if (!(pageH > pageW)) failures.push(name + ': page is LANDSCAPE (' + toMm(pageW).toFixed(1) + ' x ' + toMm(pageH).toFixed(1) + 'mm) and prints sideways')
 
   // Walk text: track Tm, Td, Tf, Tr, w and every Tj/TJ advance. Courier New
   // (either weight) advances 600/1000 em per glyph, which is what makes the

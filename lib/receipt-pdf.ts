@@ -15,6 +15,9 @@
 /** 80mm in PostScript points (72 per inch). */
 const PAGE_WIDTH = (80 / 25.4) * 72 // 226.77
 
+/** 81mm: the shortest page that is still taller than it is wide (portrait). */
+const MIN_PAGE_HEIGHT = (81 / 25.4) * 72 // 229.61
+
 /**
  * 10pt Courier advances 6pt per character, so the 32-column receipt occupies
  * exactly 192pt and sits inside the paper with ~6mm of margin each side.
@@ -66,7 +69,14 @@ export function receiptPdf(lines: string[]): Uint8Array {
   let last = lines.length - 1
   while (last > 0 && !lines[last].trim()) last--
 
-  const pageHeight = MARGIN_Y + FONT_SIZE + Math.max(last, 0) * LINE_HEIGHT + DESCENT
+  // Never shorter than the page is wide, for the same reason as the printed
+  // page (lib/receipt-page.ts#RECEIPT_MIN_HEIGHT_MM): a PDF page wider than it
+  // is tall is landscape, and printing it turns the receipt sideways. The text
+  // is anchored to the top, so a short receipt gains blank space at the foot.
+  const pageHeight = Math.max(
+    MIN_PAGE_HEIGHT,
+    MARGIN_Y + FONT_SIZE + Math.max(last, 0) * LINE_HEIGHT + DESCENT
+  )
 
   // Text runs top-down; PDF's origin is bottom-left, so the first line sits a
   // full line-height below the top edge.
