@@ -5,7 +5,7 @@ import { redirect } from 'next/navigation'
 
 import {
   billingPeriod, carriedBalanceAfter, effectiveBillDay, firstPeriodCharge, firstPeriodDays,
-  firstPeriodDiscount, isPartialPayment, MAX_PREPAY_MONTHS, monthsCovered,
+  firstPaymentMonths, firstPeriodDiscount, isPartialPayment, monthsCovered,
   outstandingBalance, parseYmd, periodAlreadyGranted, periodCompletion, prepaymentCredit,
   proportionalDate, reverseCredit, serviceExpiry, ymd, type AccessDecision, type PriorGrant,
 } from '@/lib/billing'
@@ -816,10 +816,12 @@ export async function recordPayment(
 
   // MONTHS BOUGHT FORWARD, from the MONEY and never from the form's dropdown.
   //
-  // A FIRST PAYMENT BUYS NONE BY DEFAULT, and that is the whole difference.
-  // The customer already holds access to the end of the first period — that is
-  // what provisioning wrote and what they are now paying for — so settling it
-  // moves nothing. Only money BEYOND it buys anything further.
+  // A FIRST PAYMENT goes through firstPaymentMonths. The first period itself is
+  // never a month — the customer already holds it, provisioning wrote it — but
+  // a carried balance folded in beside it IS (the billing engine charged the
+  // month ahead before the first payment came in), and settling it counts the
+  // same as on any other payment. Plus a month per whole charge beyond all of
+  // it. Before 6 Oct 2026 the carried part bought nothing; see that function.
   //
   // Everybody else goes through monthsCovered: the month being settled, if
   // there is one, plus a month per whole charge beyond what was owed. That can
@@ -867,11 +869,13 @@ export async function recordPayment(
         })
       : null
 
-  const excess = Math.max(0, round2(paidAmount - due))
   const monthsPaid = firstPeriod
-    ? monthlyCharge > 0
-      ? Math.min(MAX_PREPAY_MONTHS, Math.floor(excess / monthlyCharge))
-      : 0
+    ? firstPaymentMonths({
+        carriedBalance: carriedBefore,
+        firstPeriodDue: firstPeriod.due,
+        monthlyCharge,
+        amountPaid: paidAmount,
+      })
     : monthsCovered(due, monthlyCharge, paidAmount, periodGranted)
 
   // A decision only means something for a payment that is actually short. One

@@ -518,6 +518,53 @@ export function monthsCovered(
 }
 
 /**
+ * How many months of ACCESS a FIRST payment buys (migration 0017).
+ *
+ * A first payment is owed two different things, and only one of them is a
+ * month:
+ *
+ *   - THE FIRST PERIOD, provisioning to the first expiry. The customer already
+ *     holds it — provisioning granted it without charging — so paying for it
+ *     moves nothing. It is never a month.
+ *   - THE CARRIED BALANCE, what a bill run or the billing engine charged before
+ *     the first payment came in. That is a month like any other, and settling
+ *     it buys the next one, exactly as monthsCovered counts it for everybody
+ *     else (settledMonths): any money towards it settles the month, and a short
+ *     payment goes through the same Full Period / Select Date choice.
+ *
+ * Plus a month per whole charge beyond EVERYTHING owed, as before.
+ *
+ * WHY THIS EXISTS. Until 6 October 2026 a first payment counted only the money
+ * beyond the whole amount due, so a carried balance folded into it was paid for
+ * and bought nothing. Ezmze's engine went live on 1 October and charged 42
+ * customers connected in September before their first payment; each was then
+ * asked for the engine's month AND the first period, and paying both still left
+ * them at their first expiry. Nadine Lewars (#1403) paid J$3,500 of J$7,466.67
+ * and was not extended.
+ *
+ * With nothing carried this is exactly the old rule, floor(excess / charge).
+ * The server (app/actions/payments.ts) and the till's preview
+ * (components/payments/RecordPaymentForm.tsx) both call this, so they cannot
+ * disagree.
+ */
+export function firstPaymentMonths(opts: {
+  carriedBalance: number
+  /** The first period's charge, net of any discount the cashier applied. */
+  firstPeriodDue: number
+  monthlyCharge: number
+  amountPaid: number
+}): number {
+  const charge = safe(opts.monthlyCharge)
+  const paid = safe(opts.amountPaid)
+  const settled = paid > 0 ? settledMonths(opts.carriedBalance) : 0
+  if (charge <= 0) return settled
+
+  const owed = round2(safe(opts.carriedBalance) + safe(opts.firstPeriodDue))
+  const extra = Math.floor(Math.max(0, round2(paid - owed)) / charge)
+  return Math.min(MAX_PREPAY_MONTHS, settled + extra)
+}
+
+/**
  * What a bill run's charge does against a standing credit.
  *
  * Credit is drawn down BEFORE anything is added to the carried balance, so a

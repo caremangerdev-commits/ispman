@@ -16,7 +16,7 @@ import type { SearchHit } from '@/app/api/search/route'
 import { StatusBadge } from '@/components/customers/StatusBadge'
 import {
   amountDue as computeAmountDue, amountDueForMonths, billingPeriod, billingPeriodLabel,
-  effectiveBillDay, isPartialPayment, MAX_PREPAY_MONTHS, monthsCovered, outstandingBalance, parseYmd,
+  effectiveBillDay, firstPaymentMonths, isPartialPayment, monthsCovered, outstandingBalance, parseYmd,
   periodAlreadyGranted, periodCompletion, prepaymentCredit, PREPAY_MONTH_OPTIONS,
   proportionalDate, serviceExpiry, ymd, type AccessDecision,
 } from '@/lib/billing'
@@ -625,18 +625,22 @@ export function RecordPaymentForm({
   // Priced off the MONEY, exactly as the server does it, so the preview and the
   // written expiry cannot disagree.
   //
-  // A first payment buys NO months forward on its own: the expiry it is paying
-  // for is the one the customer already holds. Only money beyond the period
-  // buys anything further, which is why this cannot go through monthsCovered.
-  // Everyone else does, and for them too the answer can be ZERO — nothing owed
-  // and less than a month's money, or a period that already has its month —
-  // which is previewed below as access unchanged.
+  // A first payment goes through firstPaymentMonths, the same function the
+  // server calls: the first period is never a month (the customer already holds
+  // it), but a carried balance beside it — the engine's month ahead — counts
+  // exactly as on any other payment. Everyone else goes through monthsCovered,
+  // and for them the answer can be ZERO — nothing owed and less than a month's
+  // money, or a period that already has its month — previewed below as access
+  // unchanged.
   const monthsBought =
     selected && Number.isFinite(paid)
       ? firstPeriod
-        ? monthlyCharge > 0
-          ? Math.min(MAX_PREPAY_MONTHS, Math.floor(Math.max(0, paid - owed) / monthlyCharge))
-          : 0
+        ? firstPaymentMonths({
+            carriedBalance: carried,
+            firstPeriodDue,
+            monthlyCharge,
+            amountPaid: paid,
+          })
         : monthsCovered(owed, monthlyCharge, paid, periodGranted)
       : 1
   const creditAdded =
