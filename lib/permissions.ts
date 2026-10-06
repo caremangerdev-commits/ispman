@@ -26,6 +26,7 @@ export type Permission =
   | 'delete_payment'
   | 'delete_customer'
   | 'view_checkoff'
+  | 'edit_checkoff'
   | 'view_revenue_reports'
   | 'view_support_tickets'
   | 'create_ticket'
@@ -117,6 +118,11 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // for a small fix. Managers keep Settings and lose only this.
   delete_customer: ['super_admin', 'company_admin'],
   view_checkoff: ['super_admin', 'company_admin', 'manager'],
+  // RESTATING A HANDOVER IS NARROWER THAN RECORDING ONE. A manager may check an
+  // agent off, but changing when it happened, who it was, or how much was
+  // handed over rewrites the record of money — the same line delete_payment
+  // draws. Every edit needs a reason and is logged with both values.
+  edit_checkoff: ['super_admin', 'company_admin'],
   view_revenue_reports: ['super_admin', 'company_admin', 'manager'],
   // Cashier included deliberately: they already see tickets on a customer
   // record, so excluding them from the dashboard panel only made the two

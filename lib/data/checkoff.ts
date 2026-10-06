@@ -417,6 +417,10 @@ export async function getAllAgentsSummary(opts: {
  */
 export type HandoverRecord = {
   id: number
+  /** The user who handed the money over, when they were a known user at the time. */
+  agentId: number | null
+  /** The user who checked them off, i.e. received it. */
+  receivedById: number | null
   agentName: string
   /**
    * NULLABLE, and the difference matters.
@@ -448,6 +452,11 @@ export type HandoverRecord = {
 /** Matches what the migration scripts write into `notes`. */
 const MIGRATED_NOTE = /^Migrated from legacy checkoff #\d+/i
 
+/** True for a handover that came from the legacy import rather than this app. */
+export function isMigratedHandover(notes: string | null | undefined): boolean {
+  return MIGRATED_NOTE.test(String(notes ?? ''))
+}
+
 export async function listHandovers(
   companyId: number,
   limit = 200
@@ -459,8 +468,8 @@ export async function listHandovers(
   const { data, error } = await db
     .from('checkoff_records')
     .select(
-      'id, agent_name, amount_received, system_total, discrepancy, ' +
-      'customers_count, is_all_agents, created_at, notes'
+      'id, agent_id, checked_off_by, agent_name, amount_received, system_total, ' +
+      'discrepancy, customers_count, is_all_agents, created_at, notes'
     )
     .eq('company_id', companyId)
     .order('created_at', { ascending: false })
@@ -471,6 +480,8 @@ export async function listHandovers(
   const rows = (data ?? []).map((r) => {
     const h = r as unknown as {
       id: number
+      agent_id: number | null
+      checked_off_by: number | null
       agent_name: string | null
       amount_received: number | string | null
       system_total: number | string | null
@@ -482,6 +493,8 @@ export async function listHandovers(
     }
     return {
       id: h.id,
+      agentId: h.agent_id,
+      receivedById: h.checked_off_by,
       agentName: h.agent_name ?? 'Unknown',
       amountReceived: h.amount_received === null ? null : Number(h.amount_received),
       systemTotal: Number(h.system_total ?? 0),

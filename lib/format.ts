@@ -98,13 +98,18 @@ export function formatRelativeDate(input: string | Date | null | undefined): str
  * when a batch of messages went out, when one of them was delivered. `timeAgo`
  * is the right choice everywhere the reader only wants "recently".
  */
-export function formatDateTime(input: string | Date | null | undefined): string {
+export function formatDateTime(
+  input: string | Date | null | undefined,
+  /** Name a zone to print the company's clock rather than the server's. */
+  timeZone?: string
+): string {
   if (!input) return '—'
   const d = new Date(input)
   if (!Number.isFinite(d.getTime())) return '—'
   return d.toLocaleString(LOCALE, {
     day: 'numeric', month: 'short', year: 'numeric',
     hour: 'numeric', minute: '2-digit',
+    ...(timeZone ? { timeZone } : {}),
   })
 }
 
@@ -226,15 +231,41 @@ export function instantToDateOnly(value: Date, timeZone: string): string {
  * offset changes across the guess (a DST edge) still lands on its own noon.
  */
 export function zonedNoon(dateOnly: string, timeZone: string): Date | null {
+  return zonedDateTime(dateOnly, '12:00', timeZone)
+}
+
+/**
+ * The instant that is `HH:MM` on a calendar date in a named zone.
+ *
+ * The general form of zonedNoon, for a time a person typed rather than a fixed
+ * one. Null when the date or the time does not parse.
+ */
+export function zonedDateTime(dateOnly: string, time: string, timeZone: string): Date | null {
   const p = dateOnlyParts(dateOnly)
   if (!p) return null
 
-  const target = Date.UTC(p.year, p.month - 1, p.day, 12, 0, 0)
+  const bits = time.split(':')
+  if (bits.length !== 2) return null
+  const hours = Number(bits[0])
+  const minutes = Number(bits[1])
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null
+
+  const target = Date.UTC(p.year, p.month - 1, p.day, hours, minutes, 0)
   let instant = target
   for (let i = 0; i < 2; i++) {
     instant -= wallClockAsUtc(new Date(instant), timeZone) - target
   }
   return new Date(instant)
+}
+
+/** The wall-clock time an INSTANT reads in a named zone, as "HH:MM" (24-hour). */
+export function instantToTimeOnly(value: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(value)
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '00'
+  return get('hour') + ':' + get('minute')
 }
 
 /** What the zone's wall clock reads at `value`, re-encoded as if it were UTC. */

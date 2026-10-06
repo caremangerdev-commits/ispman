@@ -1,7 +1,8 @@
 import { Archive, FileDown } from 'lucide-react'
 
+import { EditHandoverModal } from '@/components/checkoff/EditHandoverModal'
 import type { HandoverRecord } from '@/lib/data/checkoff'
-import { formatDateTime } from '@/lib/format'
+import { formatDateTime, instantToDateOnly, instantToTimeOnly } from '@/lib/format'
 
 /**
  * Handovers that have already been settled.
@@ -13,7 +14,9 @@ import { formatDateTime } from '@/lib/format'
  * payments are checked off — which is why 36 records across two companies had
  * never been visible anywhere.
  *
- * A server component: it renders a table and has nothing to interact with.
+ * A server component. The one interactive piece is the admin-only Edit button
+ * (EditHandoverModal), mounted per row only when the viewer holds edit_checkoff.
+ * Times are printed on the company's clock, the same clock the edit form uses.
  */
 
 function money(symbol: string, n: number) {
@@ -21,11 +24,18 @@ function money(symbol: string, n: number) {
 }
 
 export function HandoverHistory({
-  rows, symbol,
+  rows, symbol, timezone, agents, canEdit,
 }: {
   rows: HandoverRecord[]
   symbol: string
+  /** The company's zone: handovers are shown, and edited, on ITS clock. */
+  timezone: string
+  /** Staff accounts, for naming who received a handover. */
+  agents: { id: number; name: string }[]
+  /** edit_checkoff — company admin and above. The action checks it again. */
+  canEdit: boolean
 }) {
+  const nameOf = new Map(agents.map((a) => [a.id, a.name]))
   if (rows.length === 0) {
     return (
       <div className="rounded-xl border border-gray-800 bg-gray-900 px-4 py-12 text-center">
@@ -55,11 +65,12 @@ export function HandoverHistory({
 
       <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
+          <table className="w-full min-w-[820px] text-left text-sm">
             <thead>
               <tr className="border-b border-gray-800 text-[11px] uppercase tracking-wider text-gray-500">
                 <th scope="col" className="px-4 py-2.5 font-semibold">Date</th>
                 <th scope="col" className="px-4 py-2.5 font-semibold">Agent</th>
+                <th scope="col" className="px-4 py-2.5 font-semibold">Received by</th>
                 <th scope="col" className="px-4 py-2.5 text-right font-semibold">
                   Amount handed over
                 </th>
@@ -70,6 +81,7 @@ export function HandoverHistory({
                   Difference
                 </th>
                 <th scope="col" className="px-4 py-2.5 font-semibold">Source</th>
+                {canEdit ? <th scope="col" className="px-4 py-2.5"><span className="sr-only">Edit</span></th> : null}
               </tr>
             </thead>
 
@@ -77,7 +89,7 @@ export function HandoverHistory({
               {rows.map((r) => (
                 <tr key={r.id} className="transition hover:bg-gray-800/40">
                   <td className="whitespace-nowrap px-4 py-2.5 text-gray-400">
-                    {formatDateTime(r.createdAt)}
+                    {formatDateTime(r.createdAt, timezone)}
                   </td>
 
                   <td className="px-4 py-2.5">
@@ -87,6 +99,12 @@ export function HandoverHistory({
                         all agents
                       </span>
                     ) : null}
+                  </td>
+
+                  <td className="whitespace-nowrap px-4 py-2.5 text-gray-400">
+                    {r.receivedById === null
+                      ? <span className="text-gray-600">—</span>
+                      : nameOf.get(r.receivedById) ?? <span className="text-gray-600">—</span>}
                   </td>
 
                   {/* NULL IS NOT ZERO. The all-agents checkoff records the
@@ -146,6 +164,27 @@ export function HandoverHistory({
                       </span>
                     )}
                   </td>
+
+                  {canEdit ? (
+                    <td className="whitespace-nowrap px-4 py-2.5 text-right">
+                      <EditHandoverModal
+                        row={{
+                          id: r.id,
+                          date: instantToDateOnly(new Date(r.createdAt), timezone),
+                          time: instantToTimeOnly(new Date(r.createdAt), timezone),
+                          agentId: r.agentId,
+                          agentName: r.agentName,
+                          receivedById: r.receivedById,
+                          amountReceived: r.amountReceived,
+                          systemTotal: r.systemTotal,
+                          isAllAgents: r.isAllAgents,
+                          migrated: r.migrated,
+                        }}
+                        agents={agents}
+                        symbol={symbol}
+                      />
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>

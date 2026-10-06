@@ -110,6 +110,9 @@ export default async function CheckoffPage({
         <HandoverHistory
           rows={handovers.rows}
           symbol={currencySymbol(settings.currency)}
+          timezone={settings.timezone}
+          agents={agents.map((a) => ({ id: a.id, name: a.name }))}
+          canEdit={can(profile.role, 'edit_checkoff')}
         />
       ) : (
         <CheckoffClient
