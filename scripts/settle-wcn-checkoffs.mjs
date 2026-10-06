@@ -99,8 +99,13 @@ const db = createClient(need('NEXT_PUBLIC_SUPABASE_URL'), need('SUPABASE_SERVICE
 const COMPANY = 26
 const ZONE = 'America/Jamaica'
 const MICHELLE = 160
-const PART_B_TO = '2026-09-30'
-const PART_B_LABEL = 'up to 30 Sep 2026'
+// Owner's instruction, 6 Oct 2026: MICHELLE ONLY, and her payments dated 30 Sep
+// onward stay outstanding. Jerome Cole's legacy payments (116, J$377,500, also
+// covered by his legacy handovers) are deliberately NOT in this run — add his
+// id here only if the owner asks for it.
+const PART_A_AGENTS = new Set([MICHELLE])
+const PART_B_TO = '2026-09-29'
+const PART_B_LABEL = 'up to 29 Sep 2026'
 const RUN_ID = randomUUID()
 
 const fmt = (n) => 'J$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 })
@@ -164,9 +169,16 @@ async function main() {
   // ---------------------------------------------------------------- Part A
   const partA = new Map() // handover id -> { handover, payments[] }
   const noHandover = new Map() // owner label -> payments[]
+  const outOfScope = new Map() // agent id -> payments[] a legacy handover covers, not in this run
   for (const p of outstanding) {
     if (!isLegacyPayment(p)) continue
     const who = ownerOf(p)
+    if (who !== null && !PART_A_AGENTS.has(who)) {
+      const covered = (legacyHandovers.get(who) ?? []).some(
+        (h) => new Date(p.payment_date).getTime() <= new Date(h.created_at).getTime())
+      if (covered) outOfScope.set(who, [...(outOfScope.get(who) ?? []), p])
+      continue
+    }
     const list = who === null ? [] : legacyHandovers.get(who) ?? []
     const covering = list.find((h) => new Date(p.payment_date).getTime() <= new Date(h.created_at).getTime())
     if (covering) {
@@ -206,8 +218,15 @@ async function main() {
   const allA = [...partA.values()].flatMap((g) => g.payments)
   console.log('  PART A TOTAL: ' + allA.length + ' payments, ' + fmt(sum(allA)) + '\n')
 
-  console.log('  Left alone — legacy payments whose agent has NO legacy handover (no evidence of handover):')
-  for (const [label, ps] of noHandover) console.log('      ' + label + ': ' + ps.length + ' payments, ' + fmt(sum(ps)))
+  console.log('  Left alone — covered by a legacy handover but NOT in this run (owner: Michelle only):')
+  for (const [who, ps] of outOfScope) {
+    const u = users.find((x) => x.id === who)
+    console.log('      #' + who + ' ' + (u ? nameOf(u) : '?') + ': ' + ps.length + ' payments, ' + fmt(sum(ps)))
+  }
+  if (noHandover.size > 0) {
+    console.log('  Left alone — in scope but no legacy handover on record:')
+    for (const [label, ps] of noHandover) console.log('      ' + label + ': ' + ps.length + ' payments, ' + fmt(sum(ps)))
+  }
   console.log('')
 
   console.log('PART B — Michelle Bennett, still outstanding after Part A, dated ' + PART_B_LABEL)
@@ -218,7 +237,9 @@ async function main() {
   console.log('    of which taken in ISPMan: ' + partB.filter((p) => !isLegacyPayment(p)).length +
     ' (' + fmt(sum(partB.filter((p) => !isLegacyPayment(p)))) + '), legacy till: ' +
     partB.filter(isLegacyPayment).length + ' (' + fmt(sum(partB.filter(isLegacyPayment))) + ')')
-  console.log('  Michelle stays outstanding after this: ' + michelleLeft.length + ' payments, ' + fmt(sum(michelleLeft)) + ' (dated after 30 Sep)')
+  const leftDates = michelleLeft.map(businessDate).sort()
+  console.log('  Michelle stays outstanding after this: ' + michelleLeft.length + ' payments, ' + fmt(sum(michelleLeft)) +
+    (leftDates.length ? ' (dated ' + leftDates[0] + ' to ' + leftDates[leftDates.length - 1] + ')' : ''))
   if (RECEIVED !== null) {
     console.log('  --received ' + fmt(RECEIVED) + ' against system ' + fmt(sum(partB)) +
       ' -> difference ' + fmt(RECEIVED - sum(partB)))
