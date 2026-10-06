@@ -69,6 +69,8 @@ export type DetailCustomer = {
   billingAvailable: boolean
   bill_date: number | null
   carried_balance: number
+  /** Money held for the next charge (migration 0011). 0 when there is none. */
+  account_credit?: number
   last_billed_date: string | null
   /** The engine's latest charge for this customer (migration 0024), or null. */
   lastCharge: { chargedOn: string; periodStart: string; periodEnd: string } | null
@@ -278,6 +280,13 @@ export function CustomerDetail({
   // Falls back to `balance` only before migration 0011, where carried_balance
   // does not exist and balance is the only figure there is.
   const owed = c.billingAvailable ? c.carried_balance : Number(c.balance ?? 0)
+
+  // THE BALANCE SHOWN IS THE NET POSITION: owed less credit held. Negative means
+  // the customer is in credit — which an admin can now set by hand (Adjust
+  // Balance accepts a negative figure). Credit was never shown here before, so a
+  // customer holding it read as a plain J$0.
+  const credit = c.billingAvailable ? Number(c.account_credit ?? 0) : 0
+  const netBalance = Math.round((owed - credit) * 100) / 100
 
   // The four network actions. Each is CSR-or-above and applies to a distinct
   // set of statuses, so at most two are ever offered at once. The server action
@@ -735,8 +744,13 @@ export function CustomerDetail({
             label="Balance"
             value={
               <span className="inline-flex items-center gap-2">
-                <span className={owed > 0 ? 'text-orange-400' : 'text-gray-200'}>
-                  {formatCurrency(owed)}
+                <span
+                  className={
+                    netBalance > 0 ? 'text-orange-400' : netBalance < 0 ? 'text-emerald-400' : 'text-gray-200'
+                  }
+                >
+                  {formatCurrency(netBalance)}
+                  {netBalance < 0 ? ' in credit' : ''}
                 </span>
 
                 {/* NEVER SILENT. A balance someone typed must not look like one
@@ -759,7 +773,7 @@ export function CustomerDetail({
                   <AdjustBalanceModal
                     customerId={c.id}
                     customerName={name}
-                    currentBalance={owed}
+                    currentBalance={netBalance}
                   />
                 ) : null}
               </span>

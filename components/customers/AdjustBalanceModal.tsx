@@ -48,7 +48,9 @@ export function AdjustBalanceModal({
   const [reason, setReason] = useState('')
 
   const parsed = Number(value)
-  const valid = value !== '' && Number.isFinite(parsed) && parsed >= 0
+  // Negative is allowed: it means the customer is IN CREDIT. The server stores
+  // it as nothing owed plus that much account credit (adjustCarriedBalance).
+  const valid = value !== '' && Number.isFinite(parsed)
   const unchanged = valid && Math.round(parsed * 100) === Math.round(currentBalance * 100)
   const ready = valid && !unchanged && reason.trim() !== ''
 
@@ -78,8 +80,9 @@ export function AdjustBalanceModal({
                 </div>
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-xs text-gray-500">Current balance</span>
-                  <span className="font-mono text-gray-300">
+                  <span className={'font-mono ' + (currentBalance < 0 ? 'text-emerald-400' : 'text-gray-300')}>
                     {formatCurrency(currentBalance)}
+                    {currentBalance < 0 ? ' (in credit)' : ''}
                   </span>
                 </div>
               </div>
@@ -90,10 +93,9 @@ export function AdjustBalanceModal({
                 </label>
                 <input
                   id="adjust_balance_value"
-                  name="carried_balance"
+                  name="balance"
                   type="number"
                   step="0.01"
-                  min="0"
                   required
                   value={value}
                   onChange={(e) => setValue(e.target.value)}
@@ -106,19 +108,28 @@ export function AdjustBalanceModal({
                 />
                 {!valid ? (
                   <p role="alert" className="text-xs text-red-400">
-                    Enter an amount of zero or more.
+                    Enter an amount. Use a minus sign for credit, e.g. -2000.
                   </p>
                 ) : unchanged ? (
                   <p role="alert" className="text-xs text-red-400">
                     That is already the balance — nothing to adjust.
+                  </p>
+                ) : parsed < 0 ? (
+                  <p className="text-xs text-emerald-400/90">
+                    Nothing will be owed, and {formatCurrency(-parsed)} will be held as credit.
+                    The next bill uses it up before charging anything.
                   </p>
                 ) : (
                   <p className="text-xs text-gray-500">
                     {delta > 0
                       ? formatCurrency(delta) + ' more will be owed.'
                       : formatCurrency(-delta) + ' less will be owed.'}
+                    {currentBalance < 0 ? ' Their credit is cleared.' : ''}
                   </p>
                 )}
+                <p className="text-[11px] text-gray-600">
+                  A negative balance means the customer is in credit.
+                </p>
               </div>
 
               <div className="space-y-1.5">

@@ -1109,9 +1109,9 @@ export async function disconnectCustomer(formData: FormData) {
  * which is permanently, because every later charge and payment is applied on
  * top of the adjusted figure rather than replacing it.
  *
- * Refuses a negative balance, matching customers_carried_balance_check from
- * migration 0011, and refuses a no-op so the log does not fill with rows that
- * changed nothing.
+ * A NEGATIVE BALANCE IS CREDIT. It is accepted and stored as carried_balance 0
+ * plus account_credit, never as a negative column (see below). Refuses a no-op
+ * so the log does not fill with rows that changed nothing.
  */
 export async function adjustCarriedBalance(formData: FormData) {
   const { company, profile } = await authorize('adjust_carried_balance')
@@ -1130,14 +1130,25 @@ export async function adjustCarriedBalance(formData: FormData) {
   if (!reason) toast(back, 'A reason is required to adjust a carried balance.', 'error')
   if (reason.length > 500) toast(back, 'Keep the reason under 500 characters.', 'error')
 
-  const next = numOrNull(formData, 'carried_balance')
+  // THE BALANCE TYPED IS THE CUSTOMER'S NET POSITION: what they owe less what
+  // they hold in credit. NEGATIVE MEANS IN CREDIT (allowed since 6 Oct 2026).
+  //
+  // It is stored the way the rest of billing already understands, never as a
+  // negative number: customers_carried_balance_check and _account_credit_check
+  // (migration 0011) keep both columns at zero or more, and every calculation
+  // on the payment path (amountDue, settledMonths, isPartialPayment) relies on
+  // that. So a negative figure becomes carried_balance 0 plus that much
+  // account_credit, which the next bill run or engine charge draws down before
+  // adding anything (lib/billing.ts#applyCredit). A positive figure is owed, and
+  // clears any credit: the operator stated the whole position.
+  const next = numOrNull(formData, 'balance')
   if (next === null) toast(back, 'Enter the corrected balance.', 'error')
-  if (next < 0) toast(back, 'A carried balance cannot be negative.', 'error')
+  if (Math.abs(next) > 99_999_999.99) toast(back, 'That balance is too large.', 'error')
 
   const db = tenantClient()
   const { data } = await db
     .from('customers')
-    .select('first_name, last_name, carried_balance')
+    .select('first_name, last_name, carried_balance, account_credit')
     .eq('company_id', company.id)
     .eq('id', id)
     .maybeSingle()
@@ -1146,22 +1157,28 @@ export async function adjustCarriedBalance(formData: FormData) {
     first_name: string | null
     last_name: string | null
     carried_balance: number | string | null
+    account_credit: number | string | null
   } | null
 
   if (!row) toast(back, 'That customer could not be found.', 'error')
 
   const fullName =
     [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Customer #' + id
-  const before = Number(row.carried_balance ?? 0)
-  const after = Math.round(next * 100) / 100
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  const carriedBefore = Number(row.carried_balance ?? 0)
+  const creditBefore = Number(row.account_credit ?? 0)
+  const before = round2(carriedBefore - creditBefore)
+  const after = round2(next)
+  const carriedAfter = Math.max(0, after)
+  const creditAfter = Math.max(0, -after)
 
-  if (before === after) {
+  if (carriedBefore === carriedAfter && creditBefore === creditAfter) {
     toast(back, fullName + ': the balance is already ' + formatCurrency(after) + '.', 'error')
   }
 
   const { error: updateError } = await db
     .from('customers')
-    .update({ carried_balance: after })
+    .update({ carried_balance: carriedAfter, account_credit: creditAfter })
     .eq('company_id', company.id)
     .eq('id', id)
 
@@ -1172,6 +1189,11 @@ export async function adjustCarriedBalance(formData: FormData) {
   // Written AFTER the update, like every other audit row in this app: the
   // change is what the operator asked for, and a failed log write must not undo
   // it. logEvent never throws (lib/audit.ts).
+  //
+  // old= and new= are the NET figures (negative = in credit). The two stored
+  // columns ride along whenever credit is involved, so the row says exactly
+  // what was written.
+  const creditInvolved = creditBefore > 0 || creditAfter > 0
   await logEvent({
     customerId: id,
     type: BALANCE_ADJUSTED,
@@ -1180,6 +1202,10 @@ export async function adjustCarriedBalance(formData: FormData) {
       'Carried balance adjusted for ' + fullName +
       ' | old=' + formatCurrency(before) +
       ' | new=' + formatCurrency(after) +
+      (creditInvolved
+        ? ' | owed=' + formatCurrency(carriedBefore) + ' -> ' + formatCurrency(carriedAfter) +
+          ' | credit=' + formatCurrency(creditBefore) + ' -> ' + formatCurrency(creditAfter)
+        : '') +
       ' | by=' + profile.email +
       ' | reason=' + reason,
   })
