@@ -4,7 +4,8 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import {
-  getAgentCollections, getAllAgentsSummary, isMigratedHandover, listAgents,
+  getAgentCollections, getAllAgentsSummary, hasPeriod, isMigratedHandover, listAgents,
+  parsePeriod, periodLabel, type CheckoffPeriod,
 } from '@/lib/data/checkoff'
 import { getGeneralSettings } from '@/lib/data/company'
 import { instantToDateOnly, instantToTimeOnly, zonedDateTime } from '@/lib/format'
@@ -34,6 +35,29 @@ function fail(message: string): never {
 }
 
 /**
+ * The period a checkoff covers, from the form's hidden fields.
+ *
+ * Re-parsed here by the same parser the page used, and the payments re-read
+ * through it: the action clears what is dated inside the period NOW, not a list
+ * the browser sent. A malformed period fails rather than widening to everything.
+ */
+function periodFrom(formData: FormData): CheckoffPeriod {
+  const parsed = parsePeriod(str(formData, 'period_from'), str(formData, 'period_to'))
+  if (!parsed.ok) fail(parsed.error)
+  return parsed.period
+}
+
+/**
+ * The handover's notes with its period in front, so Past handovers says which
+ * dates a checkoff covered. Left exactly as typed when no period was chosen.
+ */
+function notesWithPeriod(period: CheckoffPeriod, notes: string): string | null {
+  if (!hasPeriod(period)) return notes || null
+  const head = 'Period: ' + periodLabel(period)
+  return notes ? head + ' · ' + notes : head
+}
+
+/**
  * Clears an agent's outstanding collections.
  *
  * The system total is recomputed here rather than trusted from the form: the
@@ -57,6 +81,7 @@ export async function confirmCheckoff(formData: FormData) {
   const agentId = num(formData, 'agent_id')
   const amountReceived = num(formData, 'amount_received')
   const notes = str(formData, 'notes')
+  const period = periodFrom(formData)
 
   if (agentId === null) fail('Select an agent first.')
   if (amountReceived === null || amountReceived < 0) {
@@ -73,10 +98,14 @@ export async function confirmCheckoff(formData: FormData) {
     userId: agent.id,
     agentName: agent.name,
     timezone: settings.timezone,
+    period,
   })
 
   if (summary.payments.length === 0) {
-    fail(agent.name + ' has no outstanding payments to check off.')
+    fail(
+      agent.name + ' has no outstanding payments' +
+      (hasPeriod(period) ? ' dated ' + periodLabel(period) : '') + ' to check off.'
+    )
   }
 
   const systemTotal = summary.sinceCheckoffTotal
@@ -107,7 +136,7 @@ export async function confirmCheckoff(formData: FormData) {
     discrepancy,
     customers_count: summary.sinceCheckoffCustomers,
     is_all_agents: false,
-    notes: notes || null,
+    notes: notesWithPeriod(period, notes),
   })
 
   if (recordError) {
@@ -124,10 +153,15 @@ export async function confirmCheckoff(formData: FormData) {
     tag: '[checkoff]',
     details:
       'Checkoff | agent=' + agent.name +
+      (hasPeriod(period) ? ' | period=' + periodLabel(period) : '') +
       ' | system_total=' + money(systemTotal) +
       ' | received=' + money(amountReceived) +
       ' | discrepancy=' + money(discrepancy) +
       ' | payments=' + ids.length +
+      (summary.outsidePeriod.count > 0
+        ? ' | left_outstanding=' + summary.outsidePeriod.count +
+          ' (' + money(summary.outsidePeriod.total) + ')'
+        : '') +
       ' | by=' + profile.email +
       (notes ? ' | ' + notes : ''),
   })
@@ -167,12 +201,20 @@ export async function confirmCheckoffAll(formData: FormData) {
 
   const amountReceived = num(formData, 'amount_received')
   const notes = str(formData, 'notes')
+  const period = periodFrom(formData)
   if (amountReceived === null || amountReceived < 0) fail('Enter the amount received.')
 
   const settings = await getGeneralSettings(company.id)
-  const all = await getAllAgentsSummary({ companyId: company.id, timezone: settings.timezone })
+  const all = await getAllAgentsSummary({
+    companyId: company.id, timezone: settings.timezone, period,
+  })
 
-  if (all.rows.length === 0) fail('There are no outstanding payments to check off.')
+  if (all.rows.length === 0) {
+    fail(
+      'There are no outstanding payments' +
+      (hasPeriod(period) ? ' dated ' + periodLabel(period) : '') + ' to check off.'
+    )
+  }
 
   const db = tenantClient()
   const now = new Date().toISOString()
@@ -184,6 +226,7 @@ export async function confirmCheckoffAll(formData: FormData) {
       userId: row.agent.id,
       agentName: row.agent.name,
       timezone: settings.timezone,
+      period,
     })
     if (summary.payments.length === 0) continue
 
@@ -214,7 +257,7 @@ export async function confirmCheckoffAll(formData: FormData) {
       discrepancy: null,
       customers_count: summary.sinceCheckoffCustomers,
       is_all_agents: true,
-      notes: notes || null,
+      notes: notesWithPeriod(period, notes),
     })
 
     cleared++
@@ -232,7 +275,7 @@ export async function confirmCheckoffAll(formData: FormData) {
     discrepancy,
     customers_count: all.customers,
     is_all_agents: true,
-    notes: notes || null,
+    notes: notesWithPeriod(period, notes),
   })
 
   await logEvent({
@@ -240,6 +283,7 @@ export async function confirmCheckoffAll(formData: FormData) {
     tag: '[checkoff]',
     details:
       'Checkoff ALL | agents=' + cleared +
+      (hasPeriod(period) ? ' | period=' + periodLabel(period) : '') +
       ' | system_total=' + money(all.total) +
       ' | received=' + money(amountReceived) +
       ' | discrepancy=' + money(discrepancy) +

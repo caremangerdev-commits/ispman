@@ -1,6 +1,79 @@
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { toRole, type Role } from '@/lib/permissions'
+import { dateOnlyParts, formatDateOnly, instantToDateOnly } from '@/lib/format'
+
+/**
+ * The dates a checkoff covers, inclusive, as YYYY-MM-DD in the company's terms.
+ * Either end may be open: { from: null, to: '2026-10-05' } is "everything up to
+ * and including the 5th". Both null is no period — everything outstanding, which
+ * is what a checkoff always did.
+ *
+ * A payment's date is its business date, paid_on, the day the money is
+ * attributed to — not the moment the row was typed in. Rows from before paid_on
+ * existed fall back to payment_date read on the company's clock.
+ */
+export type CheckoffPeriod = { from: string | null; to: string | null }
+
+export const NO_PERIOD: CheckoffPeriod = { from: null, to: null }
+
+/** True when a period actually narrows anything. */
+export function hasPeriod(p: CheckoffPeriod): boolean {
+  return p.from !== null || p.to !== null
+}
+
+/**
+ * Reads a period from two raw strings (search params or form fields).
+ *
+ * THE ONE PARSER: the page and both checkoff actions go through it, so what the
+ * screen totals and what the action clears are filtered by the same rule.
+ * Blank ends are open. Returns an error message for a malformed date or a
+ * period that ends before it starts, rather than quietly widening it.
+ */
+export function parsePeriod(
+  fromRaw: string | null | undefined,
+  toRaw: string | null | undefined
+): { ok: true; period: CheckoffPeriod } | { ok: false; error: string } {
+  const read = (v: string | null | undefined) => {
+    const s = (v ?? '').trim()
+    if (!s) return { ok: true as const, value: null }
+    return s.length === 10 && dateOnlyParts(s)
+      ? { ok: true as const, value: s }
+      : { ok: false as const, value: null }
+  }
+  const from = read(fromRaw)
+  const to = read(toRaw)
+  if (!from.ok || !to.ok) return { ok: false, error: 'Enter the period as valid dates.' }
+  if (from.value && to.value && from.value > to.value) {
+    return { ok: false, error: 'The period ends before it starts.' }
+  }
+  return { ok: true, period: { from: from.value, to: to.value } }
+}
+
+/** "1 Oct 2026 to 5 Oct 2026", "from 1 Oct 2026", "up to 5 Oct 2026". */
+export function periodLabel(p: CheckoffPeriod): string {
+  if (p.from && p.to) {
+    return p.from === p.to
+      ? formatDateOnly(p.from)
+      : formatDateOnly(p.from) + ' to ' + formatDateOnly(p.to)
+  }
+  if (p.from) return 'from ' + formatDateOnly(p.from)
+  if (p.to) return 'up to ' + formatDateOnly(p.to)
+  return 'everything outstanding'
+}
+
+/** A payment's business date, YYYY-MM-DD. See CheckoffPeriod. */
+function businessDate(
+  paidOn: string | null | undefined,
+  paymentDate: string,
+  timeZone: string
+): string {
+  return paidOn ?? instantToDateOnly(new Date(paymentDate), timeZone)
+}
+
+function inPeriod(date: string, p: CheckoffPeriod): boolean {
+  return (p.from === null || date >= p.from) && (p.to === null || date <= p.to)
+}
 
 /**
  * Payment methods offered on the record-payment form.
@@ -80,6 +153,11 @@ export type CollectionSummary = {
   sinceCheckoffSplit: KindSplit
   /** todayTotal, split the same way. */
   todaySplit: KindSplit
+  /**
+   * Outstanding payments the chosen period LEAVES OUT. They are not checked off
+   * and stay outstanding for a later checkoff. Zero when no period is set.
+   */
+  outsidePeriod: { total: number; count: number }
 }
 
 export const EMPTY_COLLECTION: CollectionSummary = {
@@ -92,6 +170,7 @@ export const EMPTY_COLLECTION: CollectionSummary = {
   byMethod: [],
   sinceCheckoffSplit: { service: 0, oneOff: 0 },
   todaySplit: { service: 0, oneOff: 0 },
+  outsidePeriod: { total: 0, count: 0 },
 }
 
 /** The service / one-off split of a set of payments. */
@@ -190,7 +269,7 @@ function summarise(
   todayStart: Date,
   /** Today's date in the company timezone, as YYYY-MM-DD. */
   todayYmd?: string
-): Omit<CollectionSummary, 'available' | 'payments'> {
+): Omit<CollectionSummary, 'available' | 'payments' | 'outsidePeriod'> {
   // paid_on is the date the money is attributed to and is compared as a plain
   // string — it is already a calendar date in the company's own terms, so
   // converting it through a Date and a timezone could only move it. Rows
@@ -246,6 +325,10 @@ function selectFor(caps: { otherPayments: boolean }) {
  * written before migration 0010 added the column. `query` filters the returned
  * list by customer name only — the totals always cover the whole set, so they
  * do not move as you search.
+ *
+ * `period` narrows the set itself: totals, list and everything a checkoff clears
+ * are the payments dated inside it. What it leaves out is counted in
+ * `outsidePeriod` and stays outstanding.
  */
 export async function getAgentCollections(opts: {
   companyId: number
@@ -253,8 +336,9 @@ export async function getAgentCollections(opts: {
   agentName: string
   timezone: string
   query?: string
+  period?: CheckoffPeriod
 }): Promise<CollectionSummary> {
-  const { companyId, userId, agentName, timezone, query = '' } = opts
+  const { companyId, userId, agentName, timezone, query = '', period = NO_PERIOD } = opts
 
   const caps = await getSchemaCapabilities()
   if (!caps.checkoff) return EMPTY_COLLECTION
@@ -270,7 +354,11 @@ export async function getAgentCollections(opts: {
 
   if (error) throw new Error('Failed to load collections: ' + error.message)
 
-  const all = shape((data ?? []) as unknown as PaymentRow[])
+  const outstanding = shape((data ?? []) as unknown as PaymentRow[])
+  const all = outstanding.filter((p) =>
+    inPeriod(businessDate(p.paidOn, p.payment_date, timezone), period)
+  )
+  const left = outstanding.filter((p) => !all.includes(p))
   const todayStart = startOfTodayIn(timezone)
   const today = todayYmdIn(timezone)
 
@@ -279,7 +367,12 @@ export async function getAgentCollections(opts: {
     ? all.filter((p) => p.customerName.toLowerCase().includes(needle))
     : all
 
-  return { available: true, ...summarise(all, todayStart, today), payments: visible }
+  return {
+    available: true,
+    ...summarise(all, todayStart, today),
+    payments: visible,
+    outsidePeriod: { total: left.reduce((s, p) => s + p.amount, 0), count: left.length },
+  }
 }
 
 export type AgentOption = {
@@ -316,12 +409,14 @@ export async function getCheckoffSummary(opts: {
   companyId: number
   agent: AgentOption
   timezone: string
+  period?: CheckoffPeriod
 }): Promise<CollectionSummary> {
   return getAgentCollections({
     companyId: opts.companyId,
     userId: opts.agent.id,
     agentName: opts.agent.name,
     timezone: opts.timezone,
+    period: opts.period,
   })
 }
 
@@ -343,9 +438,12 @@ export type AllAgentsRow = {
 export async function getAllAgentsSummary(opts: {
   companyId: number
   timezone: string
+  /** Same rule as getAgentCollections: only payments dated inside it count. */
+  period?: CheckoffPeriod
 }): Promise<{
   available: boolean; rows: AllAgentsRow[]; total: number; split: KindSplit; customers: number
 }> {
+  const period = opts.period ?? NO_PERIOD
   const caps = await getSchemaCapabilities()
   if (!caps.checkoff) {
     return { available: false, rows: [], total: 0, split: { service: 0, oneOff: 0 }, customers: 0 }
@@ -362,7 +460,9 @@ export async function getAllAgentsSummary(opts: {
 
   if (error) throw new Error('Failed to load checkoff summary: ' + error.message)
 
-  const raw = (data ?? []) as unknown as PaymentRow[]
+  const raw = ((data ?? []) as unknown as PaymentRow[]).filter((r) =>
+    inPeriod(businessDate(r.paid_on, r.payment_date, opts.timezone), period)
+  )
   const byAgent = new Map<number, PaymentRow[]>()
 
   for (const r of raw) {

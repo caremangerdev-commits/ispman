@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertTriangle, Check, Users } from 'lucide-react'
+import { AlertTriangle, CalendarRange, Check, Users } from 'lucide-react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useState } from 'react'
 import { useFormStatus } from 'react-dom'
@@ -9,12 +9,31 @@ import { confirmCheckoff, confirmCheckoffAll } from '@/app/actions/checkoff'
 import { PurposeTag } from '@/components/payments/MyCollections'
 import { Modal } from '@/components/settings/Modal'
 import {
-  PAYMENT_METHOD_LABELS, type AgentOption, type AllAgentsRow, type CollectionSummary,
+  hasPeriod, PAYMENT_METHOD_LABELS, periodLabel,
+  type AgentOption, type AllAgentsRow, type CheckoffPeriod, type CollectionSummary,
 } from '@/lib/data/checkoff'
 import { currencySymbol } from '@/lib/format'
 import { ROLE_LABELS } from '@/lib/permissions'
 
 const fmt = (n: number) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(n)
+
+/**
+ * The period a confirm form covers. Posted as hidden fields; the action re-reads
+ * the payments through the same parser, so it clears what is dated inside the
+ * period at that moment rather than trusting a list from the browser.
+ */
+function PeriodFields({ period }: { period: CheckoffPeriod }) {
+  return (
+    <>
+      <input type="hidden" name="period_from" value={period.from ?? ''} />
+      <input type="hidden" name="period_to" value={period.to ?? ''} />
+      <p className="flex items-center gap-1.5 text-xs text-gray-400">
+        <CalendarRange className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
+        Covers {hasPeriod(period) ? 'payments dated ' + periodLabel(period) : 'everything outstanding'}.
+      </p>
+    </>
+  )
+}
 
 function SubmitButton({ label, busy }: { label: string; busy: string }) {
   const { pending } = useFormStatus()
@@ -132,6 +151,8 @@ export function CheckoffClient({
   currency,
   timezone,
   lastHandoverIso,
+  period,
+  periodError,
 }: {
   agents: AgentOption[]
   selectedAgent: AgentOption | null
@@ -147,11 +168,28 @@ export function CheckoffClient({
    * when an agent last settled up.
    */
   lastHandoverIso: string | null
+  /** The dates this checkoff covers, from the URL. Open ends are null. */
+  period: CheckoffPeriod
+  /** Set when the URL held a period that does not parse; it was ignored. */
+  periodError: string | null
 }) {
   const router = useRouter()
   const params = useSearchParams()
   const [confirming, setConfirming] = useState(false)
   const [confirmingAll, setConfirmingAll] = useState(false)
+  const [from, setFrom] = useState(period.from ?? '')
+  const [to, setTo] = useState(period.to ?? '')
+  const periodOn = hasPeriod(period)
+
+  /** Puts the period in the URL, keeping the selected agent. */
+  function applyPeriod(nextFrom: string, nextTo: string) {
+    const next = new URLSearchParams(params.toString())
+    if (nextFrom) next.set('from', nextFrom)
+    else next.delete('from')
+    if (nextTo) next.set('to', nextTo)
+    else next.delete('to')
+    router.push('/dashboard/checkoff' + (next.toString() ? '?' + next.toString() : ''))
+  }
 
   const symbol = currencySymbol(currency)
 
@@ -173,9 +211,10 @@ export function CheckoffClient({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-gray-500">
-          {allAgents.rows.length === 0
+          {(allAgents.rows.length === 0
             ? 'Nothing outstanding'
-            : allAgents.rows.length + ' agent(s) holding ' + symbol + fmt(allAgents.total)}
+            : allAgents.rows.length + ' agent(s) holding ' + symbol + fmt(allAgents.total)) +
+            (periodOn ? ' dated ' + periodLabel(period) : '')}
         </p>
 
         <button
@@ -209,6 +248,69 @@ export function CheckoffClient({
         </select>
       </section>
 
+      {/* Period. Narrows everything below — totals, the list, and what a
+          checkoff clears — to payments dated inside it. Payments outside it
+          stay outstanding for a later checkoff. */}
+      <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="space-y-1.5">
+            <label htmlFor="period_from" className="block text-xs font-medium text-gray-400">
+              Payments from
+            </label>
+            <input
+              id="period_from"
+              type="date"
+              value={from}
+              max={to || undefined}
+              onChange={(e) => setFrom(e.target.value)}
+              className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 [color-scheme:dark]"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="period_to" className="block text-xs font-medium text-gray-400">
+              to
+            </label>
+            <input
+              id="period_to"
+              type="date"
+              value={to}
+              min={from || undefined}
+              onChange={(e) => setTo(e.target.value)}
+              className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 [color-scheme:dark]"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => applyPeriod(from, to)}
+            disabled={from === (period.from ?? '') && to === (period.to ?? '')}
+            className="rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Apply
+          </button>
+          {periodOn ? (
+            <button
+              type="button"
+              onClick={() => {
+                setFrom('')
+                setTo('')
+                applyPeriod('', '')
+              }}
+              className="rounded-lg bg-gray-800 px-3.5 py-2 text-sm font-semibold text-gray-300 transition hover:bg-gray-700"
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+        <p className="mt-2 text-[11px] text-gray-500">
+          {periodOn
+            ? 'Showing and checking off payments dated ' + periodLabel(period) + '. Either end may be left blank.'
+            : 'No period: a checkoff covers everything outstanding. Leave either end blank for an open range.'}
+        </p>
+        {periodError ? (
+          <p role="alert" className="mt-1 text-xs text-red-400">{periodError} The period was ignored.</p>
+        ) : null}
+      </section>
+
       {/* Agent summary */}
       {selectedAgent && summary ? (
         <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
@@ -221,29 +323,41 @@ export function CheckoffClient({
 
           <div className="grid gap-3 p-5 sm:grid-cols-4">
             <Stat
-              label="Total Since Checkoff"
+              label={periodOn ? 'Total in Period' : 'Total Since Checkoff'}
               value={symbol + fmt(summary.sinceCheckoffTotal)}
               accent
               footnote={
-                lastHandoverIso
-                  ? 'since ' + stamp(lastHandoverIso)
-                  : 'no handover on record'
+                periodOn
+                  ? periodLabel(period)
+                  : lastHandoverIso
+                    ? 'since ' + stamp(lastHandoverIso)
+                    : 'no handover on record'
               }
-              footnoteMuted={!lastHandoverIso}
+              footnoteMuted={!periodOn && !lastHandoverIso}
             />
             <Stat label="Total Today" value={symbol + fmt(summary.todayTotal)} />
             <Stat
-              label="Customers Since Checkoff"
+              label={periodOn ? 'Customers in Period' : 'Customers Since Checkoff'}
               value={String(summary.sinceCheckoffCustomers)}
               footnote={
-                lastHandoverIso
-                  ? 'since ' + stamp(lastHandoverIso)
-                  : 'no handover on record'
+                periodOn
+                  ? periodLabel(period)
+                  : lastHandoverIso
+                    ? 'since ' + stamp(lastHandoverIso)
+                    : 'no handover on record'
               }
-              footnoteMuted={!lastHandoverIso}
+              footnoteMuted={!periodOn && !lastHandoverIso}
             />
             <Stat label="Customers Today" value={String(summary.todayCustomers)} />
           </div>
+
+          {summary.outsidePeriod.count > 0 ? (
+            <p className="mx-5 mb-4 rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2 text-xs text-gray-400">
+              {summary.outsidePeriod.count} more payment{summary.outsidePeriod.count === 1 ? '' : 's'}{' '}
+              ({symbol}{fmt(summary.outsidePeriod.total)}) dated outside this period{' '}
+              {summary.outsidePeriod.count === 1 ? 'is' : 'are'} not included and will stay outstanding.
+            </p>
+          ) : null}
 
           {summary.byMethod.length > 0 ? (
             <div className="border-t border-gray-800 px-5 py-4">
@@ -294,7 +408,8 @@ export function CheckoffClient({
           <div className="border-t border-gray-800">
             {summary.payments.length === 0 ? (
               <p className="px-5 py-10 text-center text-sm text-gray-600">
-                {selectedAgent.name} has nothing outstanding.
+                {selectedAgent.name} has nothing outstanding
+                {periodOn ? ' dated ' + periodLabel(period) : ''}.
               </p>
             ) : (
               <div className="max-h-96 overflow-y-auto">
@@ -348,6 +463,7 @@ export function CheckoffClient({
         <Modal title={'Confirm Checkoff — ' + selectedAgent.name} onClose={() => setConfirming(false)}>
           <form action={confirmCheckoff} className="space-y-4">
             <input type="hidden" name="agent_id" value={selectedAgent.id} />
+            <PeriodFields period={period} />
             <AmountReceived
               systemTotal={summary.sinceCheckoffTotal}
               customers={summary.sinceCheckoffCustomers}
@@ -371,6 +487,7 @@ export function CheckoffClient({
       {confirmingAll ? (
         <Modal title="Checkoff All Agents" onClose={() => setConfirmingAll(false)}>
           <form action={confirmCheckoffAll} className="space-y-4">
+            <PeriodFields period={period} />
             <div className="overflow-hidden rounded-lg border border-gray-800">
               <table className="w-full text-left text-sm">
                 <thead>

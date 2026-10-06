@@ -99,6 +99,13 @@ export function HandoverHistory({
                         all agents
                       </span>
                     ) : null}
+                    {/* The period a checkoff covered is written at the front of
+                        its notes ("Period: 1 Oct 2026 to 5 Oct 2026"). A
+                        migrated row's note is only its legacy id, which the
+                        Source column already says. */}
+                    {r.notes && !r.migrated ? (
+                      <span className="mt-0.5 block text-[11px] text-gray-500">{r.notes}</span>
+                    ) : null}
                   </td>
 
                   <td className="whitespace-nowrap px-4 py-2.5 text-gray-400">

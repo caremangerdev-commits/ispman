@@ -6,7 +6,7 @@ import { CheckoffClient } from '@/components/checkoff/CheckoffClient'
 import { HandoverHistory } from '@/components/checkoff/HandoverHistory'
 import {
   getAllAgentsSummary, getCheckoffSummary, handoverDateFor, listAgents,
-  listHandovers, lastHandoverByAgent,
+  listHandovers, lastHandoverByAgent, NO_PERIOD, parsePeriod,
 } from '@/lib/data/checkoff'
 import { getGeneralSettings } from '@/lib/data/company'
 import { currencySymbol } from '@/lib/format'
@@ -52,10 +52,18 @@ export default async function CheckoffPage({
   const viewRaw = Array.isArray(sp.view) ? sp.view[0] : sp.view
   const view: 'outstanding' | 'history' = viewRaw === 'history' ? 'history' : 'outstanding'
 
+  // The period a checkoff covers, in the URL so it survives a refresh and the
+  // agent switch. Parsed by the same function the checkoff actions use; a bad
+  // one is reported and ignored rather than guessed at.
+  const first = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v)
+  const parsedPeriod = parsePeriod(first(sp.from), first(sp.to))
+  const period = parsedPeriod.ok ? parsedPeriod.period : NO_PERIOD
+  const periodError = parsedPeriod.ok ? null : parsedPeriod.error
+
   const settings = await getGeneralSettings(company.id)
   const [agents, allAgents, handovers, handoverIndex] = await Promise.all([
     listAgents(company.id),
-    getAllAgentsSummary({ companyId: company.id, timezone: settings.timezone }),
+    getAllAgentsSummary({ companyId: company.id, timezone: settings.timezone, period }),
     listHandovers(company.id),
     lastHandoverByAgent(company.id),
   ])
@@ -69,6 +77,7 @@ export default async function CheckoffPage({
         companyId: company.id,
         agent: selectedAgent,
         timezone: settings.timezone,
+        period,
       })
     : null
 
@@ -127,6 +136,8 @@ export default async function CheckoffPage({
           lastHandoverIso={
             selectedAgent ? handoverDateFor(selectedAgent, handoverIndex) : null
           }
+          period={period}
+          periodError={periodError}
         />
       )}
     </div>
