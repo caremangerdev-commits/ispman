@@ -109,6 +109,76 @@ export function searchClauses(
   })
 }
 
+/**
+ * The same rule as searchClauses, restricted to the NAME fields.
+ *
+ * The search box asks for these separately so that customers whose NAME
+ * matches are always among the candidates it ranks, however many others match
+ * only on an address. Without it a common address word decides who is fetched:
+ * at Ezmze "Ena Brown" matched ten customers, most through "Brown's Town", and
+ * Ena Brown herself was not in the eight returned (7 Oct 2026).
+ */
+export function nameClauses(query: string): string[] {
+  return searchTokens(query).map((token) => {
+    const p = pattern(token)
+    return 'first_name.ilike.' + p + ',last_name.ilike.' + p
+  })
+}
+
+/**
+ * How well a customer matches what was typed. Higher is better; ranking only,
+ * never filtering — matchesCustomer / searchClauses decide WHETHER they match.
+ *
+ * Scored per word, best field wins, summed over the words:
+ *
+ *   100  a whole word of the name ("ena" in ENA BROWN)
+ *    90  the row id or the whole account number
+ *    60  the start of a name word ("bro" in BROWN)
+ *    40  anywhere in the name ("ena" in JUDEENA)
+ *    20  phone, account number or MAC
+ *     5  the address only
+ *
+ * So a name match always outranks an address match, and the person whose name
+ * IS what was typed comes first.
+ */
+export function matchScore(row: SearchableCustomer, query: string): number {
+  const tokens = searchTokens(query)
+    .map((t) => t.replace(/[%*,()]/g, '').toLowerCase())
+    .filter(Boolean)
+
+  const name = [row.first_name, row.last_name].filter(Boolean).join(' ').toLowerCase()
+  const nameWords = name.split(/[\s'.-]+/).filter(Boolean)
+  const account = (row.account_number ?? '').toLowerCase()
+  const other = [row.phone, row.account_number, row.mac_address].map((v) => (v ?? '').toLowerCase())
+  const address = (row.address ?? '').toLowerCase()
+
+  let score = 0
+  for (const t of tokens) {
+    let best = 0
+    if (nameWords.includes(t)) best = 100
+    else if (asId(t) === String(row.id) || (account !== '' && account === t)) best = 90
+    else if (nameWords.some((w) => w.startsWith(t))) best = 60
+    else if (name.includes(t)) best = 40
+    else if (other.some((v) => v.includes(t))) best = 20
+    else if (address.includes(t)) best = 5
+    score += best
+  }
+  return score
+}
+
+/**
+ * Best match first: matchScore, then name A-Z, then id, so equal scores come
+ * back in the same order every time.
+ */
+export function rankCustomers<T extends SearchableCustomer>(rows: T[], query: string): T[] {
+  const nameOf = (r: T) => [r.first_name, r.last_name].filter(Boolean).join(' ').toLowerCase()
+  return rows
+    .map((row) => ({ row, score: matchScore(row, query) }))
+    .sort((a, b) =>
+      b.score - a.score || nameOf(a.row).localeCompare(nameOf(b.row)) || a.row.id - b.row.id)
+    .map((x) => x.row)
+}
+
 /** The fields a search reads. Kept next to the clause builder above. */
 export type SearchableCustomer = {
   id: number

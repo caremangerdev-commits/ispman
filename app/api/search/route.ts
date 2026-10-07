@@ -7,7 +7,7 @@ import { lastNetworkEvents } from '@/lib/data/network-events'
 import { resolveStatus, type CustomerStatus } from '@/lib/status'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
-import { searchClauses } from '@/lib/search'
+import { nameClauses, rankCustomers, searchClauses } from '@/lib/search'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { toCustomerType, toExpiryMode } from '@/lib/types'
@@ -68,7 +68,18 @@ export type SearchHit = {
   last_billed_date: string | null
 }
 
-const LIMIT = 8
+/**
+ * How many results are shown. Was 8: too few once a common word matches widely
+ * (at Ezmze "Ena Brown" matches ten customers). Both dropdowns scroll.
+ */
+const LIMIT = 20
+
+/**
+ * How many candidates each query fetches before ranking. The ranking needs to
+ * see the best matches, and PostgREST returns rows in no particular order, so
+ * this is well above LIMIT.
+ */
+const CANDIDATES = 200
 
 export async function GET(request: NextRequest) {
   const { company, profile } = await getSession()
@@ -105,11 +116,29 @@ export async function GET(request: NextRequest) {
     lookup = lookup.or(clause)
   }
 
-  const { data, error } = await lookup.limit(LIMIT)
+  // A second, name-only query, so customers whose NAME matches are always among
+  // the candidates however many match only on address. Both feed one ranking:
+  // a name match above an address match (lib/search.ts#rankCustomers).
+  let byName = db.from('customers').select(columns).eq('company_id', company.id)
+  for (const clause of nameClauses(query)) {
+    byName = byName.or(clause)
+  }
+
+  const [all, named] = await Promise.all([lookup.limit(CANDIDATES), byName.limit(CANDIDATES)])
+  const error = all.error ?? named.error
 
   if (error) {
     return NextResponse.json({ error: 'Search failed: ' + error.message }, { status: 500 })
   }
+
+  const seen = new Set<number>()
+  const candidates = [...(named.data ?? []), ...(all.data ?? [])].filter((r) => {
+    const id = (r as unknown as { id: number }).id
+    if (seen.has(id)) return false
+    seen.add(id)
+    return true
+  }) as unknown as Parameters<typeof rankCustomers>[0]
+  const data = rankCustomers(candidates, query).slice(0, LIMIT)
 
   type Row = {
     id: number
