@@ -12,7 +12,7 @@ import {
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
 import { formatCurrencyExact, instantToDateOnly, paymentInstant } from '@/lib/format'
 import {
-  PREPAID_CALENDAR_OFF, prepaidCalendarFor, readMonthCharges,
+  billedThroughOf, PREPAID_CALENDAR_OFF, prepaidCalendarFor, readMonthCharges,
 } from '@/lib/data/prepaid-calendar'
 import {
   calendarExpiry, forwardLines, laterYmd, monthLabel, round100, tillBreakdown,
@@ -803,8 +803,11 @@ export async function recordPayment(
     firstAnchor !== null && !(await provisionedUnderModel(company.id, customer.id))
   const model = calendar.enabled && !oldFirstRule
 
-  const returning =
-    model && registered !== null && registered.exists && registered.status !== 'active'
+  // Service has ended: the registry knows the customer and their access is
+  // not on. Decides the reconnection fee for every company, and the month's
+  // recompute under the model.
+  const disconnectedNow = registered !== null && registered.exists && registered.status !== 'active'
+  const returning = model && disconnectedNow
   const returnDay = ymd(paymentDate)
   let monthChange: {
     current: NonNullable<TillBreakdown['current']>
@@ -820,6 +823,7 @@ export async function recordPayment(
       charges: await readMonthCharges(company.id, customer.id),
       disconnected: true,
       forwardMonths: 0,
+      billedThrough: await billedThroughOf(company.id, customer.id),
     })
     breakdownLines = breakdown.lines
 
@@ -1240,13 +1244,14 @@ export async function recordPayment(
   }
 
   // THE RECONNECTION FEE (0028). Offered only at the till and only to a
-  // returning customer; ticked on by default, and the cashier may leave it off.
+  // customer whose service has ended — prepaid or postpaid alike (owner,
+  // 8 Oct 2026); ticked on by default, and the cashier may leave it off.
   // It is NOT service money: its own payments row ("Reconnection fee"), in the
   // same visit, settling like a one-off charge. It moves no expiry, changes no
   // days charged, and is never added to a balance — someone who never comes
   // back does not owe it.
   const feeOffered =
-    returning && calendar.reconnectionFee > 0 && caps.otherPayments && caps.charges
+    disconnectedNow && calendar.reconnectionFee > 0 && caps.otherPayments && caps.charges
   const feeCharged = feeOffered && str(formData, 'reconnection_fee') === '1'
   let feeRow: Record<string, unknown> | null = null
   if (feeCharged) {
@@ -1669,11 +1674,17 @@ export type PaymentContext = {
    */
   charges: OpenCharge[]
   /**
+   * The reconnection fee the till offers this customer, or 0: the company's
+   * fee when their service has ended — prepaid or postpaid (owner, 8 Oct 2026)
+   * — and 0 otherwise. The same test recordPayment makes.
+   */
+  reconnectionFee: number
+  /**
    * Calendar-month prepaid (migration 0028), when the model applies to the
    * company; null otherwise — and null for a customer provisioned before the
    * model who has not paid yet (Option A: the till as it was before the model).
    * `returning` says the customer's service has ended, so the till recomputes
-   * this month and offers the reconnection fee.
+   * this month.
    */
   calendar: {
     returning: boolean
@@ -1684,12 +1695,13 @@ export type PaymentContext = {
     firstPayment: boolean
     /** The customer's recent month charges, for the breakdown. */
     monthCharges: MonthCharge[]
-    reconnectionFee: number
+    /** customers.billed_through (migration 0030), for the breakdown; null for nearly everybody. */
+    billedThrough: string | null
   } | null
 }
 
 export async function loadPaymentContext(customerId: number): Promise<PaymentContext> {
-  const none: PaymentContext = { firstPeriod: null, grant: null, charges: [], calendar: null }
+  const none: PaymentContext = { firstPeriod: null, grant: null, charges: [], reconnectionFee: 0, calendar: null }
 
   const { company, profile } = await getSession()
   if (!can(profile.role, 'record_payment')) return none
@@ -1749,8 +1761,8 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
   const oldFirstRule =
     firstAnchor !== null && !(await provisionedUnderModel(company.id, customer.id))
   const model = prepaid.enabled && !oldFirstRule
-  const returning =
-    model && registered !== null && registered.exists && registered.status !== 'active'
+  const disconnectedNow = registered !== null && registered.exists && registered.status !== 'active'
+  const returning = model && disconnectedNow
 
   const period = model ? null : await resolveFirstPeriod({
     companyId: company.id,
@@ -1775,12 +1787,16 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
       : null,
     grant: prior ? { ...prior, anchorThen: anchor ? ymd(anchor) : null } : null,
     charges,
+    reconnectionFee:
+      disconnectedNow && prepaid.reconnectionFee > 0 && caps.otherPayments && caps.charges
+        ? prepaid.reconnectionFee
+        : 0,
     calendar: model
       ? {
           returning,
           firstPayment: !returning && (registered?.expiry ?? null) !== null && firstAnchor !== null,
           monthCharges: returning ? await readMonthCharges(company.id, customer.id) : [],
-          reconnectionFee: prepaid.reconnectionFee,
+          billedThrough: returning ? await billedThroughOf(company.id, customer.id) : null,
         }
       : null,
   }

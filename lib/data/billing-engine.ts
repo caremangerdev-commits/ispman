@@ -8,6 +8,7 @@ import {
 } from '@/lib/billing-engine'
 import { addonTotals } from '@/lib/data/addon-totals'
 import { readBillableCustomers, type BillableCustomer } from '@/lib/data/bulk'
+import { prepaidCalendarFor, readBilledThrough } from '@/lib/data/prepaid-calendar'
 import { runServicePass } from '@/lib/data/prepaid-service'
 import { formatCurrency, instantToDateOnly } from '@/lib/format'
 import { serviceStateFor, type ServiceState } from '@/lib/radius/service-state'
@@ -192,6 +193,7 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
   const base = await readBillableCustomers(company.id)
   const addons = await addonTotals(base.map((c) => c.id))
   const service = await serviceStateFor(base, 'the billing engine')
+  const billedThrough = await readBilledThrough(company.id)
 
   const decided = base.map((c) => {
     const customer = { ...c, addons: addons.get(c.id) ?? 0, monthlyCharge: c.monthlyRate + (addons.get(c.id) ?? 0) }
@@ -200,7 +202,10 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
       today,
       startDate: company.startDate,
       companyBillDay: company.companyBillDay,
-      customer: { id: c.id, dateAdded: c.dateAdded, monthlyCharge: customer.monthlyCharge },
+      customer: {
+        id: c.id, dateAdded: c.dateAdded, monthlyCharge: customer.monthlyCharge,
+        billedThrough: billedThrough.get(c.id) ?? null,
+      },
       service: service.get(c.id),
     })
     return { customer, decision, service: service.get(c.id) }
@@ -210,7 +215,7 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
   const existing = await alreadyCharged(company.id, starts)
 
   const counts: CompanyDecision['counts'] = {
-    charge: 0, not_due: 0, before_start: 0, joined_after: 0,
+    charge: 0, not_due: 0, before_start: 0, joined_after: 0, covered: 0,
     zero_rate: 0, no_service: 0, unprovisioned: 0, already: 0,
   }
   const lines: EngineLine[] = []
@@ -314,9 +319,10 @@ export async function runBillingTick(only?: number): Promise<TickCompanySummary[
       const summary = await runCompany(company, actor)
       // Calendar-month prepaid: the service pass runs EVERY hour, after the
       // day's run — a disconnection or a return can happen at any time, and the
-      // day's run is skipped once it is done. Every live prepaid company: the
-      // same test as lib/data/prepaid-calendar.ts#prepaidCalendarFor.
-      if (company.mode === 'live' && company.billingType === 'prepaid') {
+      // day's run is skipped once it is done. Every company the model applies
+      // to — prepaid, live, and past its engine start date: before that date
+      // its balances are still raised by hand and there is nothing to reduce.
+      if ((await prepaidCalendarFor(company.id)).enabled) {
         try {
           summary.service = await runServicePass(company, actor)
         } catch (err) {
@@ -398,7 +404,7 @@ async function runCompany(company: EngineCompany, actor: SystemActor): Promise<T
   // --- Decide, then apply or preview ---------------------------------------
   try {
     const decision = await decideCompany(company, today)
-    const counters = {
+    const counters: Record<string, number> = {
       considered: decision.considered,
       skipped_not_due: decision.counts.not_due,
       skipped_before_start: decision.counts.before_start,
@@ -407,6 +413,8 @@ async function runCompany(company: EngineCompany, actor: SystemActor): Promise<T
       skipped_no_service: decision.counts.no_service,
       skipped_unprovisioned: decision.counts.unprovisioned,
     }
+    // 0030's counter, only where the column exists.
+    if ((await getSchemaCapabilities()).handover) counters.skipped_covered = decision.counts.covered
 
     if (company.mode === 'dry_run') {
       const preview = decision.lines
@@ -418,6 +426,7 @@ async function runCompany(company: EngineCompany, actor: SystemActor): Promise<T
           addons: l.customer.addons,
           period_start: l.decision.period.start,
           period_end: l.decision.period.end,
+          service_days: l.decision.serviceDays,
           bill_day: l.decision.billDay,
           credit_applied: round2(Math.min(Math.max(l.customer.accountCredit, 0), l.decision.amount)),
         }))
@@ -489,6 +498,7 @@ async function runCompany(company: EngineCompany, actor: SystemActor): Promise<T
           decision.counts.not_due + ' not yet due, ' +
           decision.counts.before_start + ' before the engine start date, ' +
           decision.counts.joined_after + ' who joined after the charge date, ' +
+          (decision.counts.covered ? decision.counts.covered + ' whose month was charged by hand before the hand-over, ' : '') +
           decision.counts.zero_rate + ' with no monthly charge, ' +
           decision.counts.no_service + ' disconnected, ' +
           decision.counts.unprovisioned + ' never provisioned. ' +
@@ -533,6 +543,8 @@ export type BillRunRow = {
   skippedNoService: number
   skippedUnprovisioned: number
   skippedAlready: number
+  /** Migration 0030: whole months charged by hand before the hand-over. 0 before it. */
+  skippedCovered: number
   error: string | null
   preview: PreviewLine[] | null
 }
@@ -544,14 +556,21 @@ export type PreviewLine = {
   addons: number
   period_start: string
   period_end: string
+  /** A part month's days; null or absent for a whole month. */
+  service_days?: number | null
   bill_day: number
   credit_applied: number
 }
 
-const RUN_COLUMNS =
+const RUN_COLUMNS_BASE =
   'id, run_date, mode, status, started_at, finished_at, attempts, considered, charged, ' +
   'total_amount, credit_applied, skipped_not_due, skipped_before_start, skipped_joined_after, ' +
   'skipped_zero_rate, skipped_no_service, skipped_unprovisioned, skipped_already, error, preview'
+
+/** With 0030's counter where the column exists. */
+async function runColumns(): Promise<string> {
+  return (await getSchemaCapabilities()).handover ? RUN_COLUMNS_BASE + ', skipped_covered' : RUN_COLUMNS_BASE
+}
 
 function toRun(r: Record<string, unknown>): BillRunRow {
   return {
@@ -573,6 +592,7 @@ function toRun(r: Record<string, unknown>): BillRunRow {
     skippedNoService: Number(r.skipped_no_service ?? 0),
     skippedUnprovisioned: Number(r.skipped_unprovisioned ?? 0),
     skippedAlready: Number(r.skipped_already ?? 0),
+    skippedCovered: Number(r.skipped_covered ?? 0),
     error: (r.error as string | null) ?? null,
     preview: Array.isArray(r.preview) ? (r.preview as PreviewLine[]) : null,
   }
@@ -583,7 +603,7 @@ export async function listBillRuns(companyId: number, limit = 90): Promise<BillR
   if (!caps.billingEngine) return []
   const { data, error } = await tenantClient()
     .from('bill_runs')
-    .select(RUN_COLUMNS)
+    .select(await runColumns())
     .eq('company_id', companyId)
     .order('run_date', { ascending: false })
     .order('id', { ascending: false })
@@ -597,7 +617,7 @@ export async function getBillRun(companyId: number, id: number): Promise<BillRun
   if (!caps.billingEngine) return null
   const { data, error } = await tenantClient()
     .from('bill_runs')
-    .select(RUN_COLUMNS)
+    .select(await runColumns())
     .eq('company_id', companyId)
     .eq('id', id)
     .maybeSingle()

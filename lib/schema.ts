@@ -141,6 +141,12 @@ export type SchemaCapabilities = {
    * nothing reads or writes the columns.
    */
   charges: boolean
+  /**
+   * Migration 0030: customers.billed_through and bill_runs.skipped_covered, the
+   * hand-over from hand billing to the engine. Absent, nothing reads or writes
+   * either, and every customer is billed as if nothing had been billed before.
+   */
+  handover: boolean
 }
 
 /**
@@ -172,6 +178,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     messagingOutboxRes, messagingSettingRes, messagingOptOutRes,
     brandingRes, engineRunsRes, engineChargesRes,
     chargesTableRes, chargePaymentRes,
+    billedThroughRes, skippedCoveredRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -245,6 +252,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     // 0025: the charges table and the payments columns that settle one.
     db.from('customer_charges').select('id').limit(1),
     db.from('payments').select('charge_id, visit_id, charge_outstanding_before').limit(1),
+    // 0030: the hand-over column and its run counter.
+    db.from('customers').select('billed_through').limit(1),
+    db.from('bill_runs').select('skipped_covered').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -448,6 +458,15 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for payments charge columns: ' + chargePaymentRes.error.message)
   }
 
+  // 0030: two ALTERs; either missing disables the hand-over.
+  const missingHandover =
+    billedThroughRes.error?.code === '42703' || skippedCoveredRes.error?.code === '42703'
+  for (const [what, res] of [['customers.billed_through', billedThroughRes], ['bill_runs.skipped_covered', skippedCoveredRes]] as const) {
+    if (res.error && res.error.code !== '42703' && res.error.code !== 'PGRST205' && res.error.code !== '42P01') {
+      throw new Error('Schema probe failed for ' + what + ': ' + res.error.message)
+    }
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -475,6 +494,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     messaging: !missingSms && !missingMessaging,
     branding: brandingRes.error?.code !== '42703',
     charges: !missingOtherPaymentCols && !missingPaymentCategories && !missingCharges,
+    handover: !missingHandover && !missingEngine,
   }
 })
 

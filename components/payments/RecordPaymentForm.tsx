@@ -134,6 +134,7 @@ function calendarSeed(
     charges: calendar.monthCharges,
     disconnected: true,
     forwardMonths: 0,
+    billedThrough: calendar.billedThrough,
   })
   return String(amountDueForMonths(due, round100(hit.total_monthly), months))
 }
@@ -193,12 +194,15 @@ export function RecordPaymentForm({
   // moment before it lands; the server always has the evidence and decides
   // for real. See lib/billing.ts#periodAlreadyGranted.
   const [priorGrant, setPriorGrant] = useState<PaymentContext['grant']>(null)
-  // Migration 0028. Null unless calendar-month prepaid is on for the company.
+  // Migration 0028. Null unless calendar-month prepaid applies to the company.
   // When the customer is RETURNING (their service has ended), this month is
-  // recomputed for the return and the reconnection fee is offered.
+  // recomputed for the return.
   const [calendar, setCalendar] = useState<PaymentContext['calendar']>(null)
-  // The reconnection fee is ticked ON by default whenever it is offered; the
-  // cashier may leave it off, and the server logs which.
+  // The reconnection fee offered to this customer, or 0: any company's fee,
+  // prepaid or postpaid, when the customer's service has ended. Ticked ON by
+  // default whenever it is offered; the cashier may leave it off, and the
+  // server logs which.
+  const [reconnectionFee, setReconnectionFee] = useState(0)
   const [feeTicked, setFeeTicked] = useState(true)
   // NEVER AUTOMATIC. A short first period is charged in full unless the cashier
   // ticks this, which is why it starts false on every customer.
@@ -359,6 +363,7 @@ export function RecordPaymentForm({
         setPriorGrant(context.grant)
         setOpenCharges(context.charges)
         setCalendar(context.calendar)
+        setReconnectionFee(context.reconnectionFee)
 
         // A returning calendar-month customer: seed with this month recomputed
         // for the return, unless the cashier has already typed over the seed.
@@ -402,6 +407,7 @@ export function RecordPaymentForm({
         setPriorGrant(context.grant)
         setOpenCharges(context.charges)
         setCalendar(context.calendar)
+        setReconnectionFee(context.reconnectionFee)
 
         const calendarNext = calendarSeed(customer, context.calendar, 1, browserToday())
         if (calendarNext !== null) {
@@ -436,6 +442,7 @@ export function RecordPaymentForm({
     setFirstPeriod(null)
     setPriorGrant(null)
     setCalendar(null)
+    setReconnectionFee(0)
     setFeeTicked(true)
     setDiscountTicked(false)
     setOpenCharges([])
@@ -470,6 +477,7 @@ export function RecordPaymentForm({
     setFirstPeriod(null)
     setPriorGrant(null)
     setCalendar(null)
+    setReconnectionFee(0)
     setFeeTicked(true)
     setDiscountTicked(false)
     setOpenCharges([])
@@ -633,6 +641,7 @@ export function RecordPaymentForm({
         charges: calendar.monthCharges,
         disconnected: true,
         forwardMonths: 0,
+        billedThrough: calendar.billedThrough,
       })
     : null
   // A new customer's first payment since provisioning is counted the same way
@@ -642,8 +651,8 @@ export function RecordPaymentForm({
   // A month ahead is the full rate ROUNDED under this model.
   const monthUnit = calendarCounted ? round100(monthlyCharge) : monthlyCharge
   const owed = calendarBreakdown ? calendarBreakdown.due : carried + firstPeriodDue
-  const feeOffered = calendarReturning && (calendar?.reconnectionFee ?? 0) > 0
-  const feeAmount = feeOffered && feeTicked ? calendar?.reconnectionFee ?? 0 : 0
+  const feeOffered = selected !== null && reconnectionFee > 0
+  const feeAmount = feeOffered && feeTicked ? reconnectionFee : 0
 
   const due = computeAmountDue(owed)
   // What the dropdown is asking for, which is what the Amount field was seeded
@@ -1083,10 +1092,11 @@ export function RecordPaymentForm({
                     value={money(months > 1 ? askingFor : due)}
                     emphasis
                   />
-                  {/* The reconnection fee: offered only to a returning customer,
-                      ticked by default, never part of their balance. Unticked,
-                      nothing is posted and the server logs it as waived. */}
-                  {feeOffered && calendar ? (
+                  {/* The reconnection fee: offered only to a customer whose
+                      service has ended, prepaid or postpaid; ticked by default,
+                      never part of their balance. Unticked, nothing is posted
+                      and the server logs it as waived. */}
+                  {feeOffered ? (
                     <>
                       <label className="flex min-h-11 cursor-pointer items-start justify-between gap-3 rounded-lg border border-blue-900/60 bg-blue-950/30 px-3 py-2.5 sm:min-h-0 sm:py-2">
                         <span className="text-xs text-blue-200/90">
@@ -1097,7 +1107,7 @@ export function RecordPaymentForm({
                         </span>
                         <span className="flex shrink-0 items-center gap-2">
                           <span className="font-mono text-sm text-blue-100">
-                            {money(calendar.reconnectionFee)}
+                            {money(reconnectionFee)}
                           </span>
                           <input
                             type="checkbox"

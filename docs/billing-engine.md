@@ -75,6 +75,17 @@ Defaults until 2026-10-03.)
   before it is never charged. **Set it after the last date the company was
   billed by hand or by Run Bills**, or the engine charges the period that was
   running when it was switched on.
+- **Hand-over from hand billing** (migration 0030). A prepaid company that was
+  charged by hand by bill-date periods gets each customer's
+  `customers.billed_through` — the last day already charged — set once
+  before its engine goes live (`scripts/jmedia-handover.mjs` for JMEDIA). The
+  engine then charges only the days after it: nothing for a month wholly
+  inside it ("covered"), the days after it in the month it ends in, full
+  months after that. The till and the hourly service pass never charge into
+  those days either. The model applies only once the engine start date has
+  come, so the company is billed by hand as before until then.
+- **Reconnection fee.** Settings → Billing, any company, prepaid or postpaid.
+  Offered at the till to a customer whose service has ended.
 
 ## Going live
 

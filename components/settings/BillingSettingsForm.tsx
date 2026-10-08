@@ -246,15 +246,21 @@ export function BillingSettingsForm({
             </p>
           ) : engineMode !== 'live' ? (
             <p className="text-[11px] text-amber-400/90">
-              Applies once the engine is Live: until then this company is not billed by ISPMan, and
-              its balances are raised by hand.
+              Applies once the engine is Live and its start date has come: until then this company is
+              not billed by ISPMan, and its balances are raised by hand.
             </p>
           ) : null}
+        </Card>
 
+        {/* ---- 2c. Reconnection fee (migration 0028) — prepaid and postpaid ---- */}
+        <Card title="Reconnection Fee">
+          {!prepaidCalendar.available ? (
+            <p className="text-[11px] text-amber-400/90">Needs migration 0028.</p>
+          ) : null}
           <Field
             label="Reconnection Fee"
             htmlFor="reconnection_fee"
-            hint="Offered at the till when a disconnected customer pays. Never added to a balance. 0 means no fee."
+            hint="Offered at the till when a disconnected customer pays, prepaid or postpaid. Ticked by default; staff may leave it off. Never added to a balance. 0 means no fee."
           >
             <div className="relative">
               <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">

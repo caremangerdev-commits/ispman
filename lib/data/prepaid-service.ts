@@ -3,6 +3,7 @@ import 'server-only'
 import { logSystemEvent, type SystemActor } from '@/lib/audit'
 import { addonTotals } from '@/lib/data/addon-totals'
 import { readBillableCustomers } from '@/lib/data/bulk'
+import { readBilledThrough } from '@/lib/data/prepaid-calendar'
 import { formatCurrencyExact, instantToDateOnly, localDateOnly } from '@/lib/format'
 import {
   daysAfterServiceEnds, daysAfterServiceResumes, daysInMonth, monthFigure, monthLabel, monthOf,
@@ -74,6 +75,7 @@ export async function planServicePass(company: { id: number; timezone: string })
   if (!radiusConfigured()) throw new Error('The network registry is not configured.')
 
   const customers = await readBillableCustomers(company.id)
+  const billedThrough = await readBilledThrough(company.id)
   const db = tenantClient()
 
   const markRows = await fetchAllRows(
@@ -144,7 +146,8 @@ export async function planServicePass(company: { id: number; timezone: string })
     if (on && mark !== null) {
       const month = monthOf(today)
       const row = chargeOf.get(c.id + '|' + month.start)
-      const days = daysAfterServiceResumes(row ? row.service_days : 'none', today)
+      // Never into days a hand-billed period already charged (0030).
+      const days = daysAfterServiceResumes(row ? row.service_days : 'none', today, billedThrough.get(c.id) ?? null)
       const [y, m] = ymdParts(today)
       changes.push({
         customerId: c.id, name: c.name, kind: 'resumed', on: today,

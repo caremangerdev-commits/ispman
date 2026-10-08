@@ -80,6 +80,7 @@ export default async function BillingRunPage({
         <Line label="Not yet due" value={run.skippedNotDue.toLocaleString()} />
         <Line label="Before the engine start date" value={run.skippedBeforeStart.toLocaleString()} />
         <Line label="Joined after the charge date" value={run.skippedJoinedAfter.toLocaleString()} />
+        <Line label="Month charged by hand before the hand-over" value={run.skippedCovered.toLocaleString()} />
         <Line label="No monthly charge" value={run.skippedZeroRate.toLocaleString()} />
         <Line label="Disconnected" value={run.skippedNoService.toLocaleString()} />
         <Line label="Never provisioned" value={run.skippedUnprovisioned.toLocaleString()} />

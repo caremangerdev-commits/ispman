@@ -45,7 +45,7 @@
  */
 
 import { effectiveBillDay } from '@/lib/billing'
-import { round100 } from '@/lib/prepaid-calendar'
+import { daysNotBilled, monthFigure, monthOf, round100 } from '@/lib/prepaid-calendar'
 
 /** `settings.billing_type`. No per-customer override exists. */
 export type CompanyBillingType = 'prepaid' | 'postpaid'
@@ -146,6 +146,11 @@ export type EngineVerdict =
    * rule (migration 0017) for now, and by nothing in this engine.
    */
   | 'joined_after'
+  /**
+   * The whole month was charged before the engine took this customer over
+   * (customers.billed_through, migration 0030). Prepaid only.
+   */
+  | 'covered'
   /** Rate plus add-ons is zero. A comped customer: the owner set their rate to 0. */
   | 'zero_rate'
   /** Access had expired in radcheck when the tick fired. No service, no charge. */
@@ -163,6 +168,12 @@ export type EngineCustomer = {
    * outlier, not this.
    */
   monthlyCharge: number
+  /**
+   * `customers.billed_through` (migration 0030): the last day charged by hand
+   * before the engine took the customer over. Null for everybody the engine
+   * has always billed. Prepaid reads it; postpaid ignores it.
+   */
+  billedThrough?: string | null
 }
 
 export type EngineDecision = {
@@ -172,9 +183,14 @@ export type EngineDecision = {
   billDay: number
   /**
    * What a 'charge' verdict charges: rate plus add-ons — to the nearest
-   * hundred for prepaid, to the cent for postpaid.
+   * hundred for prepaid, to the cent for postpaid. For the month a hand-over
+   * ends in, the days after it (lib/prepaid-calendar.ts#monthFigure).
    */
   amount: number
+  /** The days `amount` rests on when it is a part month; null for a whole month. */
+  serviceDays: number | null
+  /** The whole month's figure, kept beside a part month's amount. */
+  fullAmount: number
 }
 
 /**
@@ -185,6 +201,7 @@ export type EngineDecision = {
  *   not_due          the charge date is ahead of today
  *   before_start     the charge date is before the company's start date
  *   joined_after     the customer was not here on the charge date
+ *   covered          the whole month was charged by hand before the hand-over
  *   zero_rate        nothing to charge
  *   no_service / unprovisioned   radcheck, read by the caller
  *   charge
@@ -217,24 +234,39 @@ export function engineVerdict(opts: {
   const period = monthPeriod(opts.today, billDay)
 
   const exact = Math.round((Number.isFinite(customer.monthlyCharge) ? customer.monthlyCharge : 0) * 100) / 100
-  const amount = opts.billingType === 'prepaid' ? round100(exact) : exact
-  const out = (verdict: EngineVerdict): EngineDecision => ({ verdict, period, billDay, amount })
+  const prepaid = opts.billingType === 'prepaid'
+  const fullAmount = prepaid ? round100(exact) : exact
+
+  // THE HAND-OVER (migration 0030, owner 8 Oct 2026). Only the days after the
+  // last day charged by hand: none of a month wholly inside it, the days after
+  // it in the month it ends in, whole months after that.
+  const open = prepaid ? daysNotBilled(period.start, customer.billedThrough ?? null) : null
+  const amount = open === null ? fullAmount : monthFigure(exact, open, monthOf(period.start).days)
+  const out = (verdict: EngineVerdict): EngineDecision =>
+    ({ verdict, period, billDay, amount, serviceDays: open, fullAmount })
 
   if (period.chargeDate > opts.today) return out('not_due')
   if (opts.startDate === null || period.chargeDate < opts.startDate) return out('before_start')
   if (customer.dateAdded && customer.dateAdded.slice(0, 10) > period.chargeDate) return out('joined_after')
+  if (open === 0) return out('covered')
   if (amount <= 0) return out('zero_rate')
   if (opts.service === 'disconnected') return out('no_service')
   if (opts.service === 'unprovisioned') return out('unprovisioned')
   return out('charge')
 }
 
-/** One element of the list apply_bill_charges() takes. */
+/**
+ * One element of the list apply_bill_charges() takes. A part month carries its
+ * days and the full-month figure, which 0030's version of the function writes
+ * to the row so the service pass and the till work from them.
+ */
 export type ChargeElement = {
   customer_id: number
   period_start: string
   period_end: string
   amount: number
+  service_days?: number
+  full_amount?: number
 }
 
 /** The 'charge' decisions, in the shape the Postgres function consumes. */
@@ -248,5 +280,8 @@ export function toChargeElements(
       period_start: d.decision.period.start,
       period_end: d.decision.period.end,
       amount: d.decision.amount,
+      ...(d.decision.serviceDays === null
+        ? {}
+        : { service_days: d.decision.serviceDays, full_amount: d.decision.fullAmount }),
     }))
 }

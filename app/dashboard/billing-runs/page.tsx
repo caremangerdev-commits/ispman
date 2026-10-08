@@ -143,6 +143,7 @@ export default async function BillingRunsPage() {
                 ['Not yet due', preview.decision.counts.not_due],
                 ['Before start date', preview.decision.counts.before_start],
                 ['Joined after charge date', preview.decision.counts.joined_after],
+                ['Charged by hand already', preview.decision.counts.covered],
                 ['No monthly charge', preview.decision.counts.zero_rate],
                 ['Disconnected', preview.decision.counts.no_service],
                 ['Never provisioned', preview.decision.counts.unprovisioned],

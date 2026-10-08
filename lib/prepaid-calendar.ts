@@ -95,19 +95,40 @@ export function daysAfterServiceEnds(current: number | null, endedOn: string): n
 }
 
 /**
+ * The days of a month NOT already billed before the engine took the customer
+ * over (migration 0030, customers.billed_through — the last day charged by
+ * hand). null: none of the month was, so the whole month is the engine's.
+ * 0: all of it was. Otherwise the days after `billedThrough`: billed through
+ * 3 Nov leaves 27 of November's 30; through 19 Nov leaves 11.
+ */
+export function daysNotBilled(periodStart: string, billedThrough: string | null): number | null {
+  if (!billedThrough || billedThrough < periodStart) return null
+  const month = monthOf(periodStart)
+  if (billedThrough >= month.end) return 0
+  return month.days - ymdParts(billedThrough)[2]
+}
+
+/**
  * The month's service days once service RESUMES on `resumedOn` (counted as a
  * service day): the days it already had, plus the days from the return to the
- * month's end. Never more than the month.
+ * month's end. Never more than the month — nor more than the days of it not
+ * already billed by hand (`billedThrough`, daysNotBilled): a return before
+ * the end of a hand-billed period adds only the days after it.
  *
  * `current` is the days of an EXISTING charge (null = the whole month), or
  * 'none' when the month has no charge yet — a customer disconnected on the
  * bill date was not charged for it.
  */
-export function daysAfterServiceResumes(current: number | null | 'none', resumedOn: string): number {
+export function daysAfterServiceResumes(
+  current: number | null | 'none',
+  resumedOn: string,
+  billedThrough: string | null = null
+): number {
   const [y, m] = ymdParts(resumedOn)
   const dim = daysInMonth(y, m)
-  const already = current === 'none' ? 0 : current ?? dim
-  return Math.min(dim, already + daysToMonthEnd(resumedOn))
+  const open = daysNotBilled(monthOf(resumedOn).start, billedThrough) ?? dim
+  const already = current === 'none' ? 0 : current ?? open
+  return Math.min(open, already + Math.min(daysToMonthEnd(resumedOn), open))
 }
 
 /**
@@ -251,6 +272,8 @@ export function tillBreakdown(opts: {
   charges: MonthCharge[]
   disconnected: boolean
   forwardMonths: number
+  /** customers.billed_through (migration 0030); null for nearly everybody. */
+  billedThrough?: string | null
 }): TillBreakdown {
   const { today, monthlyCharge } = opts
   const month = monthOf(today)
@@ -261,7 +284,7 @@ export function tillBreakdown(opts: {
   const charges = [...opts.charges]
 
   if (opts.disconnected) {
-    const serviceDays = daysAfterServiceResumes(row ? row.serviceDays : 'none', today)
+    const serviceDays = daysAfterServiceResumes(row ? row.serviceDays : 'none', today, opts.billedThrough ?? null)
     const amount = monthFigure(monthlyCharge, serviceDays, month.days)
     const delta = amount - (row ? row.amount : 0)
     current = {
