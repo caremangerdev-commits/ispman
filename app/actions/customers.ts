@@ -16,12 +16,14 @@ import {
 import { formatCurrencyExact } from '@/lib/format'
 import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
-import { getExpiryClock, getFirstPeriodRules } from '@/lib/data/company'
+import { parseYmd } from '@/lib/billing'
+import { getExpiryClock } from '@/lib/data/company'
+import { provisionPlan, type ProvisionPlan } from '@/lib/data/provision'
 import { applyExpiryClock } from '@/lib/radius/format'
 import { getSchemaCapabilities } from '@/lib/schema'
 import {
   ACTION_EVENT_TYPE, applyRadiusWrite, networkEventDetails, networkFailureDetails,
-  provisionExpiry, reconnectExpiry, type RadiusAction,
+  reconnectExpiry, type RadiusAction,
 } from '@/lib/radius/operations'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -834,6 +836,13 @@ async function runNetworkAction(opts: {
   success: (target: NetworkTarget, newExpiry: string) => string
   /** Recorded on the log row. Only correct_expiry supplies one. */
   reason?: string
+  /**
+   * Runs once the registry write and its event row are done, and only when
+   * something was written. Whatever it returns is added to the success
+   * message. Only Provision supplies one: the first month's charge under
+   * calendar-month prepaid.
+   */
+  afterWrite?: (target: NetworkTarget) => Promise<string | null>
 }) {
   const { action, formData } = opts
   const { company, profile } = await authorize(
@@ -929,6 +938,9 @@ async function runNetworkAction(opts: {
     })
   }
 
+  // --- 4. anything that follows from the write -----------------------------
+  const note = !result.skipped && opts.afterWrite ? await opts.afterWrite(target) : null
+
   revalidatePath('/dashboard/customers')
   revalidatePath('/dashboard/customers/' + id)
   revalidatePath('/dashboard')
@@ -937,7 +949,7 @@ async function runNetworkAction(opts: {
     back,
     result.skipped
       ? target.fullName + ': network is not configured, so nothing was written.'
-      : opts.success(target, result.newExpiry)
+      : opts.success(target, result.newExpiry) + (note ? ' ' + note : '')
   )
 }
 
@@ -947,30 +959,138 @@ async function runNetworkAction(opts: {
  * Writes both rows — `Auth-Type := Accept` and `Expiration` — in one
  * transaction.
  *
- * THE FIRST EXPIRY IS THE 21-DAY RULE, AND IT IS NOW SWITCHABLE (0017). On, the
- * next cut-off day only counts if it is at least three weeks out, so nobody is
- * switched on four days before their cut-off and billed for a month of it. Off,
- * the customer walks to the plain next cut-off day — the same date a
- * reconnection gets — because a company that turns this off has said a stub
- * first period is acceptable, and inventing some third behaviour for the
- * "off" case would be a rule nobody asked for.
+ * THE FIRST EXPIRY IS PICKED IN A POPUP, from exactly two dates: the next
+ * cut-off day after today and the one after it (owner, 8 Oct 2026, every
+ * company, prepaid and postpaid). The popup starts on the date the company's
+ * 21-day rule would have given (0017), so confirming without looking does what
+ * Provision always did. The posted date is checked against the same two dates,
+ * worked out again here from lib/data/provision.ts — anything else, a date
+ * typed into the request or a popup left open across midnight, is refused.
+ * A customer with no cut-off day has no dates to offer and is refused too.
  *
- * 21 itself is not a setting. See migration 0017 for why.
+ * CALENDAR-MONTH PREPAID (0028), when on: the first charge — connection day to
+ * the month's end — is written as the provisioning's own consequence, once the
+ * registry has the customer. See chargeFirstMonth.
  */
 export async function provisionCustomer(formData: FormData) {
-  // Resolved BEFORE runNetworkAction because expiryFor is synchronous. Both
-  // reads are cheap: getSession is request-cached, and getFirstPeriodRules is
-  // one narrow settings row.
+  // Resolved BEFORE runNetworkAction because expiryFor is synchronous.
   const { company } = await getSession()
-  const { firstExpiryRuleEnabled } = await getFirstPeriodRules(company.id)
+  const id = numOrNull(formData, 'id')
+  const plan = id === null ? null : await provisionPlan(company.id, id)
+  const picked = str(formData, 'first_expiry')
 
   return runNetworkAction({
     action: 'provision',
     formData,
-    expiryFor: (t) =>
-      firstExpiryRuleEnabled ? provisionExpiry(t.cutOffDate) : reconnectExpiry(t.cutOffDate),
+    expiryFor: (t) => {
+      if (!plan?.choices) {
+        return t.fullName + ' has no cut-off day on record, so there is no date to provision to. ' +
+          'Set the cut-off day, then provision.'
+      }
+      if (!plan.choices.includes(picked)) {
+        return 'Provision to one of the two cut-off dates offered: ' + plan.choices.join(' or ') +
+          '. If the day has turned since the window was opened, open Provision again.'
+      }
+      return parseYmd(picked) ?? 'That date could not be read.'
+    },
+    afterWrite: plan?.firstCharge && id !== null
+      ? () => chargeFirstMonth(company.id, id, plan)
+      : undefined,
     success: (t, expiry) => t.fullName + ' provisioned, expires ' + expiry,
   })
+}
+
+/**
+ * Calendar-month prepaid: a new customer's first charge, connection day to the
+ * month's end, written through set_month_charge() (0028) — the one guarded
+ * write every calendar-month change goes through, which moves the balance in
+ * the same transaction.
+ *
+ * ONLY WHEN THE MONTH HAS NO CHARGE. The engine never charges a customer the
+ * registry has not heard of, so a fresh provision finds none; a row that is
+ * there already (a customer re-provisioned after their rows were removed
+ * outside this app) is left exactly as it is and the log says so, rather than
+ * guessed at.
+ *
+ * Runs after the registry write and cannot undo it: the customer is on the
+ * network as the operator asked. A charge that does not land is logged and
+ * named in the message, for staff to put on by hand.
+ */
+async function chargeFirstMonth(
+  companyId: number,
+  customerId: number,
+  plan: ProvisionPlan
+): Promise<string | null> {
+  const charge = plan.firstCharge
+  if (!charge) return null
+
+  const db = tenantClient()
+  const { data: existing } = await db
+    .from('bill_charges')
+    .select('amount')
+    .eq('company_id', companyId)
+    .eq('customer_id', customerId)
+    .eq('period_start', charge.periodStart)
+    .maybeSingle()
+
+  const what =
+    charge.label + ', ' + charge.days + (charge.days === 1 ? ' day' : ' days') +
+    ' (' + plan.today + ' to ' + charge.periodEnd + ')'
+
+  if (existing) {
+    await logEvent({
+      customerId,
+      type: 'first_month_charge_skipped',
+      tag: '[customers]',
+      details:
+        'Provisioned ' + plan.today + '. ' + charge.label + ' already has a charge of ' +
+        formatCurrencyExact(Number((existing as { amount: number | string }).amount)) +
+        ', so the first-month charge of ' + formatCurrencyExact(charge.amount) + ' for ' + what +
+        ' was not written.',
+    })
+    return charge.label + ' already had a charge; the first-month charge was not added.'
+  }
+
+  const { data: applied, error } = await db.rpc('set_month_charge', {
+    p_company_id: companyId,
+    p_customer_id: customerId,
+    p_period_start: charge.periodStart,
+    p_period_end: charge.periodEnd,
+    p_charged_on: plan.today,
+    p_amount: charge.amount,
+    p_service_days: charge.days,
+    p_full_amount: charge.fullAmount,
+    p_source: 'provision',
+    p_expected_amount: null,
+    p_touch_service: true,
+    p_service_ended_on: null,
+  })
+  const result = applied as { ok: boolean; reason?: string; carried_after?: number } | null
+
+  if (error || !result?.ok) {
+    const why = error ? error.message : result?.reason ?? 'no answer'
+    await logEvent({
+      customerId,
+      type: 'first_month_charge_failed',
+      tag: '[customers]',
+      details:
+        'Provisioned ' + plan.today + ', but the first-month charge of ' +
+        formatCurrencyExact(charge.amount) + ' for ' + what + ' was NOT written: ' + why,
+    })
+    return 'The first-month charge of ' + formatCurrencyExact(charge.amount) +
+      ' was NOT added (' + why + ') — add it to the balance by hand.'
+  }
+
+  await logEvent({
+    customerId,
+    type: 'first_month_charged',
+    tag: '[customers]',
+    details:
+      'First month charged at provisioning: ' + formatCurrencyExact(charge.amount) + ' for ' + what +
+      ' of ' + charge.monthDays + ', full month ' + formatCurrencyExact(charge.fullAmount) +
+      ' | balance_after=' + Number(result.carried_after ?? 0).toFixed(2),
+  })
+  return 'First month charged: ' + formatCurrencyExact(charge.amount) + ' for ' + what + '.'
 }
 
 /**

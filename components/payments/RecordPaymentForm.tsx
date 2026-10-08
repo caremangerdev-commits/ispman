@@ -21,7 +21,7 @@ import {
   proportionalDate, serviceExpiry, ymd, type AccessDecision,
 } from '@/lib/billing'
 import {
-  calendarExpiry, forwardLines, round100, tillBreakdown,
+  calendarExpiry, forwardLines, laterYmd, round100, tillBreakdown,
 } from '@/lib/prepaid-calendar'
 import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type PaymentMethod,
@@ -121,6 +121,11 @@ function calendarSeed(
   months: number,
   todayYmd: string
 ): string | null {
+  // A first payment: the balance provisioning charged, plus months ahead at
+  // the full rate rounded.
+  if (calendar?.firstPayment) {
+    return String(amountDueForMonths(hit.carried_balance, round100(hit.total_monthly), months))
+  }
   if (!calendar?.returning) return null
   const { due } = tillBreakdown({
     today: todayYmd,
@@ -630,8 +635,12 @@ export function RecordPaymentForm({
         forwardMonths: 0,
       })
     : null
+  // A new customer's first payment since provisioning is counted the same way
+  // (app/actions/payments.ts#recordPayment).
+  const calendarFirst = Boolean(calendar?.firstPayment) && selected !== null && !calendarReturning
+  const calendarCounted = calendarReturning || calendarFirst
   // A month ahead is the full rate ROUNDED under this model.
-  const monthUnit = calendarReturning ? round100(monthlyCharge) : monthlyCharge
+  const monthUnit = calendarCounted ? round100(monthlyCharge) : monthlyCharge
   const owed = calendarBreakdown ? calendarBreakdown.due : carried + firstPeriodDue
   const feeOffered = calendarReturning && (calendar?.reconnectionFee ?? 0) > 0
   const feeAmount = feeOffered && feeTicked ? calendar?.reconnectionFee ?? 0 : 0
@@ -683,7 +692,7 @@ export function RecordPaymentForm({
   // server runs before it writes. Never for a first payment, whose period no
   // earlier payment can have granted.
   const periodGranted =
-    selected !== null && !firstPeriod && !calendarReturning &&
+    selected !== null && !firstPeriod && !calendarCounted &&
     periodAlreadyGranted({
       periodStart: billPeriod?.start ?? null,
       carriedBefore: carried,
@@ -743,10 +752,14 @@ export function RecordPaymentForm({
   // open month.
   //
   // A returning calendar-month customer lands on the cut-off day of the month
-  // after the last month paid, as the server writes it.
+  // after the last month paid, as the server writes it; a first payment the
+  // same, never short of the date provisioning gave.
   const calendarExpiryDate =
-    calendarReturning && selected?.cut_off_date && monthsBought > 0
-      ? parseYmd(calendarExpiry(returnYmd, monthsBought, selected.cut_off_date))
+    calendarCounted && selected?.cut_off_date && monthsBought > 0
+      ? parseYmd(laterYmd(
+          calendarExpiry(returnYmd, monthsBought, selected.cut_off_date),
+          calendarFirst && currentExpiry ? ymd(currentExpiry) : null
+        ))
       : null
   const fullPeriodExpiry = selected
     ? monthsBought === 0

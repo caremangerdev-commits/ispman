@@ -134,6 +134,56 @@ export function provisionChoices(today: string, cutOffDay: number): [string, str
   return [first, second]
 }
 
+/** The later of two `YYYY-MM-DD` dates; a null second is ignored. */
+export function laterYmd(a: string, b: string | null): string {
+  return b && b > a ? b : a
+}
+
+/** Whole days from `a` to `b`: 5 Oct to 8 Oct is 3. */
+export function daysBetween(a: string, b: string): number {
+  const [ay, am, ad] = ymdParts(a)
+  const [by, bm, bd] = ymdParts(b)
+  return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86_400_000)
+}
+
+/**
+ * Which of the two Provision choices the popup starts on: what Provision did
+ * before there was a popup, so confirming without looking changes nothing.
+ * The 21-day rule on: the first when it is at least 21 days away, else the
+ * second (lib/expiry.ts#firstExpiry). Off — and always under calendar-month
+ * prepaid, which replaces that rule — the first.
+ */
+export function provisionDefault(today: string, choices: [string, string], twentyOneDayRule: boolean): string {
+  if (!twentyOneDayRule) return choices[0]
+  return daysBetween(today, choices[0]) >= 21 ? choices[0] : choices[1]
+}
+
+/**
+ * A new customer's first charge under calendar-month prepaid: connection day to
+ * the month's end, both counted, at the month's daily rate, rounded. Whichever
+ * of the two dates Provision was given — a later one delays the disconnection,
+ * and the days to it are charged by the months they fall in.
+ */
+export function firstMonthCharge(today: string, monthlyCharge: number): {
+  periodStart: string
+  periodEnd: string
+  days: number
+  monthDays: number
+  amount: number
+  fullAmount: number
+} {
+  const month = monthOf(today)
+  const days = daysToMonthEnd(today)
+  return {
+    periodStart: month.start,
+    periodEnd: month.end,
+    days,
+    monthDays: month.days,
+    amount: monthFigure(monthlyCharge, days, month.days),
+    fullAmount: round100(monthlyCharge),
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The till
 // ---------------------------------------------------------------------------

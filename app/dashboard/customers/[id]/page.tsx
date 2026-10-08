@@ -17,6 +17,8 @@ import { lastBalanceAdjustment } from '@/lib/data/balance-adjustments'
 import { lastChargeFor } from '@/lib/data/billing-engine'
 import { listCustomerChanges } from '@/lib/data/customer-changes'
 import { listNetworkHistory } from '@/lib/data/network-events'
+import { provisionPlan } from '@/lib/data/provision'
+import { canProvision } from '@/lib/status'
 import {
   getCustomerAddonIds, listAdditionalServices, listMiscCategories, listServicePlans,
 } from '@/lib/data/catalog'
@@ -82,6 +84,12 @@ export default async function CustomerDetailPage({
     ])
 
   const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
+
+  // The two dates Provision offers — read only when the button will show.
+  const provision =
+    can(profile.role, 'provision_customer') && canProvision(radius.status)
+      ? await provisionPlan(company.id, customer.id)
+      : null
 
   return (
     <div className="space-y-4">
@@ -149,6 +157,7 @@ export default async function CustomerDetailPage({
         additionalServices={addons}
         miscCategories={miscCats}
         selectedAddonIds={selectedAddonIds}
+        provisionPlan={provision}
       />
 
       {/* Money owed that is not service. Beside the record rather than inside

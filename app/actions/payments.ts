@@ -15,7 +15,7 @@ import {
   PREPAID_CALENDAR_OFF, prepaidCalendarFor, readMonthCharges,
 } from '@/lib/data/prepaid-calendar'
 import {
-  calendarExpiry, forwardLines, monthLabel, round100, tillBreakdown,
+  calendarExpiry, forwardLines, laterYmd, monthLabel, round100, tillBreakdown,
   type BreakdownLine, type MonthCharge, type TillBreakdown,
 } from '@/lib/prepaid-calendar'
 import { getExpiryClock, getFirstPeriodRules } from '@/lib/data/company'
@@ -847,6 +847,17 @@ export async function recordPayment(
     }
   }
 
+  // A NEW CUSTOMER'S FIRST PAYMENT under the model. Provisioning charged the
+  // connection day to the month's end and wrote an expiry; this settles that
+  // charge. Counted like a return — the current month if any money is paid, a
+  // whole rounded month for each month beyond — and landed on the cut-off day
+  // after the last month paid, never short of the date provisioning gave. The
+  // ordinary walk from the registry expiry would count the first month again
+  // on top of the date that already covers it: a free month.
+  const calendarFirst =
+    calendar.enabled && !returning && registryExpiry !== null &&
+    (await firstPeriodAnchor(company.id, customer.id)) !== null
+
   /** Puts this month's charge back as it was, when the payment did not record. */
   const undoMonthChange = async () => {
     if (!monthChange) return
@@ -954,7 +965,7 @@ export async function recordPayment(
 
   // Not for a returning calendar-month customer either: their month was just
   // recomputed from the days they had, and paying it is what brings them back.
-  const grant = caps.billing && !firstPeriod && !returning
+  const grant = caps.billing && !firstPeriod && !returning && !calendarFirst
     ? await latestGrant(company.id, customer.id)
     : null
   const periodGranted =
@@ -985,7 +996,7 @@ export async function recordPayment(
         monthlyCharge,
         amountPaid: paidAmount,
       })
-    : returning
+    : returning || calendarFirst
       ? monthsCovered(due, round100(monthlyCharge), paidAmount, false)
       : monthsCovered(due, monthlyCharge, paidAmount, periodGranted)
 
@@ -1042,9 +1053,14 @@ export async function recordPayment(
   // after the last month paid: paying this month on 16 Oct gives 8 Nov, and
   // November as well gives 8 Dec. Walking from the lapsed expiry would stop at
   // the next cut-off — on 3 Nov that is 8 Nov, for money that paid to 30 Nov.
+  // A first payment lands the same way, but never short of the date
+  // provisioning gave: provisioned 25 Oct to 8 Dec, paying October keeps 8 Dec.
   const calendarDate =
-    returning && monthsPaid > 0 && customer.cut_off_date
-      ? parseYmd(calendarExpiry(returnDay, monthsPaid, customer.cut_off_date))
+    (returning || calendarFirst) && monthsPaid > 0 && customer.cut_off_date
+      ? parseYmd(laterYmd(
+          calendarExpiry(returnDay, monthsPaid, customer.cut_off_date),
+          calendarFirst && registryExpiry ? ymd(registryExpiry) : null
+        ))
       : null
   const fullPeriodExpiry: Date | null =
     monthsPaid === 0
@@ -1648,6 +1664,11 @@ export type PaymentContext = {
    */
   calendar: {
     returning: boolean
+    /**
+     * A new customer's first payment since provisioning: priced and landed like
+     * a return, never short of the expiry provisioning gave (recordPayment).
+     */
+    firstPayment: boolean
     /** The customer's recent month charges, for the breakdown. */
     monthCharges: MonthCharge[]
     reconnectionFee: number
@@ -1737,6 +1758,10 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
     calendar: prepaid.enabled
       ? {
           returning,
+          // The same test recordPayment makes before it prices.
+          firstPayment:
+            !returning && (registered?.expiry ?? null) !== null &&
+            (await firstPeriodAnchor(company.id, customer.id)) !== null,
           monthCharges: returning ? await readMonthCharges(company.id, customer.id) : [],
           reconnectionFee: prepaid.reconnectionFee,
         }

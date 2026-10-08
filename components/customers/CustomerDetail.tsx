@@ -8,7 +8,7 @@ import {
 } from 'lucide-react'
 
 import {
-  deleteCustomer, disconnectCustomer, provisionCustomer, reconnectCustomer,
+  deleteCustomer, disconnectCustomer, reconnectCustomer,
   updateCustomer, type ActionResult,
 } from '@/app/actions/customers'
 import Link from 'next/link'
@@ -16,6 +16,8 @@ import Link from 'next/link'
 import { AdjustBalanceModal } from '@/components/customers/AdjustBalanceModal'
 import { CorrectExpiryModal } from '@/components/customers/CorrectExpiryModal'
 import { ExtendAccessModal } from '@/components/customers/ExtendAccessModal'
+import { ProvisionModal } from '@/components/customers/ProvisionModal'
+import type { ProvisionPlan } from '@/lib/data/provision'
 import { StatusBadge } from '@/components/customers/StatusBadge'
 import { GpsField } from '@/components/ui/GpsField'
 import { GpsLink } from '@/components/ui/GpsLink'
@@ -231,6 +233,7 @@ export function CustomerDetail({
   balanceAdjustment,
   paymentCount,
   paymentsValue,
+  provisionPlan,
 }: {
   customer: DetailCustomer
   radius: RadiusStatus
@@ -246,6 +249,8 @@ export function CustomerDetail({
    *  count this page holds in full. */
   paymentCount: number
   paymentsValue: number
+  /** The two dates Provision offers; null when Provision is not shown. */
+  provisionPlan?: ProvisionPlan | null
 }) {
   const c = customer
 
@@ -389,18 +394,11 @@ export function CustomerDetail({
             </>
           ) : (
             <>
-              {/* Provision writes both radcheck rows for the first time,
-                  expiring on the 21-day rule. Only for someone the registry
-                  has never heard of. */}
-              {showProvision ? (
-                <button
-                  type="submit"
-                  formAction={provisionCustomer}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-500"
-                >
-                  <Wifi className="h-3.5 w-3.5" aria-hidden />
-                  Provision
-                </button>
+              {/* Provision writes both radcheck rows for the first time, to
+                  one of the two cut-off dates its popup offers. Only for
+                  someone the registry has never heard of. */}
+              {showProvision && provisionPlan ? (
+                <ProvisionModal customerId={c.id} customerName={name} plan={provisionPlan} />
               ) : null}
 
               {/* Reconnect puts a lapsed or cut-off customer back on at their
