@@ -18,7 +18,7 @@ import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
 import { parseYmd } from '@/lib/billing'
 import { getExpiryClock } from '@/lib/data/company'
-import { provisionPlan, type ProvisionPlan } from '@/lib/data/provision'
+import { FIRST_MONTH_EVENTS, provisionPlan, type ProvisionPlan } from '@/lib/data/provision'
 import { applyExpiryClock } from '@/lib/radius/format'
 import { getSchemaCapabilities } from '@/lib/schema'
 import {
@@ -1040,7 +1040,7 @@ async function chargeFirstMonth(
   if (existing) {
     await logEvent({
       customerId,
-      type: 'first_month_charge_skipped',
+      type: FIRST_MONTH_EVENTS.skipped,
       tag: '[customers]',
       details:
         'Provisioned ' + plan.today + '. ' + charge.label + ' already has a charge of ' +
@@ -1071,7 +1071,7 @@ async function chargeFirstMonth(
     const why = error ? error.message : result?.reason ?? 'no answer'
     await logEvent({
       customerId,
-      type: 'first_month_charge_failed',
+      type: FIRST_MONTH_EVENTS.failed,
       tag: '[customers]',
       details:
         'Provisioned ' + plan.today + ', but the first-month charge of ' +
@@ -1083,7 +1083,7 @@ async function chargeFirstMonth(
 
   await logEvent({
     customerId,
-    type: 'first_month_charged',
+    type: FIRST_MONTH_EVENTS.charged,
     tag: '[customers]',
     details:
       'First month charged at provisioning: ' + formatCurrencyExact(charge.amount) + ' for ' + what +

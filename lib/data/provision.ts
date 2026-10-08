@@ -32,6 +32,42 @@ export type ProvisionPlan = {
   firstCharge: (ReturnType<typeof firstMonthCharge> & { label: string }) | null
 }
 
+/**
+ * The log types Provision writes about the first month's charge — only ever
+ * with calendar-month prepaid on. Any one of them is the record that a
+ * customer was provisioned UNDER the model (see provisionedUnderModel).
+ */
+export const FIRST_MONTH_EVENTS = {
+  charged: 'first_month_charged',
+  skipped: 'first_month_charge_skipped',
+  failed: 'first_month_charge_failed',
+} as const
+
+/**
+ * Was this customer provisioned with calendar-month prepaid on?
+ *
+ * OPTION A (owner, 8 Oct 2026): customers provisioned BEFORE the switch, who
+ * have not paid yet, finish on the first-payment rule they were provisioned
+ * under; anyone provisioned after it gets the model. The till asks here.
+ *
+ * The evidence is Provision's own log row about the first month's charge —
+ * written, skipped or failed — not a date: it says what actually happened at
+ * that customer's provisioning, and a failed charge (added by hand afterwards)
+ * still counts as provisioned under the model, so the old rule cannot charge
+ * the first period a second time.
+ */
+export async function provisionedUnderModel(companyId: number, customerId: number): Promise<boolean> {
+  const { data, error } = await tenantClient()
+    .from('log')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('customer_id', customerId)
+    .in('type', Object.values(FIRST_MONTH_EVENTS))
+    .limit(1)
+  if (error) throw new Error('Could not read how this customer was provisioned: ' + error.message)
+  return (data ?? []).length > 0
+}
+
 export async function provisionPlan(
   companyId: number,
   customerId: number,

@@ -21,6 +21,7 @@ import {
 import { getExpiryClock, getFirstPeriodRules } from '@/lib/data/company'
 import { applyExpiryClock } from '@/lib/radius/format'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
+import { provisionedUnderModel } from '@/lib/data/provision'
 import { getChargesById, listOpenCharges, type OpenCharge } from '@/lib/data/charges'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
 import { getReversalSubject } from '@/lib/data/payments'
@@ -791,8 +792,19 @@ export async function recordPayment(
   // includes it and every line after this is the ordinary payment path. If the
   // payment then fails to record, the change is put back.
   const calendar = caps.billing ? await prepaidCalendarFor(company.id) : PREPAID_CALENDAR_OFF
+
+  // OPTION A (owner, 8 Oct 2026). A customer provisioned BEFORE the model was
+  // switched on, who has not paid since, finishes on the first-payment rule
+  // they were provisioned under: this payment is priced exactly as with the
+  // switch off — first period, months, expiry and all. Anyone provisioned
+  // after it gets the model. lib/data/provision.ts#provisionedUnderModel.
+  const firstAnchor = calendar.enabled ? await firstPeriodAnchor(company.id, customer.id) : null
+  const oldFirstRule =
+    firstAnchor !== null && !(await provisionedUnderModel(company.id, customer.id))
+  const model = calendar.enabled && !oldFirstRule
+
   const returning =
-    calendar.enabled && registered !== null && registered.exists && registered.status !== 'active'
+    model && registered !== null && registered.exists && registered.status !== 'active'
   const returnDay = ymd(paymentDate)
   let monthChange: {
     current: NonNullable<TillBreakdown['current']>
@@ -854,9 +866,7 @@ export async function recordPayment(
   // after the last month paid, never short of the date provisioning gave. The
   // ordinary walk from the registry expiry would count the first month again
   // on top of the date that already covers it: a free month.
-  const calendarFirst =
-    calendar.enabled && !returning && registryExpiry !== null &&
-    (await firstPeriodAnchor(company.id, customer.id)) !== null
+  const calendarFirst = model && !returning && registryExpiry !== null && firstAnchor !== null
 
   /** Puts this month's charge back as it was, when the payment did not record. */
   const undoMonthChange = async () => {
@@ -886,8 +896,9 @@ export async function recordPayment(
   // expiry provisioning wrote is what says how long the first period is.
   //
   // NEVER under calendar-month prepaid: a new customer's first month is charged
-  // from connection day to month end when they are provisioned.
-  const firstPeriod = calendar.enabled
+  // from connection day to month end when they are provisioned. Still for one
+  // provisioned before the switch (oldFirstRule, above).
+  const firstPeriod = model
     ? null
     : await resolveFirstPeriod({
         companyId: company.id,
@@ -1659,8 +1670,10 @@ export type PaymentContext = {
   charges: OpenCharge[]
   /**
    * Calendar-month prepaid (migration 0028), when the model is on for the
-   * company; null otherwise. `returning` says the customer's service has ended,
-   * so the till recomputes this month and offers the reconnection fee.
+   * company; null otherwise — and null for a customer provisioned before the
+   * switch who has not paid yet (Option A: the till as with the switch off).
+   * `returning` says the customer's service has ended, so the till recomputes
+   * this month and offers the reconnection fee.
    */
   calendar: {
     returning: boolean
@@ -1728,11 +1741,18 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
 
   // Calendar-month prepaid: no first period (a new customer's first month is
   // charged at connection), and a returning customer's month is recomputed.
+  // The same tests recordPayment makes before it prices, Option A included: a
+  // customer provisioned before the switch and not yet paid gets the till as it
+  // is with the switch off.
   const prepaid = caps.billing ? await prepaidCalendarFor(company.id) : PREPAID_CALENDAR_OFF
+  const firstAnchor = prepaid.enabled ? await firstPeriodAnchor(company.id, customer.id) : null
+  const oldFirstRule =
+    firstAnchor !== null && !(await provisionedUnderModel(company.id, customer.id))
+  const model = prepaid.enabled && !oldFirstRule
   const returning =
-    prepaid.enabled && registered !== null && registered.exists && registered.status !== 'active'
+    model && registered !== null && registered.exists && registered.status !== 'active'
 
-  const period = prepaid.enabled ? null : await resolveFirstPeriod({
+  const period = model ? null : await resolveFirstPeriod({
     companyId: company.id,
     customerId: customer.id,
     monthlyCharge: Number(customer.monthly_rate ?? 0) + addonTotal,
@@ -1755,13 +1775,10 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
       : null,
     grant: prior ? { ...prior, anchorThen: anchor ? ymd(anchor) : null } : null,
     charges,
-    calendar: prepaid.enabled
+    calendar: model
       ? {
           returning,
-          // The same test recordPayment makes before it prices.
-          firstPayment:
-            !returning && (registered?.expiry ?? null) !== null &&
-            (await firstPeriodAnchor(company.id, customer.id)) !== null,
+          firstPayment: !returning && (registered?.expiry ?? null) !== null && firstAnchor !== null,
           monthCharges: returning ? await readMonthCharges(company.id, customer.id) : [],
           reconnectionFee: prepaid.reconnectionFee,
         }

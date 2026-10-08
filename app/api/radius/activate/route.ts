@@ -1,7 +1,11 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
+import { getExpiryClock } from '@/lib/data/company'
 import { can } from '@/lib/permissions'
 import { activateInRadius, radiusConfigured } from '@/lib/radius-db'
+import {
+  applyExpiryClock, formatRadiusExpiration, parseRadiusExpiration,
+} from '@/lib/radius/format'
 import { getSession } from '@/lib/session'
 
 /**
@@ -18,7 +22,7 @@ import { getSession } from '@/lib/session'
  * callers (a NAS script, a cron job) that cannot invoke a server action.
  */
 export async function POST(request: NextRequest) {
-  const { profile } = await getSession()
+  const { company, profile } = await getSession()
   if (!can(profile.role, 'activate_customer')) {
     return NextResponse.json({ success: false, error: 'Forbidden' }, { status: 403 })
   }
@@ -53,9 +57,23 @@ export async function POST(request: NextRequest) {
     )
   }
 
+  // THE TIME IS THE COMPANY'S, as for every other writer: the caller's date is
+  // kept and its time replaced with the company's expiry time
+  // (lib/radius/format.ts#applyExpiryClock). Without this, a caller following
+  // the example above would write midnight.
+  const parsed = parseRadiusExpiration(expiry)
+  if (!parsed) {
+    return NextResponse.json(
+      { success: false, error: 'expiry must be in FreeRADIUS format e.g. "21 Sep 2026 00:00".' },
+      { status: 400 }
+    )
+  }
+  const day = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate())
+  const written = formatRadiusExpiration(applyExpiryClock(day, await getExpiryClock(company.id)))
+
   try {
-    await activateInRadius(mac, expiry)
-    return NextResponse.json({ success: true })
+    await activateInRadius(mac, written)
+    return NextResponse.json({ success: true, expiry: written })
   } catch (err) {
     const e = err as { code?: string; message?: string; sqlMessage?: string }
     return NextResponse.json(
