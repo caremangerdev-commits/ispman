@@ -48,6 +48,7 @@
  */
 
 import { effectiveBillDay } from '@/lib/billing'
+import { round100 } from '@/lib/prepaid-calendar'
 
 /** `settings.billing_type`. No per-customer override exists. */
 export type CompanyBillingType = 'prepaid' | 'postpaid'
@@ -252,23 +253,32 @@ export function engineVerdict(opts: {
   customer: EngineCustomer
   /** From the registry. Undefined when the caller could not resolve an identity. */
   service: 'active' | 'disconnected' | 'unprovisioned' | undefined
+  /**
+   * Calendar-month prepaid is on for this company (migration 0028). The period
+   * is then the CALENDAR MONTH, charged on the company's bill day — the same
+   * shape as postpaid, which already is exactly that — and the amount is
+   * rounded to the nearest hundred (lib/prepaid-calendar.ts). Ignored for a
+   * postpaid company.
+   */
+  calendarPrepaid?: boolean
 }): EngineDecision {
   const { customer } = opts
+  const calendar = opts.billingType === 'prepaid' && opts.calendarPrepaid === true
+  const byCustomerBillDay = opts.billingType === 'prepaid' && !calendar
 
   // Postpaid ignores the customer's bill date ENTIRELY: only the company's day
   // is consulted, and a missing one reads as the 1st through the same function
-  // the rest of the app uses.
-  const billDay =
-    opts.billingType === 'prepaid'
-      ? effectiveBillDay(customer.billDate, opts.companyBillDay)
-      : effectiveBillDay(null, opts.companyBillDay)
+  // the rest of the app uses. So does calendar-month prepaid.
+  const billDay = byCustomerBillDay
+    ? effectiveBillDay(customer.billDate, opts.companyBillDay)
+    : effectiveBillDay(null, opts.companyBillDay)
 
-  const period =
-    opts.billingType === 'prepaid'
-      ? prepaidPeriod(opts.today, billDay)
-      : postpaidPeriod(opts.today, billDay)
+  const period = byCustomerBillDay
+    ? prepaidPeriod(opts.today, billDay)
+    : postpaidPeriod(opts.today, billDay)
 
-  const amount = Math.round((Number.isFinite(customer.monthlyCharge) ? customer.monthlyCharge : 0) * 100) / 100
+  const exact = Math.round((Number.isFinite(customer.monthlyCharge) ? customer.monthlyCharge : 0) * 100) / 100
+  const amount = calendar ? round100(exact) : exact
   const out = (verdict: EngineVerdict): EngineDecision => ({ verdict, period, billDay, amount })
 
   if (period.chargeDate > opts.today) return out('not_due')

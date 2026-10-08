@@ -6,7 +6,10 @@ import {
   type ChargeElement, type CompanyBillingType, type EngineDecision, type EngineMode,
   type EngineVerdict,
 } from '@/lib/billing-engine'
+import { addonTotals } from '@/lib/data/addon-totals'
 import { readBillableCustomers, type BillableCustomer } from '@/lib/data/bulk'
+import { prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
+import { runServicePass } from '@/lib/data/prepaid-service'
 import { formatCurrency, instantToDateOnly } from '@/lib/format'
 import { serviceStateFor, type ServiceState } from '@/lib/radius/service-state'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -38,9 +41,6 @@ import { tenantClient } from '@/lib/supabase/tenant'
 
 /** A 'running' row older than this belongs to a tick that died; it is retried. */
 const STALE_RUN_MS = 30 * 60_000
-
-/** How many customer ids go in one `in()` filter. Keeps the URL short. */
-const ID_CHUNK = 200
 
 export type EngineSettings = {
   billingType: CompanyBillingType
@@ -160,30 +160,8 @@ export type CompanyDecision = {
   totalAmount: number
   /** What the charges would draw from standing credit, from the rows as read. */
   creditApplied: number
-}
-
-/** Add-ons per customer, summed the way app/actions/payments.ts sums them. */
-async function addonTotals(ids: number[]): Promise<Map<number, number>> {
-  const out = new Map<number, number>()
-  const caps = await getSchemaCapabilities()
-  if (!caps.catalog || ids.length === 0) return out
-
-  const db = tenantClient()
-  for (let i = 0; i < ids.length; i += ID_CHUNK) {
-    const chunk = ids.slice(i, i + ID_CHUNK)
-    const { data, error } = await db
-      .from('customer_additional_services')
-      .select('customer_id, additional_services(monthly_price)')
-      .in('customer_id', chunk)
-    if (error) throw new Error('Could not read add-ons: ' + error.message)
-    for (const row of (data ?? []) as unknown as {
-      customer_id: number
-      additional_services: { monthly_price: number | string | null } | null
-    }[]) {
-      out.set(row.customer_id, (out.get(row.customer_id) ?? 0) + Number(row.additional_services?.monthly_price ?? 0))
-    }
-  }
-  return out
+  /** Calendar-month prepaid applied to this decision (migration 0028). */
+  calendarPrepaid: boolean
 }
 
 /** The (customer, period_start) pairs bill_charges already holds, as keys. */
@@ -217,6 +195,8 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
   const base = await readBillableCustomers(company.id)
   const addons = await addonTotals(base.map((c) => c.id))
   const service = await serviceStateFor(base, 'the billing engine')
+  const calendarPrepaid =
+    company.billingType === 'prepaid' && (await prepaidCalendarFor(company.id)).enabled
 
   const decided = base.map((c) => {
     const customer = { ...c, addons: addons.get(c.id) ?? 0, monthlyCharge: c.monthlyRate + (addons.get(c.id) ?? 0) }
@@ -227,6 +207,7 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
       companyBillDay: company.companyBillDay,
       customer: { id: c.id, billDate: c.billDate, dateAdded: c.dateAdded, monthlyCharge: customer.monthlyCharge },
       service: service.get(c.id),
+      calendarPrepaid,
     })
     return { customer, decision, service: service.get(c.id) }
   })
@@ -259,6 +240,7 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
     charges,
     totalAmount: round2(charges.reduce((s, c) => s + c.amount, 0)),
     creditApplied: round2(creditApplied),
+    calendarPrepaid,
   }
 }
 
@@ -289,6 +271,9 @@ export type TickCompanySummary = {
   totalAmount: number
   creditApplied: number
   error: string | null
+  /** Calendar-month prepaid's hourly service pass (lib/data/prepaid-service.ts), when it ran. */
+  service?: { ended: number; resumed: number; failed: number } | null
+  serviceError?: string | null
 }
 
 type RunRow = {
@@ -333,7 +318,20 @@ export async function runBillingTick(only?: number): Promise<TickCompanySummary[
   const out: TickCompanySummary[] = []
   for (const company of companies) {
     try {
-      out.push(await runCompany(company, actor))
+      const summary = await runCompany(company, actor)
+      // Calendar-month prepaid: the service pass runs EVERY hour, after the
+      // day's run — a disconnection or a return can happen at any time, and the
+      // day's run is skipped once it is done. Live companies only.
+      if (company.mode === 'live' && company.billingType === 'prepaid' &&
+          (await prepaidCalendarFor(company.id)).enabled) {
+        try {
+          summary.service = await runServicePass(company, actor)
+        } catch (err) {
+          summary.serviceError = (err as Error).message
+          console.error('[service] %s: %s', company.name, (err as Error).message)
+        }
+      }
+      out.push(summary)
     } catch (err) {
       // Reached only when the failure happened before the day's row existed;
       // runCompany records anything later on the row itself.
@@ -480,7 +478,7 @@ async function runCompany(company: EngineCompany, actor: SystemActor): Promise<T
     }
 
     if (result.inserted > 0) {
-      const shape = company.billingType === 'prepaid'
+      const shape = company.billingType === 'prepaid' && !decision.calendarPrepaid
         ? 'each from their bill date to the same date next month'
         : 'the calendar month'
       await logSystemEvent({
