@@ -1,6 +1,25 @@
 import 'server-only'
 
+import type { MonthCharge } from '@/lib/prepaid-calendar'
 import { tenantClient } from '@/lib/supabase/tenant'
+
+/**
+ * A customer's recent month charges, newest first: what the till's breakdown
+ * spreads the balance over (lib/prepaid-calendar.ts#tillBreakdown). A year is
+ * far more than any balance spans.
+ */
+export async function readMonthCharges(companyId: number, customerId: number): Promise<MonthCharge[]> {
+  const { data, error } = await tenantClient()
+    .from('bill_charges')
+    .select('period_start, amount, service_days')
+    .eq('company_id', companyId)
+    .eq('customer_id', customerId)
+    .order('period_start', { ascending: false })
+    .limit(12)
+  if (error) throw new Error('Could not read the month charges: ' + error.message)
+  return ((data ?? []) as { period_start: string; amount: number | string; service_days: number | null }[])
+    .map((r) => ({ periodStart: r.period_start, amount: Number(r.amount), serviceDays: r.service_days }))
+}
 
 /**
  * Whether a company runs calendar-month prepaid (migration 0028), and its

@@ -10,7 +10,14 @@ import {
   proportionalDate, reverseCredit, serviceExpiry, ymd, type AccessDecision, type PriorGrant,
 } from '@/lib/billing'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
-import { instantToDateOnly, paymentInstant } from '@/lib/format'
+import { formatCurrencyExact, instantToDateOnly, paymentInstant } from '@/lib/format'
+import {
+  PREPAID_CALENDAR_OFF, prepaidCalendarFor, readMonthCharges,
+} from '@/lib/data/prepaid-calendar'
+import {
+  calendarExpiry, forwardLines, monthLabel, round100, tillBreakdown,
+  type BreakdownLine, type MonthCharge, type TillBreakdown,
+} from '@/lib/prepaid-calendar'
 import { getExpiryClock, getFirstPeriodRules } from '@/lib/data/company'
 import { applyExpiryClock } from '@/lib/radius/format'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
@@ -727,7 +734,10 @@ export async function recordPayment(
   // proportional-access maths is priced off a month, and because the receipt
   // stamps it as the month's service charge.
   const monthlyCharge = Number(customer.monthly_rate ?? 0) + addonTotal
-  const carriedBefore = caps.billing ? Number(customer.carried_balance ?? 0) : 0
+  // `let`: calendar-month prepaid rewrites this month's charge for a returning
+  // customer before pricing, and the balance is re-read from that write.
+  let carriedBefore = caps.billing ? Number(customer.carried_balance ?? 0) : 0
+  let creditOnRecord = caps.billing ? Number(customer.account_credit ?? 0) : 0
 
   // The company's bill day, and its timezone. Read before the pricing because
   // the bill day names the period this payment settles, and the
@@ -770,6 +780,92 @@ export async function recordPayment(
 
   const registryExpiry = registered?.expiry ?? null
 
+  // --- Calendar-month prepaid: a disconnected customer coming back (0028) ---
+  //
+  // With the model on, a customer whose service has ended pays for this month's
+  // days of service: the days they had before it ended, plus the day they pay
+  // to the month's end (lib/prepaid-calendar.ts#tillBreakdown). Earlier months
+  // were already reduced by the hourly pass. That change to this month's charge
+  // is written HERE, through set_month_charge() — locked, guarded by the amount
+  // the till read — BEFORE anything is priced, so the balance below already
+  // includes it and every line after this is the ordinary payment path. If the
+  // payment then fails to record, the change is put back.
+  const calendar = caps.billing ? await prepaidCalendarFor(company.id) : PREPAID_CALENDAR_OFF
+  const returning =
+    calendar.enabled && registered !== null && registered.exists && registered.status !== 'active'
+  const returnDay = ymd(paymentDate)
+  let monthChange: {
+    current: NonNullable<TillBreakdown['current']>
+    endedOnBefore: string | null
+  } | null = null
+  let breakdownLines: BreakdownLine[] | null = null
+
+  if (returning) {
+    const breakdown = tillBreakdown({
+      today: returnDay,
+      monthlyCharge,
+      carriedBefore,
+      charges: await readMonthCharges(company.id, customer.id),
+      disconnected: true,
+      forwardMonths: 0,
+    })
+    breakdownLines = breakdown.lines
+
+    if (breakdown.current) {
+      const { data: mark } = await db
+        .from('customers').select('service_ended_on')
+        .eq('company_id', company.id).eq('id', customer.id).maybeSingle()
+      const endedOnBefore = (mark as { service_ended_on: string | null } | null)?.service_ended_on ?? null
+
+      const { data: applied, error: applyError } = await db.rpc('set_month_charge', {
+        p_company_id: company.id,
+        p_customer_id: customer.id,
+        p_period_start: breakdown.current.periodStart,
+        p_period_end: breakdown.current.periodEnd,
+        p_charged_on: returnDay,
+        p_amount: breakdown.current.amount,
+        p_service_days: breakdown.current.serviceDays,
+        p_full_amount: breakdown.current.fullAmount,
+        p_source: 'till',
+        p_expected_amount: breakdown.current.expected,
+        p_touch_service: true,
+        p_service_ended_on: null,
+      })
+      const result = applied as { ok: boolean; carried_after?: number; credit_after?: number } | null
+      if (applyError || !result?.ok) {
+        return {
+          ok: false,
+          error:
+            'This customer’s charges changed while the payment was being entered — the hourly ' +
+            'billing pass or another till moved them. Nothing was recorded. Reselect the ' +
+            'customer and try again.',
+        }
+      }
+      carriedBefore = Number(result.carried_after ?? carriedBefore)
+      creditOnRecord = Number(result.credit_after ?? creditOnRecord)
+      monthChange = { current: breakdown.current, endedOnBefore }
+    }
+  }
+
+  /** Puts this month's charge back as it was, when the payment did not record. */
+  const undoMonthChange = async () => {
+    if (!monthChange) return
+    await db.rpc('set_month_charge', {
+      p_company_id: company.id,
+      p_customer_id: customer.id,
+      p_period_start: monthChange.current.periodStart,
+      p_period_end: monthChange.current.periodEnd,
+      p_charged_on: returnDay,
+      p_amount: monthChange.current.expected ?? 0,
+      p_service_days: monthChange.current.expected === null ? 0 : monthChange.current.serviceDays,
+      p_full_amount: monthChange.current.fullAmount,
+      p_source: 'till',
+      p_expected_amount: monthChange.current.amount,
+      p_touch_service: true,
+      p_service_ended_on: monthChange.endedOnBefore,
+    })
+  }
+
   // --- First period (migration 0017) ---------------------------------------
   //
   // Null for everybody except a customer making their first payment since
@@ -777,13 +873,18 @@ export async function recordPayment(
   //
   // Sits here, after the registry read and before the pricing, because the
   // expiry provisioning wrote is what says how long the first period is.
-  const firstPeriod = await resolveFirstPeriod({
-    companyId: company.id,
-    customerId: customer.id,
-    monthlyCharge,
-    registryExpiry,
-    discountRequested: str(formData, 'first_period_discount') === '1',
-  })
+  //
+  // NEVER under calendar-month prepaid: a new customer's first month is charged
+  // from connection day to month end when they are provisioned.
+  const firstPeriod = calendar.enabled
+    ? null
+    : await resolveFirstPeriod({
+        companyId: company.id,
+        customerId: customer.id,
+        monthlyCharge,
+        registryExpiry,
+        discountRequested: str(formData, 'first_period_discount') === '1',
+      })
 
   // --- What this payment is settling ---------------------------------------
   //
@@ -810,7 +911,7 @@ export async function recordPayment(
   // add anything to carried_balance (app/actions/bulk.ts#billBatch), so a
   // customer who paid three months up front never reads as owing during the
   // months they have already paid for.
-  const creditBefore = caps.billing ? Number(customer.account_credit ?? 0) : 0
+  const creditBefore = caps.billing ? creditOnRecord : 0
   const creditAdded = caps.billing ? prepaymentCredit(due, paidAmount) : 0
   const creditAfter = round2(creditBefore + creditAdded)
 
@@ -851,7 +952,11 @@ export async function recordPayment(
     carriedBefore
   )
 
-  const grant = caps.billing && !firstPeriod ? await latestGrant(company.id, customer.id) : null
+  // Not for a returning calendar-month customer either: their month was just
+  // recomputed from the days they had, and paying it is what brings them back.
+  const grant = caps.billing && !firstPeriod && !returning
+    ? await latestGrant(company.id, customer.id)
+    : null
   const periodGranted =
     grant !== null &&
     periodAlreadyGranted({ periodStart: period?.start ?? null, carriedBefore, grant })
@@ -869,6 +974,10 @@ export async function recordPayment(
         })
       : null
 
+  // Calendar-month prepaid prices months ahead at the full rate ROUNDED, so a
+  // returning customer's months are counted against that figure: the current
+  // month if any money is paid (a part payment reconnects, as today), plus one
+  // per whole rounded month beyond what is owed.
   const monthsPaid = firstPeriod
     ? firstPaymentMonths({
         carriedBalance: carriedBefore,
@@ -876,7 +985,9 @@ export async function recordPayment(
         monthlyCharge,
         amountPaid: paidAmount,
       })
-    : monthsCovered(due, monthlyCharge, paidAmount, periodGranted)
+    : returning
+      ? monthsCovered(due, round100(monthlyCharge), paidAmount, false)
+      : monthsCovered(due, monthlyCharge, paidAmount, periodGranted)
 
   // A decision only means something for a payment that is actually short. One
   // sent for a payment that covers the bill is dropped rather than stored.
@@ -926,10 +1037,19 @@ export async function recordPayment(
   // for a renewal and wrong here — so the branch is taken before the call
   // rather than by passing it a zero it would ignore. The one exception is a
   // completion, which moves to the end of the open month without buying one.
+  //
+  // A RETURNING CALENDAR-MONTH CUSTOMER lands on the cut-off day of the month
+  // after the last month paid: paying this month on 16 Oct gives 8 Nov, and
+  // November as well gives 8 Dec. Walking from the lapsed expiry would stop at
+  // the next cut-off — on 3 Nov that is 8 Nov, for money that paid to 30 Nov.
+  const calendarDate =
+    returning && monthsPaid > 0 && customer.cut_off_date
+      ? parseYmd(calendarExpiry(returnDay, monthsPaid, customer.cut_off_date))
+      : null
   const fullPeriodExpiry: Date | null =
     monthsPaid === 0
       ? firstPeriod ? firstPeriod.expiry : walkFrom
-      : serviceExpiry({
+      : calendarDate ?? serviceExpiry({
           // cut_off_date, not bill_date: the bill day says when the charge is
           // raised, the cut-off day says when access ends. Anchored on the
           // registry expiry so settling the bill rolls the customer PAST the
@@ -1082,12 +1202,61 @@ export async function recordPayment(
     insertRow.credit_applied = creditAdded
   }
 
+  // Calendar-month prepaid: the per-month lines the till showed — this month's
+  // days and amount, any earlier months, and whole months paid ahead — so the
+  // receipt prints exactly what the customer was shown (migration 0028).
+  if (returning && breakdownLines) {
+    insertRow.service_breakdown = [
+      ...breakdownLines,
+      ...forwardLines(returnDay, Math.max(0, monthsPaid - 1), monthlyCharge),
+    ]
+  }
+
+  // THE RECONNECTION FEE (0028). Offered only at the till and only to a
+  // returning customer; ticked on by default, and the cashier may leave it off.
+  // It is NOT service money: its own payments row ("Reconnection fee"), in the
+  // same visit, settling like a one-off charge. It moves no expiry, changes no
+  // days charged, and is never added to a balance — someone who never comes
+  // back does not owe it.
+  const feeOffered =
+    returning && calendar.reconnectionFee > 0 && caps.otherPayments && caps.charges
+  const feeCharged = feeOffered && str(formData, 'reconnection_fee') === '1'
+  let feeRow: Record<string, unknown> | null = null
+  if (feeCharged) {
+    const category = await findOrCreatePaymentCategory(company.id, 'Reconnection fee')
+    if (!category.ok) {
+      await undoMonthChange()
+      return { ok: false, error: 'Could not record the reconnection fee: ' + category.error }
+    }
+    feeRow = {
+      company_id: company.id,
+      customer_id: customer.id,
+      amount: calendar.reconnectionFee,
+      months_paid: 0,
+      payment_kind: 'other',
+      payment_category_id: category.category.id,
+      paid_on: returnDay,
+      payment_date: stampedAt.toISOString(),
+      payment_type: legacyPaymentType(method),
+      agent,
+      notes: null,
+    }
+    if (caps.checkoff) {
+      feeRow.payment_method = method
+      feeRow.checked_off = false
+      feeRow.user_id = profile.id
+    }
+    if (caps.paymentSegment) feeRow.customer_misc_category_id = customer.misc_category_id ?? null
+  }
+  const feeAmount = feeRow ? calendar.reconnectionFee : 0
+
   // THE VISIT'S CHARGE ROWS GO IN WITH THE SERVICE ROW, IN ONE STATEMENT. If
   // the guard refuses one, the service payment is refused with it, so a
   // cashier never has a visit that is half on record. See the note at the top
-  // of this file.
-  const visitId = charges.rows.length > 0 ? crypto.randomUUID() : null
+  // of this file. A reconnection fee rides in the same visit.
+  const visitId = charges.rows.length > 0 || feeRow ? crypto.randomUUID() : null
   if (visitId) insertRow.visit_id = visitId
+  if (feeRow && visitId) feeRow.visit_id = visitId
 
   const chargeRows = visitId
     ? chargePaymentRows({
@@ -1106,20 +1275,57 @@ export async function recordPayment(
       })
     : []
 
-  const { data: inserted, error: insertError } = chargeRows.length > 0
+  const extraRows = feeRow ? [...chargeRows, feeRow] : chargeRows
+  const { data: inserted, error: insertError } = extraRows.length > 0
     ? await db
         .from('payments')
         // defaultToNull false: the service row and the charge rows carry
         // different columns, and a column one of them leaves out must take
         // its database default, not an explicit NULL.
-        .insert([insertRow, ...chargeRows], { defaultToNull: false })
-        .select('id, charge_id')
+        .insert([insertRow, ...extraRows], { defaultToNull: false })
+        .select('id, charge_id' + (caps.otherPayments ? ', payment_kind' : ''))
     : await db.from('payments').insert(insertRow).select('id')
 
-  if (insertError) return { ok: false, error: visitInsertError(insertError.message) }
+  if (insertError) {
+    await undoMonthChange()
+    return { ok: false, error: visitInsertError(insertError.message) }
+  }
 
-  const paymentId = ((inserted ?? []) as unknown as { id: number; charge_id?: number | null }[])
-    .find((r) => !r.charge_id)?.id as number
+  // The service row: by kind where the column exists — a reconnection fee row
+  // carries no charge_id either, so "no charge_id" alone no longer identifies it.
+  const insertedRows = (inserted ?? []) as unknown as { id: number; charge_id?: number | null; payment_kind?: string }[]
+  const paymentId = (
+    insertedRows.find((r) => r.payment_kind === 'service') ??
+    insertedRows.find((r) => !r.charge_id)
+  )?.id as number
+
+  if (feeOffered) {
+    await logEvent({
+      customerId: customer.id,
+      type: feeRow ? 'reconnection_fee_charged' : 'reconnection_fee_waived',
+      tag: '[payments]',
+      details:
+        (feeRow ? 'Reconnection fee charged' : 'Reconnection fee waived') +
+        ' | fee=' + calendar.reconnectionFee.toFixed(2) +
+        ' | payment_id=' + paymentId +
+        ' | by=' + profile.email,
+      amount: feeRow ? calendar.reconnectionFee : null,
+    })
+  }
+
+  if (monthChange) {
+    await logEvent({
+      customerId: customer.id,
+      type: 'service_resumed',
+      tag: '[payments]',
+      details:
+        'Service resumed ' + returnDay + ' at the till. ' + monthLabel(monthChange.current.periodStart) +
+        ' ' + (monthChange.current.expected === null ? 'charged ' : formatCurrencyExact(monthChange.current.expected) + ' -> ') +
+        formatCurrencyExact(monthChange.current.amount) + ' (' + monthChange.current.serviceDays + ' days)' +
+        ' | payment_id=' + paymentId +
+        ' | by=' + profile.email,
+    })
+  }
 
   // A SHORT FIRST PERIOD IS CHARGED AT FULL RATE UNLESS SOMEONE DECIDES
   // OTHERWISE, and this row is the record of who decided. The reduction is open
@@ -1333,7 +1539,7 @@ export async function recordPayment(
     companyName: company.name,
     customerId: customer.id,
     paymentId,
-    amount: round2(paidAmount + chargeTotal),
+    amount: round2(paidAmount + chargeTotal + feeAmount),
   })
 
   revalidatePath('/dashboard/customers/' + customer.id)
@@ -1347,7 +1553,7 @@ export async function recordPayment(
   // place. Redirecting away would lose both.
   return {
     ok: true as const,
-    amount: round2(paidAmount + chargeTotal),
+    amount: round2(paidAmount + chargeTotal + feeAmount),
     servicePaid: paidAmount,
     oneOff: oneOffSummary(charges.rows),
     customerId: customer.id,
@@ -1435,10 +1641,21 @@ export type PaymentContext = {
    * oldest first. Empty for almost everybody, and before 0025 is applied.
    */
   charges: OpenCharge[]
+  /**
+   * Calendar-month prepaid (migration 0028), when the model is on for the
+   * company; null otherwise. `returning` says the customer's service has ended,
+   * so the till recomputes this month and offers the reconnection fee.
+   */
+  calendar: {
+    returning: boolean
+    /** The customer's recent month charges, for the breakdown. */
+    monthCharges: MonthCharge[]
+    reconnectionFee: number
+  } | null
 }
 
 export async function loadPaymentContext(customerId: number): Promise<PaymentContext> {
-  const none: PaymentContext = { firstPeriod: null, grant: null, charges: [] }
+  const none: PaymentContext = { firstPeriod: null, grant: null, charges: [], calendar: null }
 
   const { company, profile } = await getSession()
   if (!can(profile.role, 'record_payment')) return none
@@ -1488,7 +1705,13 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
       ? await readNetworkRecord(identity).catch(() => null)
       : null
 
-  const period = await resolveFirstPeriod({
+  // Calendar-month prepaid: no first period (a new customer's first month is
+  // charged at connection), and a returning customer's month is recomputed.
+  const prepaid = caps.billing ? await prepaidCalendarFor(company.id) : PREPAID_CALENDAR_OFF
+  const returning =
+    prepaid.enabled && registered !== null && registered.exists && registered.status !== 'active'
+
+  const period = prepaid.enabled ? null : await resolveFirstPeriod({
     companyId: company.id,
     customerId: customer.id,
     monthlyCharge: Number(customer.monthly_rate ?? 0) + addonTotal,
@@ -1511,6 +1734,13 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
       : null,
     grant: prior ? { ...prior, anchorThen: anchor ? ymd(anchor) : null } : null,
     charges,
+    calendar: prepaid.enabled
+      ? {
+          returning,
+          monthCharges: returning ? await readMonthCharges(company.id, customer.id) : [],
+          reconnectionFee: prepaid.reconnectionFee,
+        }
+      : null,
   }
 }
 async function resolveFirstPeriod(opts: {

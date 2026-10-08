@@ -3,8 +3,23 @@ import { instantToDateOnly } from '@/lib/format'
 import {
   receiptDateTime, receiptNumber, type Receipt, type ReceiptLine,
 } from '@/lib/receipt'
+import { prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
+
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * A calendar-month line in the receipt's 32 columns: "Oct 2026, 24 days",
+ * "Nov 2026, full month", "Earlier balance".
+ */
+function monthLineLabel(l: { month: string; label: string; days: number | null; kind: string }): string {
+  if (!l.month) return l.label
+  const [y, m] = l.month.split('-').map(Number)
+  const head = (SHORT_MONTHS[m - 1] ?? '') + ' ' + y
+  if (l.days !== null) return head + ', ' + l.days + (l.days === 1 ? ' day' : ' days')
+  return head + ', full month'
+}
 
 type PaymentRow = {
   id: number
@@ -29,6 +44,8 @@ type PaymentRow = {
   visit_id?: string | null
   charge_id?: number | null
   charge_outstanding_before?: number | string | null
+  /** Migration 0028: the per-month lines the till showed a returning customer. */
+  service_breakdown?: { month: string; label: string; days: number | null; amount: number; kind: string }[] | null
   customers: {
     id: number
     first_name: string | null
@@ -80,6 +97,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
         'payment_categories(name)'
       : '') +
     (caps.charges ? ', visit_id, charge_id, charge_outstanding_before' : '') +
+    ((await prepaidCalendarFor(companyId)).available ? ', service_breakdown' : '') +
     ', customers(id, first_name, last_name' +
     (caps.accountNumbers ? ', account_number' : '') + ')'
 
@@ -213,7 +231,21 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     // agreed at the counter.
     const discount = Number(service.first_period_discount ?? 0)
 
-    if (stampedDue !== null) {
+    // CALENDAR-MONTH PREPAID (0028): a returning customer was shown one line
+    // per month with its days, and whole months paid ahead. Those lines, as
+    // stamped, replace the single "Balance due" — and with more than one line
+    // the receipt says what they came to.
+    const breakdown =
+      Array.isArray(service.service_breakdown) && service.service_breakdown.length > 0
+        ? service.service_breakdown
+        : null
+
+    if (breakdown) {
+      for (const l of breakdown) lines.push({ label: monthLineLabel(l), amount: Number(l.amount) })
+      if (breakdown.length > 1) {
+        totalDue = Math.round(breakdown.reduce((s, l) => s + Number(l.amount), 0) * 100) / 100
+      }
+    } else if (stampedDue !== null) {
       if (discount > 0) {
         lines.push({ label: 'Balance due', amount: stampedDue + discount })
         lines.push({ label: 'Short period disc.', amount: -discount })

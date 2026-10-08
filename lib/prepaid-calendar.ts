@@ -255,10 +255,17 @@ export function tillBreakdown(opts: {
   lines.reverse() // oldest first on the page
 
   const due = Math.max(0, carried)
+  lines.push(...forwardLines(today, opts.forwardMonths, monthlyCharge))
 
-  for (let i = 1; i <= Math.max(0, Math.floor(opts.forwardMonths)); i++) {
+  return { lines, due, current }
+}
+
+/** Whole months paid ahead, after the one `today` is in: full rate, rounded. */
+export function forwardLines(today: string, months: number, monthlyCharge: number): BreakdownLine[] {
+  const out: BreakdownLine[] = []
+  for (let i = 1; i <= Math.max(0, Math.floor(months)); i++) {
     const start = addMonths(today, i)
-    lines.push({
+    out.push({
       month: start.slice(0, 7),
       label: monthLabel(start),
       days: null,
@@ -266,6 +273,5 @@ export function tillBreakdown(opts: {
       kind: 'forward',
     })
   }
-
-  return { lines, due, current }
+  return out
 }

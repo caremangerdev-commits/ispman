@@ -21,6 +21,9 @@ import {
   proportionalDate, serviceExpiry, ymd, type AccessDecision,
 } from '@/lib/billing'
 import {
+  calendarExpiry, forwardLines, round100, tillBreakdown,
+} from '@/lib/prepaid-calendar'
+import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type PaymentMethod,
 } from '@/lib/data/checkoff'
 import {
@@ -106,6 +109,36 @@ function seedAmount(hit: SearchHit | null, months: number): string {
   return String(amountDueForMonths(hit.carried_balance, hit.total_monthly, months))
 }
 
+/**
+ * The seed for a customer returning under calendar-month prepaid (migration
+ * 0028): this month recomputed for the return, plus whole months ahead at the
+ * full rate rounded — the same figure the server prices. Null when the model
+ * is off or the customer still has service, and the ordinary seed applies.
+ */
+function calendarSeed(
+  hit: SearchHit,
+  calendar: PaymentContext['calendar'],
+  months: number,
+  todayYmd: string
+): string | null {
+  if (!calendar?.returning) return null
+  const { due } = tillBreakdown({
+    today: todayYmd,
+    monthlyCharge: hit.total_monthly,
+    carriedBefore: hit.carried_balance,
+    charges: calendar.monthCharges,
+    disconnected: true,
+    forwardMonths: 0,
+  })
+  return String(amountDueForMonths(due, round100(hit.total_monthly), months))
+}
+
+/** Today in the browser, YYYY-MM-DD — the till's own date, as the date field uses. */
+function browserToday(): string {
+  const d = new Date()
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
+}
+
 function SubmitButton() {
   const { pending } = useFormStatus()
   return (
@@ -155,6 +188,13 @@ export function RecordPaymentForm({
   // moment before it lands; the server always has the evidence and decides
   // for real. See lib/billing.ts#periodAlreadyGranted.
   const [priorGrant, setPriorGrant] = useState<PaymentContext['grant']>(null)
+  // Migration 0028. Null unless calendar-month prepaid is on for the company.
+  // When the customer is RETURNING (their service has ended), this month is
+  // recomputed for the return and the reconnection fee is offered.
+  const [calendar, setCalendar] = useState<PaymentContext['calendar']>(null)
+  // The reconnection fee is ticked ON by default whenever it is offered; the
+  // cashier may leave it off, and the server logs which.
+  const [feeTicked, setFeeTicked] = useState(true)
   // NEVER AUTOMATIC. A short first period is charged in full unless the cashier
   // ticks this, which is why it starts false on every customer.
   const [discountTicked, setDiscountTicked] = useState(false)
@@ -313,6 +353,16 @@ export function RecordPaymentForm({
         if (selectedIdRef.current !== customer.id) return
         setPriorGrant(context.grant)
         setOpenCharges(context.charges)
+        setCalendar(context.calendar)
+
+        // A returning calendar-month customer: seed with this month recomputed
+        // for the return, unless the cashier has already typed over the seed.
+        const calendarNext = calendarSeed(customer, context.calendar, monthsNow, browserToday())
+        if (calendarNext !== null) {
+          const untouched = seedAmount(customer, monthsNow)
+          setAmount((current) => (current === untouched ? calendarNext : current))
+          setDebouncedAmount((current) => (current === untouched ? calendarNext : current))
+        }
 
         const period = context.firstPeriod
         if (!period) return
@@ -346,6 +396,14 @@ export function RecordPaymentForm({
         if (!live) return
         setPriorGrant(context.grant)
         setOpenCharges(context.charges)
+        setCalendar(context.calendar)
+
+        const calendarNext = calendarSeed(customer, context.calendar, 1, browserToday())
+        if (calendarNext !== null) {
+          const untouched = seedAmount(customer, 1)
+          setAmount((current) => (current === untouched ? calendarNext : current))
+          setDebouncedAmount((current) => (current === untouched ? calendarNext : current))
+        }
 
         const period = context.firstPeriod
         if (!period) return
@@ -372,6 +430,8 @@ export function RecordPaymentForm({
     selectedIdRef.current = hit.id
     setFirstPeriod(null)
     setPriorGrant(null)
+    setCalendar(null)
+    setFeeTicked(true)
     setDiscountTicked(false)
     setOpenCharges([])
     setChargePay({})
@@ -392,7 +452,7 @@ export function RecordPaymentForm({
     // Re-seeds the amount so the field matches what was just asked for. The
     // cashier may still type over it; the money is what gets priced.
     if (selected) {
-      const next = seedAmount(selected, m)
+      const next = calendarSeed(selected, calendar, m, paidOn) ?? seedAmount(selected, m)
       setAmount(next)
       setDebouncedAmount(next)
     }
@@ -404,6 +464,8 @@ export function RecordPaymentForm({
     selectedIdRef.current = null
     setFirstPeriod(null)
     setPriorGrant(null)
+    setCalendar(null)
+    setFeeTicked(true)
     setDiscountTicked(false)
     setOpenCharges([])
     setChargePay({})
@@ -552,12 +614,32 @@ export function RecordPaymentForm({
   const firstPeriodDue = firstPeriod
     ? firstPeriod.charge - (discountTicked ? firstPeriod.discount : 0)
     : 0
-  const owed = carried + firstPeriodDue
+  // CALENDAR-MONTH PREPAID, A RETURNING CUSTOMER (migration 0028): this month is
+  // recomputed for the return — its days so far plus the payment date to the
+  // month's end — exactly as the server will write it (lib/prepaid-calendar.ts
+  // #tillBreakdown). That figure replaces the carried balance as what is owed.
+  const calendarReturning = Boolean(calendar?.returning) && selected !== null
+  const returnYmd = paidOn
+  const calendarBreakdown = calendarReturning && calendar && selected
+    ? tillBreakdown({
+        today: returnYmd,
+        monthlyCharge,
+        carriedBefore: carried,
+        charges: calendar.monthCharges,
+        disconnected: true,
+        forwardMonths: 0,
+      })
+    : null
+  // A month ahead is the full rate ROUNDED under this model.
+  const monthUnit = calendarReturning ? round100(monthlyCharge) : monthlyCharge
+  const owed = calendarBreakdown ? calendarBreakdown.due : carried + firstPeriodDue
+  const feeOffered = calendarReturning && (calendar?.reconnectionFee ?? 0) > 0
+  const feeAmount = feeOffered && feeTicked ? calendar?.reconnectionFee ?? 0 : 0
 
   const due = computeAmountDue(owed)
   // What the dropdown is asking for, which is what the Amount field was seeded
   // with. Shown as "Amount due" whenever more than one month is selected.
-  const askingFor = amountDueForMonths(owed, monthlyCharge, months)
+  const askingFor = amountDueForMonths(owed, monthUnit, months)
 
   const paid = Number(debouncedAmount)
 
@@ -601,7 +683,7 @@ export function RecordPaymentForm({
   // server runs before it writes. Never for a first payment, whose period no
   // earlier payment can have granted.
   const periodGranted =
-    selected !== null && !firstPeriod &&
+    selected !== null && !firstPeriod && !calendarReturning &&
     periodAlreadyGranted({
       periodStart: billPeriod?.start ?? null,
       carriedBefore: carried,
@@ -641,7 +723,7 @@ export function RecordPaymentForm({
             monthlyCharge,
             amountPaid: paid,
           })
-        : monthsCovered(owed, monthlyCharge, paid, periodGranted)
+        : monthsCovered(owed, monthUnit, paid, periodGranted)
       : 1
   const creditAdded =
     selected && Number.isFinite(paid) ? prepaymentCredit(owed, paid) : 0
@@ -659,10 +741,17 @@ export function RecordPaymentForm({
   // the same rule app/actions/payments.ts applies before it writes. A
   // completion is the one zero-month payment that moves, to the end of the
   // open month.
+  //
+  // A returning calendar-month customer lands on the cut-off day of the month
+  // after the last month paid, as the server writes it.
+  const calendarExpiryDate =
+    calendarReturning && selected?.cut_off_date && monthsBought > 0
+      ? parseYmd(calendarExpiry(returnYmd, monthsBought, selected.cut_off_date))
+      : null
   const fullPeriodExpiry = selected
     ? monthsBought === 0
       ? walkFrom
-      : serviceExpiry({
+      : calendarExpiryDate ?? serviceExpiry({
         // cut_off_date, not bill_date — the bill day raises the charge, the
         // cut-off day ends access. Anchored on the registry expiry so paying
         // rolls the customer past the cut-off the bill was due at.
@@ -954,11 +1043,68 @@ export function RecordPaymentForm({
                       ) : null}
                     </>
                   ) : null}
+                  {/* Calendar-month prepaid, a returning customer (0028): one
+                      line per month with its days, then whole months ahead —
+                      the same lines the receipt prints. */}
+                  {calendarBreakdown ? (
+                    <>
+                      {[
+                        ...calendarBreakdown.lines,
+                        ...forwardLines(returnYmd, Math.max(0, months - 1), monthlyCharge),
+                      ].map((l, i) => (
+                        <Line
+                          key={l.kind + l.month + i}
+                          label={
+                            l.label +
+                            (l.days !== null
+                              ? ' (' + l.days + ' day' + (l.days === 1 ? '' : 's') + ')'
+                              : l.kind === 'forward' ? ' (full month)' : '')
+                          }
+                          value={money(l.amount)}
+                        />
+                      ))}
+                    </>
+                  ) : null}
                   <Line
                     label={months > 1 ? 'Amount Due (' + months + ' months)' : 'Amount Due'}
                     value={money(months > 1 ? askingFor : due)}
                     emphasis
                   />
+                  {/* The reconnection fee: offered only to a returning customer,
+                      ticked by default, never part of their balance. Unticked,
+                      nothing is posted and the server logs it as waived. */}
+                  {feeOffered && calendar ? (
+                    <>
+                      <label className="flex min-h-11 cursor-pointer items-start justify-between gap-3 rounded-lg border border-blue-900/60 bg-blue-950/30 px-3 py-2.5 sm:min-h-0 sm:py-2">
+                        <span className="text-xs text-blue-200/90">
+                          Reconnection fee
+                          <span className="mt-0.5 block text-[11px] text-blue-200/60">
+                            Taken with this payment as a one-off. Untick to leave it off.
+                          </span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-2">
+                          <span className="font-mono text-sm text-blue-100">
+                            {money(calendar.reconnectionFee)}
+                          </span>
+                          <input
+                            type="checkbox"
+                            name="reconnection_fee"
+                            value="1"
+                            checked={feeTicked}
+                            onChange={(e) => setFeeTicked(e.target.checked)}
+                            className="h-5 w-5 accent-blue-500 sm:h-4 sm:w-4"
+                          />
+                        </span>
+                      </label>
+                      {feeAmount > 0 ? (
+                        <Line
+                          label="Total to Collect"
+                          value={money((months > 1 ? askingFor : due) + feeAmount)}
+                          emphasis
+                        />
+                      ) : null}
+                    </>
+                  ) : null}
                   {/* Shown whenever anything is carried, so the customer is never
                       asked for a figure larger than their plan without being told
                       where the difference came from. */}
