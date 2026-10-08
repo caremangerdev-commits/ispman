@@ -6,6 +6,7 @@ import { saveBillingSettings, type CompanyResult } from '@/app/actions/company'
 import { Card, Field, SaveButton, Toggle } from '@/components/settings/form-parts'
 import { settingsInput } from '@/components/settings/Modal'
 import type { GeneralSettings } from '@/lib/data/company'
+import type { PrepaidCalendar } from '@/lib/data/prepaid-calendar'
 import type { CompanyBillingType, EngineMode } from '@/lib/billing-engine'
 import { EXPIRY_MODES, EXPIRY_MODE_HELP, EXPIRY_MODE_LABELS, type ExpiryMode } from '@/lib/types'
 
@@ -49,6 +50,7 @@ export function BillingSettingsForm({
   firstPeriodAvailable,
   currencySymbol,
   billingEngineAvailable,
+  prepaidCalendar,
 }: {
   settings: GeneralSettings
   expiryModeAvailable: boolean
@@ -63,6 +65,8 @@ export function BillingSettingsForm({
   currencySymbol: string
   /** Migration 0024 — hides the billing model and engine controls until applied. */
   billingEngineAvailable: boolean
+  /** Migration 0028 — calendar-month prepaid and the reconnection fee. */
+  prepaidCalendar: PrepaidCalendar
 }) {
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveBillingSettings, null)
 
@@ -73,6 +77,10 @@ export function BillingSettingsForm({
   const [engineMode, setEngineMode] = useState<EngineMode>(settings.billingEngineMode)
   const [firstExpiryRule, setFirstExpiryRule] = useState(settings.firstExpiryRuleEnabled)
   const [prorata, setProrata] = useState(settings.prorataFirstPaymentEnabled)
+  const [calendar, setCalendar] = useState(prepaidCalendar.switchedOn)
+  // The first-period rules do not apply once calendar-month prepaid is on: a
+  // new customer's first month is charged from connection day to month end.
+  const firstPeriodReplaced = calendar && billingType === 'prepaid'
 
   const lockedHint = generalAvailable ? undefined : 'Needs migration 0007.'
   const thresholdHint = thresholdsAvailable ? undefined : 'Needs migration 0012.'
@@ -218,6 +226,53 @@ export function BillingSettingsForm({
           </Card>
         ) : null}
 
+        {/* ---- 2b. Calendar-month prepaid (migration 0028) ---- */}
+        <Card title="Calendar-Month Prepaid">
+          {!prepaidCalendar.available ? (
+            <p className="text-[11px] text-amber-400/90">Needs migration 0028.</p>
+          ) : null}
+          <Toggle
+            name="prepaid_calendar_enabled"
+            label="Charge prepaid customers by calendar month"
+            checked={calendar}
+            onChange={setCalendar}
+            disabled={!prepaidCalendar.available}
+          />
+          <ul className="list-disc space-y-1 pl-4 text-[11px] leading-relaxed text-gray-500">
+            <li>The period is the calendar month. The cut-off day is when an unpaid customer is disconnected.</li>
+            <li>Customers pay only for days their service was on: a disconnected customer&apos;s month is reduced to the days they had, and nothing more is charged while they stay off.</li>
+            <li>Each month is worked out by the day and rounded to the nearest hundred. Months paid ahead are full months.</li>
+            <li>New customers are charged from their connection day to the month&apos;s end.</li>
+          </ul>
+          {calendar && billingType !== 'prepaid' ? (
+            <p className="text-[11px] text-amber-400/90">
+              This company is postpaid, so this has no effect. It applies to prepaid companies only.
+            </p>
+          ) : null}
+
+          <Field
+            label="Reconnection Fee"
+            htmlFor="reconnection_fee"
+            hint="Offered at the till when a disconnected customer pays. Never added to a balance. 0 means no fee."
+          >
+            <div className="relative">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">
+                {currencySymbol}
+              </span>
+              <input
+                id="reconnection_fee"
+                name="reconnection_fee"
+                type="number"
+                min="0"
+                step="0.01"
+                defaultValue={prepaidCalendar.reconnectionFee}
+                disabled={!prepaidCalendar.available}
+                className={lockedInput(prepaidCalendar.available) + ' pl-10'}
+              />
+            </div>
+          </Field>
+        </Card>
+
         {/* ---- 3. First period (migration 0017) ---- */}
         <Card title="First Period">
           <p className="text-[11px] text-gray-600">
@@ -225,6 +280,12 @@ export function BillingSettingsForm({
             ever applies to a renewal or a reconnection.
             {firstPeriodHint ? ' ' + firstPeriodHint : ''}
           </p>
+          {firstPeriodReplaced ? (
+            <p className="text-[11px] text-amber-400/90">
+              Replaced while calendar-month prepaid is on: a new customer is charged from connection day
+              to the month&apos;s end, and Provision asks which cut-off day their service runs to.
+            </p>
+          ) : null}
 
           <Toggle
             name="first_expiry_rule_enabled"
