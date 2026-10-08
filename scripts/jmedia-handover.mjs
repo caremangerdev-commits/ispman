@@ -85,6 +85,25 @@ const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABA
 
 const COMPANY = 30
 const START = '2026-11-01'
+
+// FLAGGED customers the owner confirmed on 8 Oct 2026, each AT THE DATE the
+// preview showed then. --apply writes a flagged customer only if they are here
+// and the rule still gives the same date; anything else is skipped and listed.
+const CONFIRMED = new Map([
+  [5708, '2027-10-03'], // Ann brown, expiry Oct 2027
+  [5711, '2027-02-03'], // Miss simms, expiry Feb 2027
+  [5722, '2026-12-19'], // Louie Thomas, "paid for until december 20"
+  [5736, '2027-04-03'], // Shadae clarke, expiry Apr 2027
+  [5746, '2028-09-30'], // Gio, rate 0
+  [5750, '2027-10-19'], // Rent13 Mr Fix It, "not to be charged"
+  [5779, '2026-12-03'], // Aaron ebanks, unpaid first period to 7 Dec (old rule)
+  [5780, '2028-01-03'], // Jayden Pryce, expiry Jan 2028
+])
+
+// HELD by the owner: no billed-through date until JMEDIA says which is right.
+const HELD = new Map([
+  [5747, 'Marlon Crowe: expiry Nov 2027 and a J$3,500 debt contradict each other (owner, 8 Oct 2026)'],
+])
 const RUN_ID = randomUUID()
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 const pad = (n) => String(n).padStart(2, '0')
@@ -222,17 +241,37 @@ async function main() {
       ('Nov ' + nov).padEnd(22) + ('Dec ' + dec).padEnd(16) + p.notes.join('; ')
   }
 
+  // What --apply would do with each flagged or held customer.
+  for (const p of plan) {
+    if (HELD.has(p.c.id)) p.status = 'held'
+    else if (!p.flag) p.status = 'write'
+    else if (CONFIRMED.get(p.c.id) === p.through) p.status = 'write'
+    else p.status = 'unconfirmed'
+  }
+
   for (const [title, test] of [
-    ['4TH GROUP (bill 4, cut-off 7)', (p) => p.B === 4 && !p.flag],
-    ['20TH GROUP (bill 20, cut-off 24)', (p) => p.B === 20 && !p.flag],
-    ['OTHER BILL DAYS', (p) => p.B !== 4 && p.B !== 20 && !p.flag],
-    ['FLAGGED — a person confirms each before --apply', (p) => p.flag],
+    ['4TH GROUP (bill 4, cut-off 7)', (p) => p.B === 4 && !p.flag && p.status === 'write'],
+    ['20TH GROUP (bill 20, cut-off 24)', (p) => p.B === 20 && !p.flag && p.status === 'write'],
+    ['OTHER BILL DAYS', (p) => p.B !== 4 && p.B !== 20 && !p.flag && p.status === 'write'],
+    ['FLAGGED, CONFIRMED by the owner 8 Oct at this date', (p) => p.flag && p.status === 'write'],
+    ['FLAGGED, NOT CONFIRMED — skipped by --apply until the owner confirms', (p) => p.status === 'unconfirmed'],
+    ['HELD — no date written', (p) => p.status === 'held'],
   ]) {
     const rows = plan.filter(test)
     if (!rows.length) continue
     console.log(title + ' (' + rows.length + ')')
-    for (const p of rows) console.log(line(p))
+    for (const p of rows) {
+      console.log(line(p))
+      if (p.status === 'held') console.log('        ' + HELD.get(p.c.id))
+      if (p.status === 'unconfirmed' && CONFIRMED.has(p.c.id)) {
+        console.log('        confirmed at ' + CONFIRMED.get(p.c.id) + ', the rule now gives ' + p.through)
+      }
+    }
     console.log('')
+  }
+  for (const p of plan.filter((x) => x.status === 'held')) {
+    console.log('NOTE: #' + p.c.id + ' has no billed-through date, so if this is still open on ' + START +
+      ' the engine charges them a FULL month then, like a customer it has always billed.')
   }
 
   const novTotal = plan.reduce((s, p) => s + (p.nov ? p.nov.amount : 0), 0)
@@ -251,6 +290,8 @@ async function main() {
 
   let done = 0
   for (const p of plan) {
+    if (p.status === 'held') { console.log('#' + p.c.id + ' HELD; not written.'); continue }
+    if (p.status === 'unconfirmed') { console.log('#' + p.c.id + ' flagged and not confirmed at ' + p.through + '; not written.'); continue }
     if (p.existing) { console.log('#' + p.c.id + ' already billed through ' + p.existing + '; left.'); continue }
     const { data: upd, error: e2 } = await db.from('customers').update({ billed_through: p.through })
       .eq('company_id', COMPANY).eq('id', p.c.id).is('billed_through', null).select('id')
