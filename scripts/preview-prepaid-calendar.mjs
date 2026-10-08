@@ -1,4 +1,4 @@
-// READ-ONLY preview of switching calendar-month prepaid on (migration 0028).
+// READ-ONLY preview of calendar-month prepaid for one company (migration 0028).
 //
 //   node scripts/preview-prepaid-calendar.mjs                 Ezmze (27)
 //   node scripts/preview-prepaid-calendar.mjs --company=30
@@ -8,17 +8,19 @@
 // It runs the APP'S OWN CODE, not a copy: planServicePass (the hourly service
 // pass's read-only half), engineVerdict (the billing run's decision) and
 // firstPeriodAnchor (the till's first-payment test). What it prints is what the
-// switch would do, not an estimate of it.
+// next hourly pass would do, not an estimate of it. The model applies to a
+// prepaid company whose engine is live (lib/data/prepaid-calendar.ts); for any
+// other company this shows what it WOULD do.
 //
-//   1. THE FIRST HOURLY PASS. Who the pass would find with service ended, and
+//   1. THE NEXT HOURLY PASS. Who the pass would find with service ended, and
 //      what their month's charge would become — the days they had, rounded.
 //      Customers with no charge for that month are only marked; nothing about
 //      their balance changes.
 //
 //   2. FIRST PAYMENTS STILL TO COME. Customers provisioned under the old rules
 //      who have not paid since. Option A (owner, 8 Oct 2026): they finish on
-//      the old first-payment rule, the till pricing them as with the switch
-//      off; anyone provisioned under the model is counted apart.
+//      the old first-payment rule, the till pricing them as it did before the
+//      model; anyone provisioned under the model is counted apart.
 //
 //   3. 1 NOVEMBER. What the billing run would charge on the company's bill
 //      day for November, for customers whose service is on now: the full
@@ -91,28 +93,29 @@ const pad = (s, n) => String(s).padEnd(n)
 const lpad = (s, n) => String(s).padStart(n)
 
 const { data: settings, error: settingsError } = await db.from('settings')
-  .select('billing_type, timezone, bill_date, billing_engine_start_date, prepaid_calendar_enabled, reconnection_fee')
+  .select('billing_type, timezone, bill_date, billing_engine_mode, billing_engine_start_date, reconnection_fee')
   .eq('company_id', COMPANY).maybeSingle()
 if (settingsError) {
   console.error(settingsError.code === '42703'
-    ? 'Migration 0028 is not applied: there is no switch to preview yet. Apply it first; nothing was read.'
+    ? 'Migration 0028 is not applied. Apply it first; nothing was read.'
     : 'Could not read settings: ' + settingsError.message)
   process.exit(1)
 }
 const { data: companyRow } = await db.from('companies').select('name').eq('id', COMPANY).maybeSingle()
 const timezone = settings?.timezone || 'America/Jamaica'
+const applies = settings?.billing_type === 'prepaid' && settings?.billing_engine_mode === 'live'
 
-console.log('CALENDAR-MONTH PREPAID: what switching it on would do. READ-ONLY.')
+console.log('CALENDAR-MONTH PREPAID. READ-ONLY.')
 console.log('Company ' + COMPANY + ' ' + (companyRow?.name ?? '') + ' | billing_type ' + settings?.billing_type +
-  ' | switch now ' + (settings?.prepaid_calendar_enabled ? 'ON' : 'off') +
+  ' | engine ' + settings?.billing_engine_mode + ' from ' + (settings?.billing_engine_start_date ?? 'never') +
   ' | reconnection fee ' + money(settings?.reconnection_fee ?? 0) +
   ' | bill day ' + (settings?.bill_date ?? 1))
-if (settings?.billing_type !== 'prepaid') {
-  console.log('This company is not prepaid: the model never applies to it, whatever the switch says.')
-}
+console.log(applies
+  ? 'The model applies to this company now.'
+  : 'The model does NOT apply to this company (it needs prepaid with the engine live). Below is what it WOULD do.')
 
 // ---------------------------------------------------------------------------
-// 1. The first hourly pass
+// 1. The next hourly pass
 // ---------------------------------------------------------------------------
 let plan
 try {
@@ -127,7 +130,7 @@ const reduced = ended.filter((c) => c.from && c.to)
 const marked = ended.filter((c) => !c.from)
 const resumed = plan.changes.filter((c) => c.kind === 'resumed')
 
-console.log('\n1. THE FIRST HOURLY PASS (today ' + plan.today + ')')
+console.log('\n1. THE NEXT HOURLY PASS (today ' + plan.today + ')')
 console.log('   Charges reduced to the days of service: ' + reduced.length)
 let totalBefore = 0
 let totalAfter = 0
@@ -147,7 +150,7 @@ const byMonth = {}
 for (const c of marked) byMonth[c.on.slice(0, 7)] = (byMonth[c.on.slice(0, 7)] ?? 0) + 1
 for (const [m, n] of Object.entries(byMonth).sort()) console.log('     ended in ' + m + ': ' + n)
 if (resumed.length) {
-  console.log('   Resumed (marked and back on): ' + resumed.length + ' — unexpected before the switch has ever run')
+  console.log('   Resumed (marked and back on, not through the till): ' + resumed.length)
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +170,7 @@ for (const id of candidates) {
   if (await provisionedUnderModel(COMPANY, id)) underModel += 1
   else pending.push({ id, anchor })
 }
-console.log('\n2. PROVISIONED BEFORE THE SWITCH, FIRST PAYMENT STILL TO COME: ' + pending.length +
+console.log('\n2. PROVISIONED BEFORE THE MODEL, FIRST PAYMENT STILL TO COME: ' + pending.length +
   ' (of ' + candidates.length + ' ever provisioned in the app; ' + underModel + ' more provisioned under the model)')
 if (pending.length) {
   const { data: rows } = await db.from('customers')
@@ -180,8 +183,8 @@ if (pending.length) {
       ' provisioned ' + p.anchor.toISOString().slice(0, 10) +
       '  balance ' + lpad(money(r?.carried_balance ?? 0), 11) + '  rate ' + money(r?.monthly_rate ?? 0))
   }
-  console.log('   Option A (owner, 8 Oct 2026): their first payment is priced on the old rule, as with')
-  console.log('   the switch off. After it they are on the model like everyone else.')
+  console.log('   Option A (owner, 8 Oct 2026): their first payment is priced on the old rule, as it')
+  console.log('   was before the model. After it they are on the model like everyone else.')
 }
 
 // ---------------------------------------------------------------------------
@@ -202,9 +205,8 @@ for (const c of customers) {
     today: '2026-11-01',
     startDate: settings?.billing_engine_start_date ?? null,
     companyBillDay: settings?.bill_date ?? null,
-    customer: { id: c.id, billDate: c.billDate, dateAdded: c.dateAdded, monthlyCharge: c.monthlyRate + (addons.get(c.id) ?? 0) },
+    customer: { id: c.id, dateAdded: c.dateAdded, monthlyCharge: c.monthlyRate + (addons.get(c.id) ?? 0) },
     service: endingIds.has(c.id) ? 'disconnected' : service,
-    calendarPrepaid: true,
   })
   tally[d.verdict] = (tally[d.verdict] ?? 0) + 1
   if (d.verdict === 'charge') { count += 1; total += d.amount }

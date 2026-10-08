@@ -17,8 +17,9 @@ const BILLING_TYPE_HELP: Record<CompanyBillingType, string> = {
     'still running. The bill day is only the day the charge goes out; customers’ own bill ' +
     'dates are ignored.',
   prepaid:
-    'Each customer’s bill date to the same date next month, charged on the bill date. The ' +
-    'month ahead: a customer billed on the 20th is charged on 20 Sep for 20 Sep to 20 Oct.',
+    'The calendar month, charged on the company bill day, to the nearest hundred. The cut-off ' +
+    'day is when an unpaid customer is disconnected; a disconnected customer pays only for the ' +
+    'days their service was on.',
 }
 
 const ENGINE_MODE_LABELS: Record<EngineMode, string> = {
@@ -65,7 +66,7 @@ export function BillingSettingsForm({
   currencySymbol: string
   /** Migration 0024 — hides the billing model and engine controls until applied. */
   billingEngineAvailable: boolean
-  /** Migration 0028 — calendar-month prepaid and the reconnection fee. */
+  /** Migration 0028 — the reconnection fee. */
   prepaidCalendar: PrepaidCalendar
 }) {
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveBillingSettings, null)
@@ -77,10 +78,12 @@ export function BillingSettingsForm({
   const [engineMode, setEngineMode] = useState<EngineMode>(settings.billingEngineMode)
   const [firstExpiryRule, setFirstExpiryRule] = useState(settings.firstExpiryRuleEnabled)
   const [prorata, setProrata] = useState(settings.prorataFirstPaymentEnabled)
-  const [calendar, setCalendar] = useState(prepaidCalendar.switchedOn)
-  // The first-period rules do not apply once calendar-month prepaid is on: a
-  // new customer's first month is charged from connection day to month end.
-  const firstPeriodReplaced = calendar && billingType === 'prepaid'
+  // Calendar-month prepaid applies to a prepaid company whose engine is live
+  // (lib/data/prepaid-calendar.ts#prepaidCalendarFor). There, the first-period
+  // rules are replaced: a new customer's first month is charged from
+  // connection day to month end.
+  const prepaidModel = billingType === 'prepaid' && engineMode === 'live'
+  const firstPeriodReplaced = prepaidModel
 
   const lockedHint = generalAvailable ? undefined : 'Needs migration 0007.'
   const thresholdHint = thresholdsAvailable ? undefined : 'Needs migration 0012.'
@@ -226,27 +229,25 @@ export function BillingSettingsForm({
           </Card>
         ) : null}
 
-        {/* ---- 2b. Calendar-month prepaid (migration 0028) ---- */}
-        <Card title="Calendar-Month Prepaid">
+        {/* ---- 2b. Prepaid (migration 0028) ---- */}
+        <Card title="Prepaid">
           {!prepaidCalendar.available ? (
             <p className="text-[11px] text-amber-400/90">Needs migration 0028.</p>
           ) : null}
-          <Toggle
-            name="prepaid_calendar_enabled"
-            label="Charge prepaid customers by calendar month"
-            checked={calendar}
-            onChange={setCalendar}
-            disabled={!prepaidCalendar.available}
-          />
           <ul className="list-disc space-y-1 pl-4 text-[11px] leading-relaxed text-gray-500">
             <li>The period is the calendar month. The cut-off day is when an unpaid customer is disconnected.</li>
             <li>Customers pay only for days their service was on: a disconnected customer&apos;s month is reduced to the days they had, and nothing more is charged while they stay off.</li>
             <li>Each month is worked out by the day and rounded to the nearest hundred. Months paid ahead are full months.</li>
             <li>New customers are charged from their connection day to the month&apos;s end.</li>
           </ul>
-          {calendar && billingType !== 'prepaid' ? (
+          {billingType !== 'prepaid' ? (
             <p className="text-[11px] text-amber-400/90">
-              This company is postpaid, so this has no effect. It applies to prepaid companies only.
+              This company is postpaid, so none of this applies.
+            </p>
+          ) : engineMode !== 'live' ? (
+            <p className="text-[11px] text-amber-400/90">
+              Applies once the engine is Live: until then this company is not billed by ISPMan, and
+              its balances are raised by hand.
             </p>
           ) : null}
 
@@ -282,8 +283,9 @@ export function BillingSettingsForm({
           </p>
           {firstPeriodReplaced ? (
             <p className="text-[11px] text-amber-400/90">
-              Replaced while calendar-month prepaid is on: a new customer is charged from connection day
-              to the month&apos;s end, and Provision asks which cut-off day their service runs to.
+              Replaced for this prepaid company: a new customer is charged from connection day to the
+              month&apos;s end. Customers provisioned before 8 Oct 2026 who have not paid yet still
+              finish on these rules.
             </p>
           ) : null}
 

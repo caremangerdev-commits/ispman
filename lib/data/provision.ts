@@ -46,9 +46,10 @@ export const FIRST_MONTH_EVENTS = {
 /**
  * Was this customer provisioned with calendar-month prepaid on?
  *
- * OPTION A (owner, 8 Oct 2026): customers provisioned BEFORE the switch, who
- * have not paid yet, finish on the first-payment rule they were provisioned
- * under; anyone provisioned after it gets the model. The till asks here.
+ * OPTION A (owner, 8 Oct 2026): customers provisioned BEFORE the model came in,
+ * who have not paid yet, finish on the first-payment rule they were
+ * provisioned under; anyone provisioned under it gets the model. The till asks
+ * here.
  *
  * The evidence is Provision's own log row about the first month's charge —
  * written, skipped or failed — not a date: it says what actually happened at

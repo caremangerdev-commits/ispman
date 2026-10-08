@@ -3,7 +3,6 @@
 import { normalisePrefix } from '@/lib/account-number'
 import { revalidatePath } from 'next/cache'
 
-import { logEvent } from '@/lib/audit'
 import { CURRENCIES, DATE_FORMATS, TIMEZONES } from '@/lib/data/company'
 import { prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
 import { can } from '@/lib/permissions'
@@ -292,32 +291,18 @@ export async function saveBillingSettings(
     patch.prorata_first_payment_enabled = bool(formData, 'prorata_first_payment_enabled')
   }
 
-  // Migration 0028: calendar-month prepaid and the reconnection fee. Only once
-  // the columns exist. Turning the model on or off is logged: it changes how
-  // every customer of the company is charged.
-  const prepaid = await prepaidCalendarFor(company.id)
-  let modelChanged: boolean | null = null
-  if (prepaid.available) {
+  // Migration 0028: the reconnection fee, once the column exists. There is no
+  // calendar-month switch any more — the model is how prepaid works
+  // (lib/data/prepaid-calendar.ts#prepaidCalendarFor).
+  if ((await prepaidCalendarFor(company.id)).available) {
     const fee = numInRange(formData, 'reconnection_fee', 0, 1_000_000)
     if (Number.isNaN(fee)) {
       return { ok: false, error: 'Reconnection fee must be zero or more.' }
     }
     patch.reconnection_fee = fee ?? 0
-    const on = bool(formData, 'prepaid_calendar_enabled')
-    patch.prepaid_calendar_enabled = on
-    if (on !== prepaid.switchedOn) modelChanged = on
   }
 
   const settingsError = await writeSettings(company.id, patch)
-  if (!settingsError && modelChanged !== null) {
-    await logEvent({
-      type: 'billing_model_changed',
-      tag: '[billing]',
-      details:
-        'Calendar-month prepaid ' + (modelChanged ? 'TURNED ON' : 'turned off') +
-        ' | by=' + profile.email,
-    })
-  }
   if (settingsError) {
     return { ok: false, error: 'Could not save billing settings: ' + settingsError }
   }

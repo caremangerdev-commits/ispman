@@ -59,16 +59,22 @@ Settings → Billing → Billing Model & Engine. Company admin only, like the
 rest of that page. (These fields were under General Settings → Billing
 Defaults until 2026-10-03.)
 
-- **Billing model.** Postpaid: the calendar month, charged on the company's
-  bill day while the month runs. Prepaid: each customer's bill date to the
-  same date next month, charged on the bill date, the month ahead. One per
-  company; customers have no override.
+- **Billing model.** Both charge the calendar month on the company's bill
+  day; customers' own bill dates are not read. Postpaid charges the exact
+  figure. Prepaid is calendar-month prepaid (migration 0028): the month to the
+  nearest hundred, reduced by the hourly service pass to the days of service
+  when a customer is cut off, recomputed at the till when they come back, and
+  a new customer charged from connection day to month end at Provision. It
+  applies to every prepaid company whose engine is live; there is no separate
+  switch (8 Oct 2026). The old prepaid shape — each customer's bill date to
+  the same date next month — is gone. One model per company; customers have
+  no override.
 - **Engine.** Off, dry run, live. Off does nothing. Dry run records what would
   be charged, daily, and charges nothing. Live charges.
 - **Engine start date.** Required once the mode is not off. A charge date
   before it is never charged. **Set it after the last date the company was
   billed by hand or by Run Bills**, or the engine charges the period that was
-  running when it was switched on. JMEDIA: 21 September 2026 or later.
+  running when it was switched on.
 
 ## Going live
 
@@ -122,7 +128,10 @@ the first day land without waiting for the hour.
 | The service check shared with Run Bills | `lib/radius/service-state.ts` |
 | The system identity and its log writer | `lib/audit.ts` (`logSystemEvent`) |
 | The one Postgres function | `apply_bill_charges` in `0024_billing_engine.sql` |
-| Read-only simulation over real rows | `scripts/simulate-billing-engine.mjs` |
+| Prepaid month arithmetic (pure) | `lib/prepaid-calendar.ts` |
+| The hourly service pass (prepaid) | `lib/data/prepaid-service.ts` |
+| A month's charge changed, guarded | `set_month_charge` in `0028_prepaid_calendar.sql` |
+| Read-only preview of the model for a company | `scripts/preview-prepaid-calendar.mjs` |
 
 ## What it deliberately does not do
 

@@ -793,11 +793,11 @@ export async function recordPayment(
   // payment then fails to record, the change is put back.
   const calendar = caps.billing ? await prepaidCalendarFor(company.id) : PREPAID_CALENDAR_OFF
 
-  // OPTION A (owner, 8 Oct 2026). A customer provisioned BEFORE the model was
-  // switched on, who has not paid since, finishes on the first-payment rule
-  // they were provisioned under: this payment is priced exactly as with the
-  // switch off — first period, months, expiry and all. Anyone provisioned
-  // after it gets the model. lib/data/provision.ts#provisionedUnderModel.
+  // OPTION A (owner, 8 Oct 2026). A customer provisioned BEFORE the model came
+  // in, who has not paid since, finishes on the first-payment rule they were
+  // provisioned under: this payment is priced exactly as it was before the
+  // model — first period, months, expiry and all. Anyone provisioned under it
+  // gets the model. lib/data/provision.ts#provisionedUnderModel.
   const firstAnchor = calendar.enabled ? await firstPeriodAnchor(company.id, customer.id) : null
   const oldFirstRule =
     firstAnchor !== null && !(await provisionedUnderModel(company.id, customer.id))
@@ -897,7 +897,7 @@ export async function recordPayment(
   //
   // NEVER under calendar-month prepaid: a new customer's first month is charged
   // from connection day to month end when they are provisioned. Still for one
-  // provisioned before the switch (oldFirstRule, above).
+  // provisioned before the model (oldFirstRule, above).
   const firstPeriod = model
     ? null
     : await resolveFirstPeriod({
@@ -1669,9 +1669,9 @@ export type PaymentContext = {
    */
   charges: OpenCharge[]
   /**
-   * Calendar-month prepaid (migration 0028), when the model is on for the
+   * Calendar-month prepaid (migration 0028), when the model applies to the
    * company; null otherwise — and null for a customer provisioned before the
-   * switch who has not paid yet (Option A: the till as with the switch off).
+   * model who has not paid yet (Option A: the till as it was before the model).
    * `returning` says the customer's service has ended, so the till recomputes
    * this month and offers the reconnection fee.
    */
@@ -1742,8 +1742,8 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
   // Calendar-month prepaid: no first period (a new customer's first month is
   // charged at connection), and a returning customer's month is recomputed.
   // The same tests recordPayment makes before it prices, Option A included: a
-  // customer provisioned before the switch and not yet paid gets the till as it
-  // is with the switch off.
+  // customer provisioned before the model and not yet paid gets the till as it
+  // was before the model.
   const prepaid = caps.billing ? await prepaidCalendarFor(company.id) : PREPAID_CALENDAR_OFF
   const firstAnchor = prepaid.enabled ? await firstPeriodAnchor(company.id, customer.id) : null
   const oldFirstRule =

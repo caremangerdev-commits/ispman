@@ -22,36 +22,38 @@ export async function readMonthCharges(companyId: number, customerId: number): P
 }
 
 /**
- * Whether a company runs calendar-month prepaid (migration 0028), and its
- * reconnection fee. THE one read of the switch: the till, the payment action,
- * the hourly tick and Provision all ask here, so they cannot disagree about
- * whether the model is on.
+ * Whether calendar-month prepaid applies to a company, and its reconnection
+ * fee. THE one read of it: the till, the payment action, the hourly tick, the
+ * receipt and Provision all ask here, so they cannot disagree.
  *
- * Read on its own rather than through the schema probe: a missing column
- * (42703, the migration not applied) reads as "not available", which every
- * caller treats as the switch off — the app behaves exactly as before 0028.
+ * THERE IS NO SWITCH (owner, 8 Oct 2026: "the model is simply how prepaid
+ * works now"). It applies to a company that is PREPAID and whose billing
+ * engine is LIVE — the engine is what charges the months the model reduces,
+ * recomputes and settles. A prepaid company whose engine is off is not billed
+ * by ISPMan at all: its balances are raised by hand, by bill-date periods the
+ * model knows nothing about, and recomputing a month at the till on top of
+ * them would charge days twice. It joins the model the day its engine goes
+ * live. Postpaid companies never do.
  *
- * ON = migration applied AND the company is prepaid AND the switch is set.
- * Postpaid companies are never on, whatever the column says.
+ * Before migration 0028 (42703 on reconnection_fee) it reads as not applying,
+ * so the app behaves exactly as before 0028.
  */
 export type PrepaidCalendar = {
   /** Migration 0028 is applied. */
   available: boolean
   /** The model applies to this company. */
   enabled: boolean
-  /** The switch as stored, for the settings form. */
-  switchedOn: boolean
   reconnectionFee: number
 }
 
 export const PREPAID_CALENDAR_OFF: PrepaidCalendar = {
-  available: false, enabled: false, switchedOn: false, reconnectionFee: 0,
+  available: false, enabled: false, reconnectionFee: 0,
 }
 
 export async function prepaidCalendarFor(companyId: number): Promise<PrepaidCalendar> {
   const { data, error } = await tenantClient()
     .from('settings')
-    .select('billing_type, prepaid_calendar_enabled, reconnection_fee')
+    .select('billing_type, billing_engine_mode, reconnection_fee')
     .eq('company_id', companyId)
     .maybeSingle()
 
@@ -62,15 +64,13 @@ export async function prepaidCalendarFor(companyId: number): Promise<PrepaidCale
 
   const row = data as {
     billing_type: string | null
-    prepaid_calendar_enabled: boolean | null
+    billing_engine_mode: string | null
     reconnection_fee: number | string | null
   } | null
 
-  const switchedOn = Boolean(row?.prepaid_calendar_enabled)
   return {
     available: true,
-    switchedOn,
-    enabled: switchedOn && row?.billing_type === 'prepaid',
+    enabled: row?.billing_type === 'prepaid' && row?.billing_engine_mode === 'live',
     reconnectionFee: Math.max(0, Number(row?.reconnection_fee ?? 0)),
   }
 }

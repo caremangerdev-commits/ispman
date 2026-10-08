@@ -9,29 +9,26 @@
  * the result. The shapes exist HERE and nowhere else — not in SQL, not in a
  * second copy for the page.
  *
- * TWO SHAPES, NOT ONE. A company is prepaid or postpaid (settings.billing_type)
- * and the two are different things:
+ * ONE SHAPE: THE CALENDAR MONTH, 1st to last day, charged on the COMPANY'S
+ * bill day, for prepaid and postpaid alike. The bill day is only the day the
+ * charge is raised; it does not shape the period, and the customer's own
+ * bill_date is not read.
  *
- *   Postpaid   THE CALENDAR MONTH, 1st to last day, charged on the COMPANY'S
- *              bill day while the month is still running. The bill day is only
- *              the day the bill goes out; it does not shape the period, and the
- *              customer's own bill_date is ignored entirely.
+ * What differs is the amount. Prepaid is calendar-month prepaid (migration
+ * 0028, owner 7-8 Oct 2026 — "simply how prepaid works now"): the month's
+ * figure is ROUNDED TO THE NEAREST HUNDRED (lib/prepaid-calendar.ts#round100),
+ * and the hourly service pass later reduces it to the days of service if the
+ * customer is cut off (lib/data/prepaid-service.ts). Postpaid charges the
+ * exact figure.
  *
- *   Prepaid    THE CUSTOMER'S BILL DATE TO THE SAME DATE NEXT MONTH, charged on
- *              the bill date, and it is the month AHEAD. JMEDIA's 20th group
- *              charged on 20 Sep covers 20 Sep to 20 Oct. Anchored on the
- *              customer's bill date (the company's for a customer with none —
- *              lib/billing.ts#effectiveBillDay, the one bill-day function).
+ * The old prepaid shape — each customer's bill date to the same date next
+ * month — was deleted on 8 Oct 2026. Ezmze, the one company it ran for, was
+ * billing the calendar month already (every bill date the 1st).
  *
- * Do not unify them. A shared function with a flag would have to explain why
- * the bill day shapes one period and not the other, and that explanation is
- * the two functions below.
- *
- * THE PERIOD IS NOT THE EXPIRY. JMEDIA's 20th group: bill date 20, cut-off 24.
- * The period is 20 Sep to 20 Oct; the cut-off is the 24th; the four days
- * between are the payment window. This module names periods and charge dates.
- * It never reads, derives or produces an expiry, and the engine never writes
- * radcheck. Expiries move on payment, nowhere else.
+ * THE PERIOD IS NOT THE EXPIRY. The cut-off day is when an unpaid customer is
+ * disconnected, not the end of the period. This module names periods and
+ * charge dates. It never reads, derives or produces an expiry, and the engine
+ * never writes radcheck. Expiries move on payment, nowhere else.
  *
  * ONE PERIOD PER CUSTOMER, EVER. NEVER A BACKLOG. The verdict looks only at
  * the period containing today. A tick late in that period still charges it
@@ -67,10 +64,10 @@ export function toEngineMode(value: string | null | undefined): EngineMode {
 /**
  * A period and the date its charge is raised.
  *
- * `start` and `end` are what bill_charges stores. `end` is the day the period
- * runs to: for postpaid the last day of the month (inclusive, as Run Bills and
- * last_billed_date already mean it); for prepaid the same date next month, the
- * day the next period starts — "20 Sep to 20 Oct".
+ * `start` and `end` are what bill_charges stores. `end` is the last day of the
+ * month, inclusive, as Run Bills and last_billed_date already mean it. (Rows the
+ * old prepaid shape wrote end on the 1st of the next month instead; nothing
+ * reads period_end to decide anything — the unique key is period_start.)
  */
 export type BillPeriod = {
   start: string
@@ -109,68 +106,25 @@ function clampDay(y: number, m: number, day: number): number {
   return Math.min(Math.max(1, day), daysIn(y, m))
 }
 
-/** The month after (y, m). */
-function nextMonth(y: number, m: number): [number, number] {
-  return m === 12 ? [y + 1, 1] : [y, m + 1]
-}
-
-/** The month before (y, m). */
-function prevMonth(y: number, m: number): [number, number] {
-  return m === 1 ? [y - 1, 12] : [y, m - 1]
-}
-
 // ---------------------------------------------------------------------------
-// The two shapes
+// The shape
 // ---------------------------------------------------------------------------
 
 /**
- * POSTPAID: the calendar month containing `today`, charged on the company's
- * bill day of that month.
+ * The calendar month containing `today`, charged on the company's bill day of
+ * that month. Prepaid and postpaid alike.
  *
  * The bill day does not shape the period. A company billing on the 26th
  * charges 1 Sep to 30 Sep on 26 Sep, while September is still running. A bill
  * day longer than the month is clamped to its last day, so a bill day of 31
  * charges September on the 30th rather than never.
  */
-export function postpaidPeriod(today: string, companyBillDay: number): BillPeriod {
+export function monthPeriod(today: string, companyBillDay: number): BillPeriod {
   const [y, m] = parts(today)
   return {
     start: toYmd(y, m, 1),
     end: toYmd(y, m, daysIn(y, m)),
     chargeDate: toYmd(y, m, clampDay(y, m, companyBillDay)),
-  }
-}
-
-/**
- * PREPAID: the customer's bill date to the same date next month, charged on the
- * bill date. The month ahead.
- *
- * The period containing `today` starts on the most recent occurrence of the
- * bill day on or before today. On 22 Sep a bill day of 20 gives 20 Sep to
- * 20 Oct; on 19 Sep it gives 20 Aug to 20 Sep. The charge date IS the start.
- *
- * A bill day longer than the month is clamped in each month separately, so a
- * bill day of 31 gives 30 Sep to 31 Oct and then 31 Oct to 30 Nov: "the same
- * date next month" as nearly as that month allows, and never a day in the
- * month after.
- */
-export function prepaidPeriod(today: string, billDay: number): BillPeriod {
-  const [y, m, d] = parts(today)
-
-  let sy = y
-  let sm = m
-  let sd = clampDay(y, m, billDay)
-  if (sd > d) {
-    ;[sy, sm] = prevMonth(y, m)
-    sd = clampDay(sy, sm, billDay)
-  }
-
-  const [ey, em] = nextMonth(sy, sm)
-  const start = toYmd(sy, sm, sd)
-  return {
-    start,
-    end: toYmd(ey, em, clampDay(ey, em, billDay)),
-    chargeDate: start,
   }
 }
 
@@ -181,7 +135,7 @@ export function prepaidPeriod(today: string, billDay: number): BillPeriod {
 export type EngineVerdict =
   /** Charge this customer for this period. */
   | 'charge'
-  /** The period's charge date has not arrived. Postpaid only, by construction. */
+  /** The month's charge date (the company's bill day) has not arrived. */
   | 'not_due'
   /** The charge date is before the company's engine start date. Never charged. */
   | 'before_start'
@@ -201,8 +155,6 @@ export type EngineVerdict =
 
 export type EngineCustomer = {
   id: number
-  /** `customers.bill_date` as stored. Prepaid reads it; postpaid ignores it. */
-  billDate: number | null
   /** `customers.date_added`. Null reads as "always been here". */
   dateAdded: string | null
   /**
@@ -216,9 +168,12 @@ export type EngineCustomer = {
 export type EngineDecision = {
   verdict: EngineVerdict
   period: BillPeriod
-  /** The day this customer is charged on. Informational for postpaid. */
+  /** The company's bill day: the day every customer's month is charged on. */
   billDay: number
-  /** Rate plus add-ons, rounded to cents. What a 'charge' verdict charges. */
+  /**
+   * What a 'charge' verdict charges: rate plus add-ons — to the nearest
+   * hundred for prepaid, to the cent for postpaid.
+   */
   amount: number
 }
 
@@ -227,7 +182,7 @@ export type EngineDecision = {
  *
  * THE ORDER IS THE ORDER OF REASONS an operator should be given, and the
  * order the bill_runs counters are filled in:
- *   not_due          the charge date is ahead of today (postpaid)
+ *   not_due          the charge date is ahead of today
  *   before_start     the charge date is before the company's start date
  *   joined_after     the customer was not here on the charge date
  *   zero_rate        nothing to charge
@@ -253,32 +208,16 @@ export function engineVerdict(opts: {
   customer: EngineCustomer
   /** From the registry. Undefined when the caller could not resolve an identity. */
   service: 'active' | 'disconnected' | 'unprovisioned' | undefined
-  /**
-   * Calendar-month prepaid is on for this company (migration 0028). The period
-   * is then the CALENDAR MONTH, charged on the company's bill day — the same
-   * shape as postpaid, which already is exactly that — and the amount is
-   * rounded to the nearest hundred (lib/prepaid-calendar.ts). Ignored for a
-   * postpaid company.
-   */
-  calendarPrepaid?: boolean
 }): EngineDecision {
   const { customer } = opts
-  const calendar = opts.billingType === 'prepaid' && opts.calendarPrepaid === true
-  const byCustomerBillDay = opts.billingType === 'prepaid' && !calendar
 
-  // Postpaid ignores the customer's bill date ENTIRELY: only the company's day
-  // is consulted, and a missing one reads as the 1st through the same function
-  // the rest of the app uses. So does calendar-month prepaid.
-  const billDay = byCustomerBillDay
-    ? effectiveBillDay(customer.billDate, opts.companyBillDay)
-    : effectiveBillDay(null, opts.companyBillDay)
-
-  const period = byCustomerBillDay
-    ? prepaidPeriod(opts.today, billDay)
-    : postpaidPeriod(opts.today, billDay)
+  // Only the company's day is consulted, and a missing one reads as the 1st
+  // through the same function the rest of the app uses.
+  const billDay = effectiveBillDay(null, opts.companyBillDay)
+  const period = monthPeriod(opts.today, billDay)
 
   const exact = Math.round((Number.isFinite(customer.monthlyCharge) ? customer.monthlyCharge : 0) * 100) / 100
-  const amount = calendar ? round100(exact) : exact
+  const amount = opts.billingType === 'prepaid' ? round100(exact) : exact
   const out = (verdict: EngineVerdict): EngineDecision => ({ verdict, period, billDay, amount })
 
   if (period.chargeDate > opts.today) return out('not_due')
