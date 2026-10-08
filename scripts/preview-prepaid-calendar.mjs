@@ -62,6 +62,14 @@ for (const line of readFileSync('.env.local', 'utf8').split('\n')) {
   }
 }
 
+// The app's temporary [perf] timing lines print on every schema probe, which
+// outside a request is every call. Not this preview's business.
+const print = console.log
+console.log = (...a) => {
+  if (typeof a[0] === 'string' && a[0].startsWith('[perf]')) return
+  print(...a)
+}
+
 const load = (p) => import(pathToFileURL(path.join(ROOT, p)).href)
 const { planServicePass } = await load('lib/data/prepaid-service.ts')
 const { firstPeriodAnchor } = await load('lib/data/first-period.ts')
