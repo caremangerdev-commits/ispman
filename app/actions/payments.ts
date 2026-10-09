@@ -21,7 +21,9 @@ import {
 import { getExpiryClock, getFirstPeriodRules } from '@/lib/data/company'
 import { applyExpiryClock } from '@/lib/radius/format'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
-import { applyExpiryUndo, planExpiryUndo, type ExpiryUndo } from '@/lib/data/payment-expiry'
+import {
+  applyExpiryUndo, expiryActionText, planExpiryUndo, planMonthsTakeBack, type ExpiryUndo,
+} from '@/lib/data/payment-expiry'
 import { provisionedUnderModel } from '@/lib/data/provision'
 import { getChargesById, listOpenCharges, type OpenCharge } from '@/lib/data/charges'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
@@ -2287,6 +2289,17 @@ export async function updatePayment(
   // collections and print another date on its receipt.
   if (caps.otherPayments) patch.paid_on = ymd(paymentDate)
 
+  // FEWER MONTHS TAKES THE EXPIRY BACK BY THE DIFFERENCE (owner, 9 Oct 2026),
+  // with the same safeguards as a deletion: lib/data/payment-expiry.ts. A
+  // payment typed as six months and corrected to one kept its six (Patricia
+  // Salmon). Planned before the row changes, carried out once it has.
+  const previousMonths = payment.months_paid ?? 1
+  const monthsBack = isOther ? 0 : previousMonths - monthsPaid
+  const expiryPlan: ExpiryUndo | null = monthsBack >= 1
+    ? await planMonthsTakeBack(company.id, payment.id, customer?.identity ?? null, monthsBack)
+      .catch((err: Error): ExpiryUndo => ({ kind: 'left', current: null, message: 'Could not work out the expiry: ' + err.message + ' Check it by hand.' }))
+    : null
+
   const { error: updateError } = await db
     .from('payments')
     .update(patch)
@@ -2341,6 +2354,19 @@ export async function updatePayment(
     )
   }
 
+  const expiryAtChange = await standingExpiry(customer?.identity ?? null)
+  const expiryDone = expiryPlan
+    ? await applyExpiryUndo({
+        plan: expiryPlan,
+        companyId: company.id,
+        customerId: payment.customer_id,
+        identity: customer?.identity ?? null,
+        paymentId: payment.id,
+        cause: 'edited from ' + previousMonths + ' to ' + monthsPaid + (monthsPaid === 1 ? ' month' : ' months'),
+        actorEmail: profile.email,
+      })
+    : null
+
   await logEvent({
     customerId: payment.customer_id,
     type: 'payment_updated',
@@ -2356,7 +2382,10 @@ export async function updatePayment(
       effect,
       restated,
       other: isOther,
-      expiry: await standingExpiry(customer?.identity ?? null),
+      expiry: expiryAtChange,
+      expiryAction: expiryDone
+        ? expiryActionText(expiryDone, 'none (this payment did not move the expiry)')
+        : 'none (months paid not lowered: ' + previousMonths + ' -> ' + monthsPaid + ')',
       actor: profile.email,
     }),
   })
@@ -2366,7 +2395,14 @@ export async function updatePayment(
   if (payment.customer_id) revalidatePath('/dashboard/customers/' + payment.customer_id)
   revalidatePath('/dashboard')
 
-  redirect('/dashboard/payments/' + payment.id + '?toast=' + encodeURIComponent('Payment updated'))
+  const expiryNote =
+    expiryDone?.kind === 'restore' || expiryDone?.kind === 'shift' ? ' Expiry moved back to ' + expiryDone.to + '.'
+      : expiryDone?.kind === 'left' ? ' Expiry NOT moved: ' + expiryDone.message
+        : ''
+  redirect(
+    '/dashboard/payments/' + payment.id + '?' + (expiryDone?.kind === 'left' ? 'toastKind=error&' : '') +
+    'toast=' + encodeURIComponent('Payment updated.' + expiryNote)
+  )
 }
 
 /**
@@ -2442,6 +2478,7 @@ export async function deletePayment(formData: FormData): Promise<void> {
     customerId: payment.customer_id,
     identity: customer?.identity ?? null,
     paymentId: payment.id,
+    cause: 'deleted',
     actorEmail: profile.email,
   })
 
@@ -2462,12 +2499,7 @@ export async function deletePayment(formData: FormData): Promise<void> {
       restated,
       other: isOther,
       expiry: expiryAtChange,
-      expiryAction:
-        expiryDone.kind === 'restore' ? 'restored ' + expiryDone.from + ' -> ' + expiryDone.to
-          : expiryDone.kind === 'shift'
-            ? 'moved back ' + expiryDone.from + ' -> ' + expiryDone.to + ' (payment #' + expiryDone.laterPaymentId + ' had counted forward from it)'
-            : expiryDone.kind === 'none' ? 'none (this payment did not move the expiry)'
-              : 'LEFT: ' + expiryDone.message,
+      expiryAction: expiryActionText(expiryDone, 'none (this payment did not move the expiry)'),
       actor: profile.email,
     }),
   })

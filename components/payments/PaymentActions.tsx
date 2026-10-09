@@ -185,9 +185,15 @@ function EditForm({ payment, onCancel }: { payment: EditablePayment; onCancel: (
               and the money buys months of access; here it corrects a number
               recorded against a payment already taken. */}
           <p className="text-[11px] text-gray-600">
-            Corrects the recorded figure only. Does not move their expiry or
-            their account credit.
+            Corrects the recorded figure. Raising it does not move their expiry.
           </p>
+          {months < (payment.months_paid ?? 1) ? (
+            <p className="text-[11px] text-amber-300/90">
+              Fewer months: their expiry comes back {(payment.months_paid ?? 1) - months}{' '}
+              {(payment.months_paid ?? 1) - months === 1 ? 'month' : 'months'} when you save, if nothing
+              else has moved it since. You will be told if it cannot.
+            </p>
+          ) : null}
         </div>
 
         <div className="space-y-1.5">
