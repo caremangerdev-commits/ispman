@@ -147,6 +147,12 @@ export type SchemaCapabilities = {
    * either, and every customer is billed as if nothing had been billed before.
    */
   handover: boolean
+  /**
+   * Migration 0031: payments.expiry_before and expiry_after, the radcheck
+   * values a payment's write replaced and wrote, so deleting it can put the
+   * expiry back. Absent, the delete finds them from the payment's log row.
+   */
+  paymentExpiry: boolean
 }
 
 /**
@@ -178,7 +184,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     messagingOutboxRes, messagingSettingRes, messagingOptOutRes,
     brandingRes, engineRunsRes, engineChargesRes,
     chargesTableRes, chargePaymentRes,
-    billedThroughRes, skippedCoveredRes,
+    billedThroughRes, skippedCoveredRes, paymentExpiryRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -255,6 +261,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     // 0030: the hand-over column and its run counter.
     db.from('customers').select('billed_through').limit(1),
     db.from('bill_runs').select('skipped_covered').limit(1),
+    // 0031: what a payment did to the expiry.
+    db.from('payments').select('expiry_before, expiry_after').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -467,6 +475,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     }
   }
 
+  // 0031: one ALTER pair on payments.
+  const missingPaymentExpiry = paymentExpiryRes.error?.code === '42703'
+  if (paymentExpiryRes.error && !missingPaymentExpiry) {
+    throw new Error('Schema probe failed for payments expiry columns: ' + paymentExpiryRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -495,6 +509,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     branding: brandingRes.error?.code !== '42703',
     charges: !missingOtherPaymentCols && !missingPaymentCategories && !missingCharges,
     handover: !missingHandover && !missingEngine,
+    paymentExpiry: !missingPaymentExpiry,
   }
 })
 

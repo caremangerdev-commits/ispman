@@ -27,10 +27,15 @@ export type EditablePayment = {
   customerName: string
   /**
    * The customer's standing radcheck expiry, raw as stored. Null when they are
-   * unprovisioned or the network could not be read. Named in the delete dialog
-   * because reversing money leaves it untouched — see ConfirmDelete.
+   * unprovisioned or the network could not be read. Named in the delete dialog.
    */
   serviceExpiry?: string | null
+  /**
+   * What deleting this payment does to the expiry, as the delete will do it
+   * (lib/data/payment-expiry.ts#planExpiryUndo). Null when it could not be
+   * worked out; the delete re-plans regardless.
+   */
+  expiryUndo?: { kind: 'none' | 'restore' | 'shift' | 'left'; message: string; to: string | null } | null
 }
 
 /**
@@ -312,25 +317,28 @@ function ConfirmDelete({
         </div>
       </div>
 
-      {/* THE PAIRING, STATED RATHER THAN REMEMBERED. Reversing money does not
-          touch radcheck — the backwards-write guard forbids it — so without
-          this the customer keeps service they have not paid for and never
-          complains. Naming the standing expiry here means the person deleting
-          sees exactly what is being left behind, at the moment they decide. */}
+      {/* WHAT HAPPENS TO THE EXPIRY, said before the person decides. Deleting
+          a payment puts back the month it gave (owner, 9 Oct 2026); when
+          something else has moved the expiry since, nothing is guessed and
+          this says so. The delete works it out again when it runs. */}
       <div className="space-y-1.5 rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-3 text-sm">
         <div className="flex items-baseline justify-between gap-3">
-          <span className="text-xs text-amber-300/70">Standing service expiry</span>
+          <span className="text-xs text-amber-300/70">Service expiry now</span>
           <span className="font-mono text-amber-200">
             {payment.serviceExpiry ?? 'Not provisioned'}
           </span>
         </div>
+        {payment.expiryUndo?.to ? (
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="text-xs text-amber-300/70">After deleting</span>
+            <span className="font-mono text-amber-200">{payment.expiryUndo.to}</span>
+          </div>
+        ) : null}
         <p className="text-xs text-amber-300/80">
-          {payment.serviceExpiry
-            ? 'This does not change. ' + payment.customerName +
-              ' keeps access until then unless you also correct it — that is a ' +
-              'separate action on their customer record (Correct Expiry), and it ' +
-              'is not part of this deletion.'
-            : 'There is no expiry on record for this customer, so nothing is left standing.'}
+          {payment.expiryUndo
+            ? payment.expiryUndo.message
+            : 'The expiry could not be worked out now. Deleting puts back the month this payment ' +
+              'gave if nothing else has moved it since, and says so if it cannot.'}
         </p>
       </div>
 

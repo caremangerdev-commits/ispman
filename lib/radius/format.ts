@@ -218,6 +218,21 @@ export function parseRadiusExpiration(value: string | null): Date | null {
 }
 
 /**
+ * The same Expiration `months` calendar months later (negative: earlier),
+ * keeping the day — clamped to a shorter month's last day — and the time:
+ * "05 Dec 2026 13:00" and -1 give "05 Nov 2026 13:00". Null if unreadable.
+ * Wall-clock text in, wall-clock text out: no zone is involved.
+ */
+export function shiftExpirationMonths(value: string | null, months: number): string | null {
+  const d = parseRadiusExpiration(value)
+  if (!d) return null
+  const target = new Date(d.getFullYear(), d.getMonth() + months, 1, d.getHours(), d.getMinutes())
+  const last = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate()
+  target.setDate(Math.min(d.getDate(), last))
+  return formatRadiusExpiration(target)
+}
+
+/**
  * The canonical form of a RADIUS identity, for COMPARING two of them.
  *
  * radcheck.username is `utf8_unicode_ci`, so MySQL happily matches

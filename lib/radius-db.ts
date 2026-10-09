@@ -229,6 +229,36 @@ export async function correctExpiryInRadius(
 }
 
 /**
+ * Sets an Expiration to `next` ONLY IF it still holds exactly `expected`.
+ *
+ * The one compare-and-set write: used to put back the month a deleted payment
+ * gave (lib/data/payment-expiry.ts). Nothing is calculated against the live
+ * value — the caller read it, decided, and names what it read; if anything
+ * changed it in between (another payment, an Extend, a correction), this
+ * writes nothing and returns false, and the caller says so rather than guess.
+ *
+ * Earlier or later are both allowed: an undo moves whichever way the payment
+ * did not. Never creates a row.
+ */
+export async function replaceExpiryInRadius(
+  mac: string,
+  expected: string,
+  next: string
+): Promise<boolean> {
+  const username = normaliseUsername(mac)
+
+  return withRetry(async () => {
+    const pool = radiusPool()
+    const [result] = await pool.execute(
+      'UPDATE radcheck SET value = ? WHERE username = ? AND attribute = ? AND value = ?',
+      [next, username, EXPIRATION, expected]
+    )
+
+    return ((result as mysql.ResultSetHeader).affectedRows ?? 0) > 0
+  })
+}
+
+/**
  * A customer's live state, derived entirely from radcheck.
  *
  * `expiry` is a Date rather than the raw string so callers never re-parse the

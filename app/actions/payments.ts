@@ -21,6 +21,7 @@ import {
 import { getExpiryClock, getFirstPeriodRules } from '@/lib/data/company'
 import { applyExpiryClock } from '@/lib/radius/format'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
+import { applyExpiryUndo, planExpiryUndo, type ExpiryUndo } from '@/lib/data/payment-expiry'
 import { provisionedUnderModel } from '@/lib/data/provision'
 import { getChargesById, listOpenCharges, type OpenCharge } from '@/lib/data/charges'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
@@ -1464,10 +1465,20 @@ export async function recordPayment(
         // newExpiry is the Date handed to applyRadiusWrite, so on ok it is
         // what the registry now holds. result.newExpiry is a RADIUS-format
         // string and is not parsed back for this.
-        if (caps.otherPayments && newExpiry) {
+        //
+        // And, from migration 0031, the Expiration values this write replaced
+        // and wrote, exactly as stored: what deleting this payment puts back
+        // (lib/data/payment-expiry.ts).
+        const stamp: Record<string, unknown> = {}
+        if (caps.otherPayments && newExpiry) stamp.service_active_until = ymd(newExpiry)
+        if (caps.paymentExpiry && !result.skipped) {
+          stamp.expiry_before = result.oldExpiry
+          stamp.expiry_after = result.newExpiry
+        }
+        if (Object.keys(stamp).length) {
           await db
             .from('payments')
-            .update({ service_active_until: ymd(newExpiry) })
+            .update(stamp)
             .eq('company_id', company.id)
             .eq('id', paymentId)
         }
@@ -1483,6 +1494,7 @@ export async function recordPayment(
             newExpiry: result.newExpiry,
             actor: profile.email,
             skipped: result.skipped,
+            paymentId,
             note:
               'bill period' +
               // A completion moved the customer to the end of a month an
@@ -1905,12 +1917,11 @@ async function loadForMutation(
 /**
  * The customer's standing radcheck expiry, for a reversal log line.
  *
- * READ AT THE MOMENT OF THE CHANGE and stamped on the row, because it is the
- * whole point of the entry: reversing money does not touch radcheck (the
- * backwards-write guard in lib/radius-db.ts#extendInRadius forbids it), so a
- * reversal leaves the customer holding access the payment had bought. Recording
- * what that access was is what makes "money taken back, service left running"
- * visible afterwards rather than something to be inferred.
+ * READ AT THE MOMENT OF THE CHANGE and stamped on the row. An edit does not
+ * touch radcheck, so it can leave the customer holding access the old amount
+ * bought; a deletion puts the month back where it safely can
+ * (lib/data/payment-expiry.ts) and says when it could not. Recording the
+ * access as it stood makes either visible afterwards.
  *
  * Never throws and never blocks the reversal: an unreachable NAS returns a
  * marker, so the log says the expiry was unknown rather than silently omitting
@@ -2117,11 +2128,16 @@ function reversalDetails(opts: {
   /** An "other" payment: no service balance or credit was touched. */
   other: boolean
   expiry: string
+  /**
+   * What happened to the expiry. A deletion says (lib/data/payment-expiry.ts);
+   * an edit does not move it, and the default says that.
+   */
+  expiryAction?: string
   actor: string
 }): string {
   const {
     action, paymentId, customer, oldAmount, newAmount, method, paymentDate,
-    effect, restated, other, expiry, actor,
+    effect, restated, other, expiry, expiryAction, actor,
   } = opts
 
   // A pipe inside a value would split into a field that was never written.
@@ -2162,8 +2178,8 @@ function reversalDetails(opts: {
     parts + credit +
     // Stated on every row rather than left to be inferred from the absence of a
     // network_expiry_corrected entry, so the pairing is legible in the log
-    // itself: money moved here, access did not.
-    field('expiry_action', 'none (correct_expiry is a separate action)') +
+    // itself.
+    field('expiry_action', expiryAction ?? 'none (correct_expiry is a separate action)') +
     field('by', actor)
   )
 }
@@ -2374,9 +2390,15 @@ export async function deletePayment(formData: FormData): Promise<void> {
   const caps = await getSchemaCapabilities()
 
   // Read BEFORE the delete so the log records the access the customer held at
-  // the moment the money was taken back — the pairing this entry exists to make
-  // visible. radcheck is untouched by any of this; that is the point.
+  // the moment the money was taken back.
   const expiryAtChange = await standingExpiry(customer?.identity ?? null)
+
+  // WHAT THE DELETE DOES TO THE EXPIRY (owner, 9 Oct 2026): it puts back the
+  // month this payment gave. Planned while the payment row still exists — the
+  // plan reads it — and carried out once it is gone. See
+  // lib/data/payment-expiry.ts.
+  const expiryPlan = await planExpiryUndo(company.id, payment.id, customer?.identity ?? null)
+    .catch((err: Error): ExpiryUndo => ({ kind: 'left', current: null, message: 'Could not work out the expiry: ' + err.message + ' Check it by hand.' }))
 
   const { error: deleteError } = await db
     .from('payments')
@@ -2414,6 +2436,15 @@ export async function deletePayment(formData: FormData): Promise<void> {
     await adjustCarriedBalance(db, company.id, payment.customer_id, amount)
   }
 
+  const expiryDone = await applyExpiryUndo({
+    plan: expiryPlan,
+    companyId: company.id,
+    customerId: payment.customer_id,
+    identity: customer?.identity ?? null,
+    paymentId: payment.id,
+    actorEmail: profile.email,
+  })
+
   await logEvent({
     customerId: payment.customer_id,
     type: 'payment_deleted',
@@ -2431,6 +2462,12 @@ export async function deletePayment(formData: FormData): Promise<void> {
       restated,
       other: isOther,
       expiry: expiryAtChange,
+      expiryAction:
+        expiryDone.kind === 'restore' ? 'restored ' + expiryDone.from + ' -> ' + expiryDone.to
+          : expiryDone.kind === 'shift'
+            ? 'moved back ' + expiryDone.from + ' -> ' + expiryDone.to + ' (payment #' + expiryDone.laterPaymentId + ' had counted forward from it)'
+            : expiryDone.kind === 'none' ? 'none (this payment did not move the expiry)'
+              : 'LEFT: ' + expiryDone.message,
       actor: profile.email,
     }),
   })
@@ -2439,7 +2476,12 @@ export async function deletePayment(formData: FormData): Promise<void> {
   if (payment.customer_id) revalidatePath('/dashboard/customers/' + payment.customer_id)
   revalidatePath('/dashboard')
 
+  const expiryNote =
+    expiryDone.kind === 'restore' || expiryDone.kind === 'shift' ? ' Expiry moved back to ' + expiryDone.to + '.'
+      : expiryDone.kind === 'left' ? ' Expiry NOT moved: ' + expiryDone.message
+        : ''
   redirect(
-    '/dashboard/payments?toast=' + encodeURIComponent('Payment of ' + money(amount) + ' deleted')
+    '/dashboard/payments?' + (expiryDone.kind === 'left' ? 'toastKind=error&' : '') +
+    'toast=' + encodeURIComponent('Payment of ' + money(amount) + ' deleted.' + expiryNote)
   )
 }

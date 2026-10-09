@@ -287,12 +287,15 @@ export function radiusLogDetails(opts: {
   actor: string
   skipped: boolean
   note?: string
+  /** The payment whose write this was — what lets a deletion find it (0031). */
+  paymentId?: number
 }): string {
-  const { action, identity, oldExpiry, newExpiry, actor, skipped, note } = opts
+  const { action, identity, oldExpiry, newExpiry, actor, skipped, note, paymentId } = opts
   return (
     'RADIUS ' + action + ' | identity=' + identity +
     ' | old_expiry=' + (oldExpiry ?? 'none') +
     ' | new_expiry=' + newExpiry +
+    (paymentId ? ' | payment_id=' + paymentId : '') +
     ' | by=' + actor +
     (skipped ? ' | SKIPPED (RADIUS not configured)' : '') +
     (note ? ' | ' + note : '')

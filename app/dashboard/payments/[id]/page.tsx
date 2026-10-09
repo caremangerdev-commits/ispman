@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowRight, Mail, MapPin, Phone } from 'lucide-react'
 
 import { PaymentActions } from '@/components/payments/PaymentActions'
 import { ReceiptButton } from '@/components/payments/ReceiptModal'
+import { planExpiryUndo } from '@/lib/data/payment-expiry'
 import { getPayment, getReversalSubject } from '@/lib/data/payments'
 import { getRadiusStatus } from '@/lib/radius/client'
 import { formatCurrency, fullName, timeAgo } from '@/lib/format'
@@ -63,6 +64,11 @@ export default async function PaymentDetailPage({
         })
       ).expiry
     : null
+  // What deleting it would do to the expiry — the same plan the delete carries
+  // out (lib/data/payment-expiry.ts), so the dialog says what will happen.
+  const expiryUndo = canDelete && customer
+    ? await planExpiryUndo(company.id, payment.id, subject?.identity ?? null).catch(() => null)
+    : null
   const months = payment.months_paid ?? 1
   const perMonth = months > 0 ? payment.amount / months : payment.amount
 
@@ -110,6 +116,13 @@ export default async function PaymentDetailPage({
             notes: payment.notes,
             customerName,
             serviceExpiry,
+            expiryUndo: expiryUndo
+              ? {
+                  kind: expiryUndo.kind,
+                  message: expiryUndo.message,
+                  to: expiryUndo.kind === 'restore' || expiryUndo.kind === 'shift' ? expiryUndo.to : null,
+                }
+              : null,
           }}
             canEdit={can(profile.role, 'edit_payment')}
             canDelete={canDelete}
