@@ -193,13 +193,18 @@ async function alreadyCharged(companyId: number, periodStarts: string[]): Promis
  * if it cannot: the rule in lib/radius/service-state.ts. Used by the tick and
  * by the Billing Runs page's "if a tick ran now" preview alike.
  */
-export async function decideCompany(company: EngineCompany, today: string): Promise<CompanyDecision> {
+export async function decideCompany(
+  company: EngineCompany,
+  today: string,
+  /** A preview's "what if" (scripts/preview-postpaid.mjs). The tick never passes it. */
+  preview?: { chargeConnectionMonth?: boolean }
+): Promise<CompanyDecision> {
   const base = await readBillableCustomers(company.id)
   const addons = await addonTotals(base.map((c) => c.id))
   const service = await serviceStateFor(base, 'the billing engine')
   const billedThrough = await readBilledThrough(company.id)
   const connectedOn = await readConnectedOn(company.id)
-  const chargeConnectionMonth = await chargesConnectionMonth(company.id)
+  const chargeConnectionMonth = preview?.chargeConnectionMonth ?? await chargesConnectionMonth(company.id)
   // Postpaid is priced by the day (owner, 11 Oct 2026): every customer's
   // breaks in service, from the log and the registry.
   const breaks = company.billingType === 'postpaid'

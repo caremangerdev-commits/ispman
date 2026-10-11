@@ -78,15 +78,16 @@ const arg = (name) => {
   return a ? a.slice(name.length + 3) : null
 }
 
-// The owner's decisions, 11 Oct 2026. West Central's bill day moves to the
-// 24th; each start date is the October bill day, so September — billed by
-// Run Bills on 28 Sep and 2 Oct — stays as billed.
-const PLAN = [
-  { id: 31, billDay: null },
-  { id: 32, billDay: null },
-  { id: 26, billDay: 24 },
-]
+// The owner's decisions, 11 Oct 2026, written to settings that day
+// (scripts/postpaid-settings-2026-10-11.mjs): West Central's bill day is the
+// 24th; each start date is the October bill day, so September — billed by Run
+// Bills on 28 Sep and 2 Oct — stays as billed. A company with no start date
+// stored is previewed from its October bill day.
+const PLAN = [{ id: 31 }, { id: 32 }, { id: 26 }]
 const only = arg('company') ? Number(arg('company')) : null
+// --connection-month=on|off: the setting as it WILL be, before migration 0032
+// makes it readable. Without it, the stored setting.
+const connectionOverride = arg('connection-month') === null ? undefined : arg('connection-month') === 'on'
 
 const db = tenantClient()
 const money = (n) => 'J$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -108,7 +109,7 @@ for (const plan of PLAN) {
   if (error) throw new Error('Could not read settings: ' + error.message)
   const { data: co } = await db.from('companies').select('name').eq('id', plan.id).maybeSingle()
 
-  const billDay = plan.billDay ?? s?.bill_date ?? 1
+  const billDay = s?.bill_date ?? 1
   const today = '2026-10-' + String(billDay).padStart(2, '0')
   const timezone = s?.timezone || 'America/Jamaica'
   const company = {
@@ -118,21 +119,20 @@ for (const plan of PLAN) {
     companyBillDay: billDay,
     billingType: 'postpaid',
     mode: 'live',
-    startDate: today,
+    startDate: s?.billing_engine_start_date ?? today,
   }
 
   console.log('\n' + '='.repeat(100))
   console.log(company.name + ' (' + plan.id + ')')
   console.log('  stored:  ' + s?.billing_type + ', engine ' + s?.billing_engine_mode +
     ' from ' + (s?.billing_engine_start_date ?? 'never') + ', bill day ' + (s?.bill_date ?? 'none'))
-  console.log('  preview: postpaid, engine live from ' + today + ', bill day ' + billDay +
-    (plan.billDay !== null && plan.billDay !== s?.bill_date ? '  (bill day CHANGED from ' + (s?.bill_date ?? 'none') + ')' : ''))
+  console.log('  preview: postpaid, engine live from ' + company.startDate + ', bill day ' + billDay)
 
   let decision
   let breaks
   let registry
   try {
-    decision = await decideCompany(company, today)
+    decision = await decideCompany(company, today, { chargeConnectionMonth: connectionOverride })
     const base = await readBillableCustomers(plan.id)
     breaks = await readServiceBreaks({ companyId: plan.id, timezone, today, customers: base })
     registry = await batchGetRadiusStatus(base.map((c) => c.identity))
@@ -141,9 +141,15 @@ for (const plan of PLAN) {
     process.exit(1)
   }
   const connectedOn = await readConnectedOn(plan.id)
-  const connectionMonth = await chargesConnectionMonth(plan.id)
+  const connectionMonth = connectionOverride ?? await chargesConnectionMonth(plan.id)
   console.log('  connection month: ' + (connectionMonth ? 'ON' : 'OFF') +
+    (connectionOverride === undefined ? '' : ' (as set by --connection-month, not as stored)') +
     ' — customers connected in October are ' + (connectionMonth ? 'charged from connection day' : 'not charged for October'))
+  // The connection day the engine uses: connected_on (0032), else the day the
+  // record was made.
+  const joinedOn = (c) => String(connectedOn.get(c.id) ?? c.dateAdded ?? '').slice(0, 10)
+  const connectedInOctober = (c) => joinedOn(c) > '2026-10-01' && joinedOn(c) <= '2026-10-31'
+  const connectedNote = (c) => 'connected ' + joinedOn(c) + (connectedOn.has(c.id) ? '' : ' (day the record was made; 0032 not applied)')
 
   const monthBreaks = (id) => (breaks.get(id) ?? [])
     .filter((b) => b.off <= '2026-10-31' && (b.back === null || b.back > '2026-10-01'))
@@ -155,7 +161,7 @@ for (const plan of PLAN) {
   }
 
   const groups = {
-    part: [], none: [], connected: [], rounding: [], unprovisioned: [], zero: [], already: [], other: [],
+    part: [], none: [], joinedCharged: [], connected: [], rounding: [], unprovisioned: [], zero: [], already: [], other: [],
   }
   let charged = 0
   let chargedTotal = 0
@@ -171,7 +177,8 @@ for (const plan of PLAN) {
       charged += 1
       chargedTotal += d.amount
       fullTotal += rate
-      if (d.serviceDays !== null) groups.part.push(l)
+      if (d.serviceDays !== null && connectedInOctober(c)) groups.joinedCharged.push(l)
+      else if (d.serviceDays !== null) groups.part.push(l)
       else if (d.amount !== rate) groups.rounding.push(l)
       const record = c.identity ? registry.get(usernameKey(c.identity)) : undefined
       const expiry = record?.expiry ? localDateOnly(record.expiry) : null
@@ -202,11 +209,16 @@ for (const plan of PLAN) {
     console.log(row(l, monthBreaks(l.customer.id).map(describe).join('; ')))
   }
 
-  console.log('\n  CONNECTED IN OCTOBER, NOT CHARGED (' + groups.connected.length + ')')
-  for (const l of groups.connected) {
-    const on = connectedOn.get(l.customer.id) ?? l.customer.dateAdded ?? '?'
-    console.log(row(l, 'connected ' + String(on).slice(0, 10) + (connectedOn.has(l.customer.id) ? '' : ' (record made; no connection day)')))
+  const joinedTotal = groups.joinedCharged.reduce((s, l) => s + l.decision.amount, 0)
+  console.log('\n  CONNECTED IN OCTOBER, CHARGED FROM THE CONNECTION DAY (' + groups.joinedCharged.length + ', ' + money(joinedTotal) + ')')
+  for (const l of groups.joinedCharged.sort((a, b) => joinedOn(a.customer).localeCompare(joinedOn(b.customer)))) {
+    const off = monthBreaks(l.customer.id).map(describe).join('; ')
+    console.log(row(l, '-> ' + lpad(money(l.decision.amount), 11) + '  ' + lpad(l.decision.serviceDays, 2) + ' days  ' +
+      connectedNote(l.customer) + (off ? '; ' + off : '')))
   }
+
+  console.log('\n  CONNECTED IN OCTOBER, NOT CHARGED (' + groups.connected.length + ')')
+  for (const l of groups.connected) console.log(row(l, connectedNote(l.customer)))
 
   console.log('\n  FULL MONTH, ROUNDED TO THE NEAREST HUNDRED (' + groups.rounding.length + ')')
   for (const l of groups.rounding) {
@@ -217,7 +229,10 @@ for (const plan of PLAN) {
   console.log('\n  NOT IN THE NETWORK REGISTRY, NOT CHARGED (' + groups.unprovisioned.length + ')')
   for (const l of groups.unprovisioned) console.log(row(l, l.customer.identity ? 'username ' + l.customer.identity : 'no username'))
 
-  if (groups.zero.length) console.log('\n  NO RATE, NOT CHARGED: ' + groups.zero.length)
+  if (groups.zero.length) {
+    console.log('\n  NO RATE, NOT CHARGED (' + groups.zero.length + ')')
+    for (const l of groups.zero) console.log(row(l, ''))
+  }
   if (groups.already.length) console.log('\n  OCTOBER ALREADY CHARGED BY THE ENGINE: ' + groups.already.length)
   if (groups.other.length) {
     console.log('\n  OTHER (' + groups.other.length + ')')

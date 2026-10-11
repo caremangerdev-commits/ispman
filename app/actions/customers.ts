@@ -1010,10 +1010,33 @@ export async function provisionCustomer(formData: FormData) {
  * provisioned, kept once set — a re-provision after a MAC change is not a new
  * connection. The engine counts them as joined on it. Never fails the
  * provision: the customer is on the network either way.
+ *
+ * NOT FOR A CUSTOMER MOVED OVER FROM A LEGACY SYSTEM. Their first provision in
+ * ISPMan is a new device, not a new connection: Denvil Anderson, a Vernon
+ * customer since 2023, was first provisioned here on 1 Oct 2026, and counting
+ * him as connected then would charge him October from the 1st by luck and
+ * nothing at all had it been the 20th with the connection month off. Told apart
+ * as fill-bill-date-from-legacy.mjs does: a migrated row keeps its LEGACY
+ * signup date, before the day the record was made; an app-made row's
+ * date_added is the day it was made (a day's slack for the zone). They keep no
+ * connection day and the engine falls back to date_added. Migration 0032's
+ * backfill applies the same test.
  */
 async function recordConnectionDay(companyId: number, customerId: number, today: string): Promise<void> {
   if (!(await getSchemaCapabilities()).connectionMonth) return
-  const { error } = await tenantClient()
+  const db = tenantClient()
+  const { data: row } = await db
+    .from('customers')
+    .select('date_added, created_at')
+    .eq('company_id', companyId)
+    .eq('id', customerId)
+    .maybeSingle()
+  const r = row as { date_added: string | null; created_at: string | null } | null
+  if (r?.date_added && r.created_at) {
+    const madeOn = new Date(Date.parse(r.created_at.slice(0, 10)) - 86_400_000).toISOString().slice(0, 10)
+    if (r.date_added.slice(0, 10) < madeOn) return
+  }
+  const { error } = await db
     .from('customers')
     .update({ connected_on: today })
     .eq('company_id', companyId)
