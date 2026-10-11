@@ -81,6 +81,7 @@ export function NewCustomerForm({
   defaultMonthlyRate,
   billingAvailable,
   defaultBillDate,
+  defaultCutOffDate,
 }: {
   servicePlans: ServicePlan[]
   additionalServices: AdditionalService[]
@@ -98,6 +99,11 @@ export function NewCustomerForm({
   /** From settings.bill_date — the company's default bill day. Null when the
    *  setting has never been saved; the field then starts on day 1. */
   defaultBillDate: number | null
+  /** From settings.cut_off_date — the company's cut-off day. The field starts
+   *  on it, never on a fixed 5: Vernon's cut-off is the 1st, and new customers
+   *  were being saved on the 5th because the field said so (owner, 11 Oct
+   *  2026). Null leaves it blank, and the server fills in the company's. */
+  defaultCutOffDate: number | null
 }) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(createCustomer, null)
 
@@ -355,7 +361,7 @@ export function NewCustomerForm({
           ) : null}
 
           <Field label="Cut Off Date" htmlFor="cut_off_date" error={errors.cut_off_date} hint="Day of month (1-28)">
-            <input id="cut_off_date" name="cut_off_date" type="number" min="1" max="28" defaultValue={v('cut_off_date') || 5} className={cls('cut_off_date')} />
+            <input id="cut_off_date" name="cut_off_date" type="number" min="1" max="28" defaultValue={v('cut_off_date') || (defaultCutOffDate ?? '')} className={cls('cut_off_date')} />
           </Field>
 
         </div>

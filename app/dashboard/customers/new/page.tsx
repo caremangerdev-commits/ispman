@@ -68,6 +68,7 @@ export default async function NewCustomerPage() {
         defaultMonthlyRate={defaultRate}
         billingAvailable={caps.billing}
         defaultBillDate={defaultBillDate}
+        defaultCutOffDate={settings.cutOffDate}
       />
     </div>
   )

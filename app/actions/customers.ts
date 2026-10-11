@@ -205,6 +205,19 @@ export async function createCustomer(
 
   const last_bill_date = todayYmd()
 
+  // A blank cut-off day is the COMPANY'S, stated on the row the way the CSV
+  // import states it (app/actions/import.ts) — never left to the column, whose
+  // default is a 5 nobody chose (owner, 11 Oct 2026).
+  let cutOffDay = cut_off_date
+  if (cutOffDay === null) {
+    const { data: companyDays } = await db
+      .from('settings')
+      .select('cut_off_date')
+      .eq('company_id', company.id)
+      .maybeSingle()
+    cutOffDay = (companyDays as { cut_off_date: number | null } | null)?.cut_off_date ?? null
+  }
+
   const row: Record<string, unknown> = {
     company_id: company.id,
     first_name,
@@ -218,7 +231,7 @@ export async function createCustomer(
     // `balance` is NOT written. It is the retired split's column and nothing
     // charges it; it keeps whatever default it carries until it is dropped.
     // See lib/billing.ts.
-    cut_off_date,
+    cut_off_date: cutOffDay,
     // bill_due_date is deliberately absent. The column still exists but nothing
     // reads it; postpaid billing runs off bill_date. New rows take whatever
     // default the column carries rather than a value typed by an operator who
