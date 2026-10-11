@@ -4,7 +4,8 @@ import { normalisePrefix } from '@/lib/account-number'
 import { revalidatePath } from 'next/cache'
 
 import { CURRENCIES, DATE_FORMATS, TIMEZONES } from '@/lib/data/company'
-import { prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
+import { logEvent } from '@/lib/audit'
+import { chargesConnectionMonth, prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
@@ -286,9 +287,20 @@ export async function saveBillingSettings(
   // Migration 0017. Both are NOT NULL in the schema, so an unchecked box has to
   // be written as false rather than left out — a missing key would keep the
   // previous value and make the toggle look broken.
+  //
+  // The pro-rata first payment toggle is gone (11 Oct 2026: no first period for
+  // anyone); its column is left as it stands and nothing reads it.
   if (caps.firstPeriod) {
     patch.first_expiry_rule_enabled = bool(formData, 'first_expiry_rule_enabled')
-    patch.prorata_first_payment_enabled = bool(formData, 'prorata_first_payment_enabled')
+  }
+
+  // Migration 0032: the connection month. A change is logged — it decides what
+  // every new customer of the company is charged.
+  let connectionChanged: boolean | null = null
+  if (caps.connectionMonth) {
+    const on = bool(formData, 'charge_connection_month')
+    if (on !== (await chargesConnectionMonth(company.id))) connectionChanged = on
+    patch.charge_connection_month = on
   }
 
   // Migration 0028: the reconnection fee, once the column exists. There is no
@@ -305,6 +317,17 @@ export async function saveBillingSettings(
   const settingsError = await writeSettings(company.id, patch)
   if (settingsError) {
     return { ok: false, error: 'Could not save billing settings: ' + settingsError }
+  }
+  if (connectionChanged !== null) {
+    await logEvent({
+      type: 'connection_month_changed',
+      tag: '[billing]',
+      details:
+        'Connection month ' + (connectionChanged ? 'CHARGED' : 'NOT charged') +
+        ' from now: a customer connected partway through a month ' +
+        (connectionChanged ? 'is charged from the connection day to month end' : 'starts on the 1st of the next month') +
+        ' | by=' + profile.email,
+    })
   }
 
   revalidatePath('/dashboard/settings/billing')

@@ -8,7 +8,9 @@ import {
 } from '@/lib/billing-engine'
 import { addonTotals } from '@/lib/data/addon-totals'
 import { readBillableCustomers, type BillableCustomer } from '@/lib/data/bulk'
-import { prepaidCalendarFor, readBilledThrough } from '@/lib/data/prepaid-calendar'
+import {
+  chargesConnectionMonth, prepaidCalendarFor, readBilledThrough, readConnectedOn,
+} from '@/lib/data/prepaid-calendar'
 import { runServicePass } from '@/lib/data/prepaid-service'
 import { formatCurrency, instantToDateOnly } from '@/lib/format'
 import { serviceStateFor, type ServiceState } from '@/lib/radius/service-state'
@@ -194,6 +196,8 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
   const addons = await addonTotals(base.map((c) => c.id))
   const service = await serviceStateFor(base, 'the billing engine')
   const billedThrough = await readBilledThrough(company.id)
+  const connectedOn = await readConnectedOn(company.id)
+  const chargeConnectionMonth = await chargesConnectionMonth(company.id)
 
   const decided = base.map((c) => {
     const customer = { ...c, addons: addons.get(c.id) ?? 0, monthlyCharge: c.monthlyRate + (addons.get(c.id) ?? 0) }
@@ -205,8 +209,10 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
       customer: {
         id: c.id, dateAdded: c.dateAdded, monthlyCharge: customer.monthlyCharge,
         billedThrough: billedThrough.get(c.id) ?? null,
+        connectedOn: connectedOn.get(c.id) ?? null,
       },
       service: service.get(c.id),
+      chargeConnectionMonth,
     })
     return { customer, decision, service: service.get(c.id) }
   })

@@ -2,10 +2,10 @@ import 'server-only'
 
 import { addonTotals } from '@/lib/data/addon-totals'
 import { getFirstPeriodRules } from '@/lib/data/company'
-import { prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
+import { chargesConnectionMonth, prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
 import { instantToDateOnly } from '@/lib/format'
 import {
-  firstMonthCharge, monthLabel, provisionChoices, provisionDefault,
+  addMonths, firstMonthCharge, monthLabel, provisionChoices, provisionDefault,
 } from '@/lib/prepaid-calendar'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -26,48 +26,30 @@ export type ProvisionPlan = {
   /** The choice the popup starts on: the company's own first-expiry rule. */
   preselect: string | null
   /**
-   * Calendar-month prepaid (migration 0028), when on for the company: the first
+   * Calendar-month prepaid with the connection month ON (0028, 0032): the
    * charge Provision writes — connection day to the month's end. Null otherwise.
    */
   firstCharge: (ReturnType<typeof firstMonthCharge> & { label: string }) | null
+  /**
+   * Calendar-month prepaid with the connection month OFF (0032): this month is
+   * free, and their first charge is next month's, on the bill day. Null
+   * otherwise.
+   */
+  freeMonth: { label: string; next: string } | null
 }
 
 /**
- * The log types Provision writes about the first month's charge — only ever
- * with calendar-month prepaid on. Any one of them is the record that a
- * customer was provisioned UNDER the model (see provisionedUnderModel).
+ * The log types Provision writes about the connection month's charge.
+ *
+ * (Until 11 Oct 2026 these also decided "Option A" — customers provisioned
+ * before the model finishing on the old first-payment rule. The owner removed
+ * it: there is no first period for anyone.)
  */
 export const FIRST_MONTH_EVENTS = {
   charged: 'first_month_charged',
   skipped: 'first_month_charge_skipped',
   failed: 'first_month_charge_failed',
 } as const
-
-/**
- * Was this customer provisioned with calendar-month prepaid on?
- *
- * OPTION A (owner, 8 Oct 2026): customers provisioned BEFORE the model came in,
- * who have not paid yet, finish on the first-payment rule they were
- * provisioned under; anyone provisioned under it gets the model. The till asks
- * here.
- *
- * The evidence is Provision's own log row about the first month's charge —
- * written, skipped or failed — not a date: it says what actually happened at
- * that customer's provisioning, and a failed charge (added by hand afterwards)
- * still counts as provisioned under the model, so the old rule cannot charge
- * the first period a second time.
- */
-export async function provisionedUnderModel(companyId: number, customerId: number): Promise<boolean> {
-  const { data, error } = await tenantClient()
-    .from('log')
-    .select('id')
-    .eq('company_id', companyId)
-    .eq('customer_id', customerId)
-    .in('type', Object.values(FIRST_MONTH_EVENTS))
-    .limit(1)
-  if (error) throw new Error('Could not read how this customer was provisioned: ' + error.message)
-  return (data ?? []).length > 0
-}
 
 export async function provisionPlan(
   companyId: number,
@@ -90,8 +72,12 @@ export async function provisionPlan(
   const cutOff = row?.cut_off_date ?? null
   const choices = cutOff && cutOff >= 1 ? provisionChoices(today, cutOff) : null
 
+  // The connection month (0032): charged here only where calendar-month
+  // prepaid runs AND the company charges it. Postpaid charges it, when on, on
+  // the next bill day — not here.
+  const chargeIt = calendar.enabled && (await chargesConnectionMonth(companyId))
   let firstCharge: ProvisionPlan['firstCharge'] = null
-  if (calendar.enabled && row) {
+  if (chargeIt && row) {
     // Rate plus add-ons: the monthly charge every other path prices from.
     const addons = (await addonTotals([customerId])).get(customerId) ?? 0
     const charge = firstMonthCharge(today, Number(row.monthly_rate ?? 0) + addons)
@@ -105,5 +91,8 @@ export async function provisionPlan(
       ? provisionDefault(today, choices, rules.firstExpiryRuleEnabled && !calendar.enabled)
       : null,
     firstCharge,
+    freeMonth: calendar.enabled && !chargeIt
+      ? { label: monthLabel(today), next: monthLabel(addMonths(today, 1)) }
+      : null,
   }
 }

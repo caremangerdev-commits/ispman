@@ -16,7 +16,7 @@ import type { SearchHit } from '@/app/api/search/route'
 import { StatusBadge } from '@/components/customers/StatusBadge'
 import {
   amountDue as computeAmountDue, amountDueForMonths, billingPeriod, billingPeriodLabel,
-  effectiveBillDay, firstPaymentMonths, isPartialPayment, monthsCovered, outstandingBalance, parseYmd,
+  calendarMonthSettled, effectiveBillDay, isPartialPayment, monthsCovered, outstandingBalance, parseYmd,
   periodAlreadyGranted, periodCompletion, prepaymentCredit, PREPAY_MONTH_OPTIONS,
   proportionalDate, serviceExpiry, ymd, type AccessDecision,
 } from '@/lib/billing'
@@ -184,10 +184,6 @@ export function RecordPaymentForm({
   const [state, formAction] = useActionState<PaymentResult | null, FormData>(recordPayment, null)
 
   const [selected, setSelected] = useState<SearchHit | null>(initialCustomer)
-  // Migration 0017. Null for almost every customer, and null until the lookup
-  // returns — the ordinary pricing is shown in the meantime, which is what the
-  // answer turns out to be nearly every time.
-  const [firstPeriod, setFirstPeriod] = useState<PaymentContext['firstPeriod']>(null)
   // The most recent payment that moved this customer's expiry, for the
   // one-month-per-period guard. Null for a customer with none, and null until
   // the same lookup returns, so the preview shows ordinary pricing for the
@@ -204,9 +200,6 @@ export function RecordPaymentForm({
   // server logs which.
   const [reconnectionFee, setReconnectionFee] = useState(0)
   const [feeTicked, setFeeTicked] = useState(true)
-  // NEVER AUTOMATIC. A short first period is charged in full unless the cashier
-  // ticks this, which is why it starts false on every customer.
-  const [discountTicked, setDiscountTicked] = useState(false)
   // One-off charges the customer can pay against (migration 0025), and what the
   // cashier is taking against each, keyed by charge id. Empty for almost
   // everybody. Nothing here is trusted on submit: the server re-reads every
@@ -373,19 +366,6 @@ export function RecordPaymentForm({
           setAmount((current) => (current === untouched ? calendarNext : current))
           setDebouncedAmount((current) => (current === untouched ? calendarNext : current))
         }
-
-        const period = context.firstPeriod
-        if (!period) return
-        setFirstPeriod(period)
-
-        // ONLY WHEN THE CASHIER HAS NOT TYPED OVER THE SEED. The field is
-        // theirs the moment they touch it, and a lookup that lands a beat
-        // later must not overwrite an amount they have already entered.
-        const untouched = seedAmount(customer, monthsNow)
-        setAmount((current) => (current === untouched ? String(period.charge) : current))
-        setDebouncedAmount((current) =>
-          current === untouched ? String(period.charge) : current
-        )
       })
       .catch(() => {
         // Leaves both null, which prices the payment the ordinary way. The
@@ -415,15 +395,6 @@ export function RecordPaymentForm({
           setAmount((current) => (current === untouched ? calendarNext : current))
           setDebouncedAmount((current) => (current === untouched ? calendarNext : current))
         }
-
-        const period = context.firstPeriod
-        if (!period) return
-        setFirstPeriod(period)
-        const untouched = seedAmount(customer, 1)
-        setAmount((current) => (current === untouched ? String(period.charge) : current))
-        setDebouncedAmount((current) =>
-          current === untouched ? String(period.charge) : current
-        )
       })
       .catch(() => {})
 
@@ -435,16 +406,13 @@ export function RecordPaymentForm({
   function pick(hit: SearchHit) {
     const next = seedAmount(hit, months)
     setSelected(hit)
-    // Cleared before the lookup so the previous customer’s first period cannot
-    // sit on screen against this one, and so a discount ticked for them is
-    // never carried across.
+    // Cleared before the lookup so the previous customer’s context cannot sit
+    // on screen against this one.
     selectedIdRef.current = hit.id
-    setFirstPeriod(null)
     setPriorGrant(null)
     setCalendar(null)
     setReconnectionFee(0)
     setFeeTicked(true)
-    setDiscountTicked(false)
     setOpenCharges([])
     setChargePay({})
     lookupContext(hit, months)
@@ -474,12 +442,10 @@ export function RecordPaymentForm({
   function clearCustomer() {
     setSelected(null)
     selectedIdRef.current = null
-    setFirstPeriod(null)
     setPriorGrant(null)
     setCalendar(null)
     setReconnectionFee(0)
     setFeeTicked(true)
-    setDiscountTicked(false)
     setOpenCharges([])
     setChargePay({})
     setTerm('')
@@ -618,15 +584,7 @@ export function RecordPaymentForm({
 
   // What is owed IS the carried balance. The bill run has already added this
   // month's charge to it, so adding one here would bill the same month twice —
-  // see lib/billing.ts#amountDue.
-  // WHAT THE FIRST PERIOD ADDS TO WHAT IS OWED. Zero for everybody else.
-  // Provisioning granted access to the end of this period without charging for
-  // it, and the bill run only charges periods that have closed, so at the first
-  // payment the carried balance reads zero while the customer owes for days they
-  // are already using. Mirrors the same fold in app/actions/payments.ts.
-  const firstPeriodDue = firstPeriod
-    ? firstPeriod.charge - (discountTicked ? firstPeriod.discount : 0)
-    : 0
+  // see lib/billing.ts#amountDue. There is no first period (11 Oct 2026).
   // CALENDAR-MONTH PREPAID, A RETURNING CUSTOMER (migration 0028): this month is
   // recomputed for the return — its days so far plus the payment date to the
   // month's end — exactly as the server will write it (lib/prepaid-calendar.ts
@@ -650,7 +608,7 @@ export function RecordPaymentForm({
   const calendarCounted = calendarReturning || calendarFirst
   // A month ahead is the full rate ROUNDED under this model.
   const monthUnit = calendarCounted ? round100(monthlyCharge) : monthlyCharge
-  const owed = calendarBreakdown ? calendarBreakdown.due : carried + firstPeriodDue
+  const owed = calendarBreakdown ? calendarBreakdown.due : carried
   const feeOffered = selected !== null && reconnectionFee > 0
   const feeAmount = feeOffered && feeTicked ? reconnectionFee : 0
 
@@ -685,15 +643,19 @@ export function RecordPaymentForm({
   // across the bill day settles a different month, and the label has to say
   // the one the row will carry.
   const paidOnDate = parseYmd(paidOn) ?? today
-  const billDay = selected ? effectiveBillDay(selected.bill_date, companyBillDate) : 1
+  // Under the calendar-month model the company's bill day, as the engine uses;
+  // otherwise the customer's own (app/actions/payments.ts#recordPayment).
+  const model = calendar !== null
+  const billDay = selected
+    ? effectiveBillDay(model ? null : selected.bill_date, companyBillDate)
+    : 1
 
   // The billed month this payment settles, or null when it settles none —
-  // nothing carried means a prepayment, and a prepayment names no month. Keyed
-  // on `carried`, the balance a bill run raised, NOT on `owed`: a first-period
-  // charge was never billed by a run. The server stamps the payment row from
-  // the same function and the same balance.
-  const billPeriod = selected ? billingPeriod(paidOnDate, billDay, carried) : null
-  const billPeriodLabel = selected ? billingPeriodLabel(paidOnDate, billDay, carried) : null
+  // nothing carried means a prepayment, and a prepayment names no month. Under
+  // the model it is the CALENDAR MONTH the charge covers. The server stamps the
+  // payment row from the same function and the same balance.
+  const billPeriod = selected ? billingPeriod(paidOnDate, billDay, carried, model) : null
+  const billPeriodLabel = selected ? billingPeriodLabel(paidOnDate, billDay, carried, model) : null
 
   // ONE MONTH PER PERIOD. If the customer's last extending payment already
   // granted the month this one settles, the money settles the debt and the
@@ -701,11 +663,15 @@ export function RecordPaymentForm({
   // server runs before it writes. Never for a first payment, whose period no
   // earlier payment can have granted.
   const periodGranted =
-    selected !== null && !firstPeriod && !calendarCounted &&
+    selected !== null && !calendarCounted &&
     periodAlreadyGranted({
       periodStart: billPeriod?.start ?? null,
       carriedBefore: carried,
-      grant: priorGrant,
+      // Under the model a prior grant is compared by the month its own payment
+      // date settled, as the server does.
+      grant: model && priorGrant
+        ? { ...priorGrant, periodStart: calendarMonthSettled(priorGrant.paidOn, billDay) }
+        : priorGrant,
     })
 
   // Where a guarded payment may COMPLETE the open month to, or null when there
@@ -723,25 +689,12 @@ export function RecordPaymentForm({
       : null
 
   // Priced off the MONEY, exactly as the server does it, so the preview and the
-  // written expiry cannot disagree.
-  //
-  // A first payment goes through firstPaymentMonths, the same function the
-  // server calls: the first period is never a month (the customer already holds
-  // it), but a carried balance beside it — the engine's month ahead — counts
-  // exactly as on any other payment. Everyone else goes through monthsCovered,
-  // and for them the answer can be ZERO — nothing owed and less than a month's
-  // money, or a period that already has its month — previewed below as access
-  // unchanged.
+  // written expiry cannot disagree. monthsCovered: the answer can be ZERO —
+  // nothing owed and less than a month's money, or a period that already has
+  // its month — previewed below as access unchanged.
   const monthsBought =
     selected && Number.isFinite(paid)
-      ? firstPeriod
-        ? firstPaymentMonths({
-            carriedBalance: carried,
-            firstPeriodDue,
-            monthlyCharge,
-            amountPaid: paid,
-          })
-        : monthsCovered(owed, monthUnit, paid, periodGranted)
+      ? monthsCovered(owed, monthUnit, paid, periodGranted)
       : 1
   const creditAdded =
     selected && Number.isFinite(paid) ? prepaymentCredit(owed, paid) : 0
@@ -826,11 +779,9 @@ export function RecordPaymentForm({
   // The money bought no months, so the preview must say so BEFORE the cashier
   // commits: the expiry stays where it is and the money is held as credit or
   // settles the debt. A payment of nothing is not this — there is nothing to
-  // hold. Nor is a first payment: it buys no months either, but its money
-  // settles the period the customer already holds, so the ordinary preview
-  // below is the right one. Nor is a completion, which moves the expiry.
+  // hold. Nor is a completion, which moves the expiry.
   const accessUnchanged =
-    selected !== null && !firstPeriod && monthsBought === 0 && !completion && paid > 0
+    selected !== null && monthsBought === 0 && !completion && paid > 0
 
   return (
     <form action={formAction} className="space-y-4">
@@ -1031,40 +982,6 @@ export function RecordPaymentForm({
                 <div className="my-3 border-t border-gray-700" />
 
                 <dl className="space-y-1.5 text-sm">
-                  {/* Migration 0017. Sits ABOVE the amount due because for a
-                      first payment it is where that figure comes from, and a
-                      cashier asking for 5,367 against a 3,500 plan needs the
-                      arithmetic in front of them rather than in a tooltip. */}
-                  {firstPeriod ? (
-                    <>
-                      <Line
-                        label={'First Period (' + firstPeriod.days + ' days)'}
-                        value={money(firstPeriod.charge)}
-                      />
-                      {firstPeriod.discount > 0 ? (
-                        <label className="flex min-h-11 cursor-pointer items-start justify-between gap-3 rounded-lg border border-amber-900/60 bg-amber-950/30 px-3 py-2.5 sm:min-h-0 sm:py-2">
-                          <span className="text-xs text-amber-300/90">
-                            Apply short-period discount
-                            <span className="mt-0.5 block text-[11px] text-amber-300/60">
-                              {firstPeriod.days} days is under 30. Optional — the full
-                              rate stands unless you apply this.
-                            </span>
-                          </span>
-                          <span className="flex shrink-0 items-center gap-2">
-                            <span className="font-mono text-sm text-amber-200">
-                              {'− ' + money(firstPeriod.discount)}
-                            </span>
-                            <input
-                              type="checkbox"
-                              checked={discountTicked}
-                              onChange={(e) => setDiscountTicked(e.target.checked)}
-                              className="h-5 w-5 accent-amber-500 sm:h-4 sm:w-4"
-                            />
-                          </span>
-                        </label>
-                      ) : null}
-                    </>
-                  ) : null}
                   {/* Calendar-month prepaid, a returning customer (0028): one
                       line per month with its days, then whole months ahead —
                       the same lines the receipt prints. */}
@@ -1490,15 +1407,6 @@ export function RecordPaymentForm({
               >
                 {hasCharges ? 'Service Amount' : 'Amount'}
               </label>
-              {/* The cashier’s tick, and the only thing that applies the
-                  discount. The server re-derives whether a discount is even
-                  available and how much it is (app/actions/payments.ts
-                  #resolveFirstPeriod); this posts the decision alone. */}
-              <input
-                type="hidden"
-                name="first_period_discount"
-                value={discountTicked ? '1' : '0'}
-              />
               <div className="relative">
                 <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-xl font-semibold text-gray-500">
                   {symbol}

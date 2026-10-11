@@ -86,6 +86,14 @@ Defaults until 2026-10-03.)
   come, so the company is billed by hand as before until then.
 - **Reconnection fee.** Settings → Billing, any company, prepaid or postpaid.
   Offered at the till to a customer whose service has ended.
+- **Connection month** (migration 0032). Settings → Billing → New Customers,
+  per company, prepaid and postpaid; off everywhere except Ezmze until each
+  owner says. On: a customer connected partway through a month is charged
+  that month from the connection day (prepaid at Provision, postpaid on the
+  next bill day). Off: nothing for that month. The engine counts a customer
+  as joined on their connection day (`customers.connected_on`, their first
+  provisioning), not the day the record was created. There is no first period
+  at the till for anyone (11 Oct 2026).
 
 ## Going live
 
@@ -146,7 +154,7 @@ the first day land without waiting for the hour.
 
 ## What it deliberately does not do
 
-Grace removal, the first cut-off skip, pro-rata joining (a customer who joins
-after a charge date is charged from the next one; the till's first-period
-rule covers the stretch between), charge kinds, multi-line bills, restating
-history.
+Grace removal, the first cut-off skip, charge kinds, multi-line bills,
+restating history. A postpaid customer connected AFTER the month's bill day
+with the connection month on is not yet charged that month on the next bill
+day; that waits for the postpaid day-based model.

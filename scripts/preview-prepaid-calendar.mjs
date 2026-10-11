@@ -17,10 +17,10 @@
 //      Customers with no charge for that month are only marked; nothing about
 //      their balance changes.
 //
-//   2. FIRST PAYMENTS STILL TO COME. Customers provisioned under the old rules
-//      who have not paid since. Option A (owner, 8 Oct 2026): they finish on
-//      the old first-payment rule, the till pricing them as it did before the
-//      model; anyone provisioned under the model is counted apart.
+//   2. FIRST PAYMENTS STILL TO COME. Customers provisioned who have not paid
+//      since. There is no first period for anyone (owner, 11 Oct 2026): the
+//      till asks them for their balance, and their connection month is charged
+//      or not by the company's setting (migration 0032).
 //
 //   3. 1 NOVEMBER. What the billing run would charge on the company's bill
 //      day for November, for customers whose service is on now: the full
@@ -74,7 +74,6 @@ console.log = (...a) => {
 const load = (p) => import(pathToFileURL(path.join(ROOT, p)).href)
 const { planServicePass } = await load('lib/data/prepaid-service.ts')
 const { firstPeriodAnchor } = await load('lib/data/first-period.ts')
-const { provisionedUnderModel } = await load('lib/data/provision.ts')
 const { readBillableCustomers } = await load('lib/data/bulk.ts')
 const { addonTotals } = await load('lib/data/addon-totals.ts')
 const { batchGetRadiusStatus } = await load('lib/radius-db.ts')
@@ -163,15 +162,12 @@ const { data: provisions, error: provError } = await db.from('log')
 if (provError) throw new Error(provError.message)
 const candidates = [...new Set(provisions.map((r) => r.customer_id))]
 const pending = []
-let underModel = 0
 for (const id of candidates) {
   const anchor = await firstPeriodAnchor(COMPANY, id)
-  if (!anchor) continue
-  if (await provisionedUnderModel(COMPANY, id)) underModel += 1
-  else pending.push({ id, anchor })
+  if (anchor) pending.push({ id, anchor })
 }
-console.log('\n2. PROVISIONED BEFORE THE MODEL, FIRST PAYMENT STILL TO COME: ' + pending.length +
-  ' (of ' + candidates.length + ' ever provisioned in the app; ' + underModel + ' more provisioned under the model)')
+console.log('\n2. PROVISIONED, FIRST PAYMENT STILL TO COME: ' + pending.length +
+  ' (of ' + candidates.length + ' ever provisioned in the app)')
 if (pending.length) {
   const { data: rows } = await db.from('customers')
     .select('id, first_name, last_name, carried_balance, monthly_rate')
@@ -183,8 +179,8 @@ if (pending.length) {
       ' provisioned ' + p.anchor.toISOString().slice(0, 10) +
       '  balance ' + lpad(money(r?.carried_balance ?? 0), 11) + '  rate ' + money(r?.monthly_rate ?? 0))
   }
-  console.log('   Option A (owner, 8 Oct 2026): their first payment is priced on the old rule, as it')
-  console.log('   was before the model. After it they are on the model like everyone else.')
+  console.log('   No first period: the till asks for the balance. The connection month is charged or not')
+  console.log('   by the company setting (scripts/ezmze-connection-month.mjs for those already provisioned).')
 }
 
 // ---------------------------------------------------------------------------

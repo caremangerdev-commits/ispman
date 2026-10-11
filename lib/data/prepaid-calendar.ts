@@ -49,6 +49,51 @@ export async function readBilledThrough(companyId: number): Promise<Map<number, 
   return out
 }
 
+/**
+ * THE CONNECTION MONTH (migration 0032, owner 11 Oct 2026), prepaid and
+ * postpaid alike. On: a customer connected mid-month is charged for that month
+ * from connection day to month end, at the daily rate, rounded — prepaid at
+ * Provision, postpaid on the next bill day. Off: no charge for the connection
+ * month; they start on the 1st of the following month.
+ *
+ * THE one read of it. Before 0032, it answers what the app did then: the
+ * connection month was charged only at Provision, and only where calendar-month
+ * prepaid ran.
+ */
+export async function chargesConnectionMonth(companyId: number): Promise<boolean> {
+  if (!(await getSchemaCapabilities()).connectionMonth) return (await prepaidCalendarFor(companyId)).enabled
+  const { data, error } = await tenantClient()
+    .from('settings')
+    .select('charge_connection_month')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error) throw new Error('Could not read the connection-month setting: ' + error.message)
+  return Boolean((data as { charge_connection_month: boolean | null } | null)?.charge_connection_month)
+}
+
+/**
+ * customers.connected_on for a company (migration 0032): the day each customer
+ * was first provisioned. Only those that have one; empty before 0032.
+ */
+export async function readConnectedOn(companyId: number): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  if (!(await getSchemaCapabilities()).connectionMonth) return out
+  const db = tenantClient()
+  const rows = await fetchAllRows(
+    (from, to) =>
+      db
+        .from('customers')
+        .select('id, connected_on')
+        .eq('company_id', companyId)
+        .not('connected_on', 'is', null)
+        .order('id')
+        .range(from, to),
+    'connected_on'
+  )
+  for (const r of rows as { id: number; connected_on: string }[]) out.set(r.id, r.connected_on)
+  return out
+}
+
 /** One customer's billed_through, or null (and null before 0030). */
 export async function billedThroughOf(companyId: number, customerId: number): Promise<string | null> {
   if (!(await getSchemaCapabilities()).handover) return null

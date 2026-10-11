@@ -52,6 +52,7 @@ export function BillingSettingsForm({
   currencySymbol,
   billingEngineAvailable,
   prepaidCalendar,
+  connectionMonth,
 }: {
   settings: GeneralSettings
   expiryModeAvailable: boolean
@@ -61,13 +62,15 @@ export function BillingSettingsForm({
   defaultRateAvailable: boolean
   /** migration 0012 — the three billing policy thresholds. */
   thresholdsAvailable: boolean
-  /** migration 0017 — the two first-period rules. */
+  /** migration 0017 — the 21-day rule the Provision popup starts on. */
   firstPeriodAvailable: boolean
   currencySymbol: string
   /** Migration 0024 — hides the billing model and engine controls until applied. */
   billingEngineAvailable: boolean
   /** Migration 0028 — the reconnection fee. */
   prepaidCalendar: PrepaidCalendar
+  /** Migration 0032 — whether the connection month is charged. */
+  connectionMonth: { available: boolean; on: boolean }
 }) {
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveBillingSettings, null)
 
@@ -77,13 +80,8 @@ export function BillingSettingsForm({
   const [billingType, setBillingType] = useState<CompanyBillingType>(settings.billingType)
   const [engineMode, setEngineMode] = useState<EngineMode>(settings.billingEngineMode)
   const [firstExpiryRule, setFirstExpiryRule] = useState(settings.firstExpiryRuleEnabled)
-  const [prorata, setProrata] = useState(settings.prorataFirstPaymentEnabled)
-  // Calendar-month prepaid applies to a prepaid company whose engine is live
-  // (lib/data/prepaid-calendar.ts#prepaidCalendarFor). There, the first-period
-  // rules are replaced: a new customer's first month is charged from
-  // connection day to month end.
-  const prepaidModel = billingType === 'prepaid' && engineMode === 'live'
-  const firstPeriodReplaced = prepaidModel
+  // Migration 0032: the connection month, per company, prepaid and postpaid.
+  const [chargeConnection, setChargeConnection] = useState(connectionMonth.on)
 
   const lockedHint = generalAvailable ? undefined : 'Needs migration 0007.'
   const thresholdHint = thresholdsAvailable ? undefined : 'Needs migration 0012.'
@@ -280,47 +278,40 @@ export function BillingSettingsForm({
           </Field>
         </Card>
 
-        {/* ---- 3. First period (migration 0017) ---- */}
-        <Card title="First Period">
-          <p className="text-[11px] text-gray-600">
-            How a customer’s very first period is dated and priced. Neither rule
-            ever applies to a renewal or a reconnection.
-            {firstPeriodHint ? ' ' + firstPeriodHint : ''}
-          </p>
-          {firstPeriodReplaced ? (
-            <p className="text-[11px] text-amber-400/90">
-              Replaced for this prepaid company: a new customer is charged from connection day to the
-              month&apos;s end. Customers provisioned before 8 Oct 2026 who have not paid yet still
-              finish on these rules.
-            </p>
+        {/* ---- 3. New customers (migrations 0017, 0032) ---- */}
+        <Card title="New Customers">
+          {!connectionMonth.available ? (
+            <p className="text-[11px] text-amber-400/90">Needs migration 0032.</p>
           ) : null}
+          <Toggle
+            name="charge_connection_month"
+            label="Charge the connection month"
+            checked={chargeConnection}
+            onChange={setChargeConnection}
+            disabled={!connectionMonth.available}
+          />
+          <ul className="list-disc space-y-1 pl-4 text-[11px] leading-relaxed text-gray-500">
+            <li>
+              On: a customer connected partway through a month is charged for that month from their
+              connection day to its end, at the daily rate, rounded to the nearest hundred.{' '}
+              {billingType === 'prepaid'
+                ? 'Charged when they are provisioned.'
+                : 'Charged on the next bill day.'}
+            </li>
+            <li>Off: nothing is charged for the connection month. They start on the 1st of the next month.</li>
+            <li>Either way it is a month charge like any other: on their balance and at the till. There is no separate first period.</li>
+          </ul>
 
           <Toggle
             name="first_expiry_rule_enabled"
-            label="21-day first expiry"
+            label="Provision starts on a cut-off day at least 21 days away"
             checked={firstExpiryRule}
             onChange={setFirstExpiryRule}
             disabled={!firstPeriodAvailable}
           />
           <p className="text-[11px] text-gray-600">
-            A new customer’s first expiry is the first cut-off day at least 21 days
-            away, so nobody switched on days before their cut-off pays a full month
-            for a stub. Off, they run to the plain next cut-off day.
-          </p>
-
-          <Toggle
-            name="prorata_first_payment_enabled"
-            label="Pro-rata first payment"
-            checked={prorata}
-            onChange={setProrata}
-            disabled={!firstPeriodAvailable}
-          />
-          <p className="text-[11px] text-gray-600">
-            The first payment is charged for the days it actually buys: the monthly
-            rate plus a daily rate for every day beyond 30. A first period SHORTER
-            than 30 days is still charged the full rate — the till offers the
-            difference as a discount the cashier may apply, and it is never
-            automatic.
+            Which of the two cut-off dates the Provision popup starts on. It changes no charge.
+            {firstPeriodHint ? ' ' + firstPeriodHint : ''}
           </p>
         </Card>
 

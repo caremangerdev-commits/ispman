@@ -3,7 +3,7 @@ import { redirect } from 'next/navigation'
 
 import { BillingSettingsForm } from '@/components/settings/BillingSettingsForm'
 import { getGeneralSettings } from '@/lib/data/company'
-import { prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
+import { chargesConnectionMonth, prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
 import { currencySymbol } from '@/lib/format'
 import { GENERAL_SETTINGS_HINT, getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
@@ -26,10 +26,11 @@ async function guard() {
 
 export default async function BillingSettingsPage() {
   const { company } = await guard()
-  const [settings, caps, prepaid] = await Promise.all([
+  const [settings, caps, prepaid, chargeConnection] = await Promise.all([
     getGeneralSettings(company.id),
     getSchemaCapabilities(),
     prepaidCalendarFor(company.id),
+    chargesConnectionMonth(company.id),
   ])
 
   return (
@@ -58,6 +59,7 @@ export default async function BillingSettingsPage() {
         billingEngineAvailable={caps.billingEngine}
         currencySymbol={currencySymbol(settings.currency)}
         prepaidCalendar={prepaid}
+        connectionMonth={{ available: caps.connectionMonth, on: chargeConnection }}
       />
     </div>
   )

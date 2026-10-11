@@ -968,9 +968,11 @@ async function runNetworkAction(opts: {
  * typed into the request or a popup left open across midnight, is refused.
  * A customer with no cut-off day has no dates to offer and is refused too.
  *
- * CALENDAR-MONTH PREPAID (0028), when on: the first charge — connection day to
- * the month's end — is written as the provisioning's own consequence, once the
- * registry has the customer. See chargeFirstMonth.
+ * CALENDAR-MONTH PREPAID (0028) with the connection month ON (0032): the
+ * connection month's charge — connection day to the month's end — is written
+ * as the provisioning's own consequence, once the registry has the customer.
+ * See chargeFirstMonth. Off: nothing is charged for this month. Either way the
+ * connection day is recorded (recordConnectionDay).
  */
 export async function provisionCustomer(formData: FormData) {
   // Resolved BEFORE runNetworkAction because expiryFor is synchronous.
@@ -993,11 +995,31 @@ export async function provisionCustomer(formData: FormData) {
       }
       return parseYmd(picked) ?? 'That date could not be read.'
     },
-    afterWrite: plan?.firstCharge && id !== null
-      ? () => chargeFirstMonth(company.id, id, plan)
+    afterWrite: plan && id !== null
+      ? async () => {
+          await recordConnectionDay(company.id, id, plan.today)
+          return plan.firstCharge ? chargeFirstMonth(company.id, id, plan) : null
+        }
       : undefined,
     success: (t, expiry) => t.fullName + ' provisioned, expires ' + expiry,
   })
+}
+
+/**
+ * The customer's connection day (migration 0032): the day they were FIRST
+ * provisioned, kept once set — a re-provision after a MAC change is not a new
+ * connection. The engine counts them as joined on it. Never fails the
+ * provision: the customer is on the network either way.
+ */
+async function recordConnectionDay(companyId: number, customerId: number, today: string): Promise<void> {
+  if (!(await getSchemaCapabilities()).connectionMonth) return
+  const { error } = await tenantClient()
+    .from('customers')
+    .update({ connected_on: today })
+    .eq('company_id', companyId)
+    .eq('id', customerId)
+    .is('connected_on', null)
+  if (error) console.error('[provision] connected_on not recorded for #%d: %s', customerId, error.message)
 }
 
 /**

@@ -124,9 +124,26 @@ export function daysBetween(from: Date, to: Date): number {
  * stamps the period end there and is the only writer of it, but it is stamped
  * per RUN rather than per customer-month, so bill_date is the stabler anchor.
  */
-function settledMonthStart(from: Date, billDay: number): Date {
-  const back = from.getDate() >= billDay ? 1 : 2
+function settledMonthStart(from: Date, billDay: number, calendarMonth = false): Date {
+  // THE CALENDAR-MONTH MODEL (0028; owner 11 Oct 2026: "describe every charge
+  // by the calendar month it covers"). The bill day raises the charge for the
+  // month it falls in, so the latest month charged by `from` is THIS month once
+  // the bill day has come, the previous one before it: Ezmze (bill day 1)
+  // paying on 11 Oct is settling October, never "September". One month later
+  // than the arrears rule above, which stays for everyone not on the model.
+  const back = (from.getDate() >= billDay ? 1 : 2) - (calendarMonth ? 1 : 0)
   return new Date(from.getFullYear(), from.getMonth() - back, 1)
+}
+
+/**
+ * The calendar month a payment on `paidOn` settled under the model — what a
+ * prior grant's own payment date says it covered, rather than the label it was
+ * stamped with under the arrears rule. The one-month-per-period guard compares
+ * like with like through this.
+ */
+export function calendarMonthSettled(paidOn: string, billDay: number): string | null {
+  const d = parseYmd(paidOn)
+  return d ? ymd(settledMonthStart(d, billDay, true)) : null
 }
 
 /**
@@ -181,10 +198,12 @@ export function billingPeriod(
   from: Date,
   /** From effectiveBillDay — never a raw, possibly-null column. */
   billDay: number,
-  carriedBalance: number
+  carriedBalance: number,
+  /** The company is on the calendar-month model: name the month as it charges it. */
+  calendarMonth = false
 ): { start: string; end: string } | null {
   if (settledMonths(carriedBalance) === 0) return null
-  const start = settledMonthStart(from, billDay)
+  const start = settledMonthStart(from, billDay, calendarMonth)
   const end = new Date(start.getFullYear(), start.getMonth() + 1, 0)
   return { start: ymd(start), end: ymd(end) }
 }
@@ -197,10 +216,11 @@ export function billingPeriodLabel(
   from: Date,
   /** From effectiveBillDay — never a raw, possibly-null column. */
   billDay: number,
-  carriedBalance: number
+  carriedBalance: number,
+  calendarMonth = false
 ): string | null {
   if (settledMonths(carriedBalance) === 0) return null
-  return settledMonthStart(from, billDay)
+  return settledMonthStart(from, billDay, calendarMonth)
     .toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
 }
 
@@ -515,53 +535,6 @@ export function monthsCovered(
 
   const extra = Math.floor(prepaymentCredit(carriedBalance, amountPaid) / charge)
   return Math.min(MAX_PREPAY_MONTHS, settled + Math.max(0, extra))
-}
-
-/**
- * How many months of ACCESS a FIRST payment buys (migration 0017).
- *
- * A first payment is owed two different things, and only one of them is a
- * month:
- *
- *   - THE FIRST PERIOD, provisioning to the first expiry. The customer already
- *     holds it — provisioning granted it without charging — so paying for it
- *     moves nothing. It is never a month.
- *   - THE CARRIED BALANCE, what a bill run or the billing engine charged before
- *     the first payment came in. That is a month like any other, and settling
- *     it buys the next one, exactly as monthsCovered counts it for everybody
- *     else (settledMonths): any money towards it settles the month, and a short
- *     payment goes through the same Full Period / Select Date choice.
- *
- * Plus a month per whole charge beyond EVERYTHING owed, as before.
- *
- * WHY THIS EXISTS. Until 6 October 2026 a first payment counted only the money
- * beyond the whole amount due, so a carried balance folded into it was paid for
- * and bought nothing. Ezmze's engine went live on 1 October and charged 42
- * customers connected in September before their first payment; each was then
- * asked for the engine's month AND the first period, and paying both still left
- * them at their first expiry. Nadine Lewars (#1403) paid J$3,500 of J$7,466.67
- * and was not extended.
- *
- * With nothing carried this is exactly the old rule, floor(excess / charge).
- * The server (app/actions/payments.ts) and the till's preview
- * (components/payments/RecordPaymentForm.tsx) both call this, so they cannot
- * disagree.
- */
-export function firstPaymentMonths(opts: {
-  carriedBalance: number
-  /** The first period's charge, net of any discount the cashier applied. */
-  firstPeriodDue: number
-  monthlyCharge: number
-  amountPaid: number
-}): number {
-  const charge = safe(opts.monthlyCharge)
-  const paid = safe(opts.amountPaid)
-  const settled = paid > 0 ? settledMonths(opts.carriedBalance) : 0
-  if (charge <= 0) return settled
-
-  const owed = round2(safe(opts.carriedBalance) + safe(opts.firstPeriodDue))
-  const extra = Math.floor(Math.max(0, round2(paid - owed)) / charge)
-  return Math.min(MAX_PREPAY_MONTHS, settled + extra)
 }
 
 /**
@@ -903,92 +876,12 @@ function safe(n: number | string | null | undefined): number {
   return Number.isFinite(v) ? v : 0
 }
 
-// ---------------------------------------------------------------------------
-// First period (migration 0017)
-//
-// A customer connected on the 20th with a cut-off of the 5th buys 46 days of
-// service. Before this, they paid the same as one connected on the 2nd who
-// bought 34, and the same as one connected on the 6th who bought 30. These
-// functions price the first period by its actual length.
-//
-// PURE, AND CLIENT-SAFE LIKE THE REST OF THIS FILE. Whether a customer IS in
-// their first period is a question about stored history and lives on the server
-// in lib/data/first-period.ts; everything here is arithmetic over numbers the
-// caller has already established.
-// ---------------------------------------------------------------------------
-
-/**
- * The divisor for the daily rate. NOT the length of any particular month.
- *
- * A 31-day month and a 28-day month both price at rate/30 here. That is on
- * purpose: the number a cashier is quoting has to be checkable on a phone
- * calculator at the counter, and "rate divided by thirty" is checkable in a way
- * that "rate divided by however long February is" is not. It also keeps the
- * daily rate stable across the year, so the same 46-day first period costs the
- * same in February as in August.
- */
-export const DAYS_IN_BILLING_MONTH = 30
-
-/** The monthly charge spread over a 30-day month. */
-export function dailyRate(monthlyCharge: number): number {
-  return safe(monthlyCharge) / DAYS_IN_BILLING_MONTH
-}
-
-/**
- * What the FIRST payment should ask for, given how long the first period is.
- *
- *   rate 3,500, cut-off 5, daily 116.67
- *     connected 2 Aug  -> 5 Sep, 34 days -> 3,500 + 4 x 116.67 = 3,967
- *     connected 6 Aug  -> 5 Sep, 30 days -> 3,500
- *     connected 20 Aug -> 5 Oct, 46 days -> 3,500 + 16 x 116.67 = 5,367
- *
- * NEVER LESS THAN THE MONTHLY CHARGE. A period shorter than 30 days returns the
- * full rate, not a reduced one. The difference is not silently dropped — it is
- * offered to the cashier by firstPeriodDiscount below, for them to apply or
- * not. Automatically discounting a short first period would make every customer
- * connected just before their cut-off cheaper than the rate card without anyone
- * deciding that, which is a pricing change disguised as arithmetic.
- */
-export function firstPeriodCharge(monthlyCharge: number, days: number): number {
-  const rate = safe(monthlyCharge)
-  const extra = Math.max(0, Math.floor(safe(days)) - DAYS_IN_BILLING_MONTH)
-  return round2(rate + extra * dailyRate(rate))
-}
-
-/**
- * The discount a cashier MAY apply when the first period is short of 30 days.
- *
- * Zero for a period of 30 days or more, so a caller can offer it unconditionally
- * and get nothing when there is nothing to offer.
- *
- *   rate 3,500, connected 10 Aug -> 5 Sep, 26 days -> 4 x 116.67 = 467
- *
- * NOTHING IN THIS FILE APPLIES IT. It is returned so the till can show it as a
- * choice; app/actions/payments.ts subtracts it only when the form says the
- * cashier ticked it, and logs who did (`first_period_discount`). See the note
- * on firstPeriodCharge for why it is not automatic.
- */
-export function firstPeriodDiscount(monthlyCharge: number, days: number): number {
-  const rate = safe(monthlyCharge)
-  const short = Math.max(0, DAYS_IN_BILLING_MONTH - Math.floor(safe(days)))
-  return round2(short * dailyRate(rate))
-}
-
-/**
- * Whole days in a first period: provisioning date to the expiry it wrote.
- *
- * daysBetween already floors both ends to local midnight, so the answer is a
- * count of calendar days and never a fraction rounded across a timezone offset
- * or a daylight-saving step.
- *
- * Negative spans return 0 rather than a negative charge — an expiry behind the
- * provisioning date is corrupt data, and the safe reading of corrupt data here
- * is "no extra days", which prices the first period at exactly the monthly
- * rate rather than below it.
- */
-export function firstPeriodDays(provisionedAt: Date, expiry: Date): number {
-  return Math.max(0, daysBetween(provisionedAt, expiry))
-}
+// (The first-period functions of migration 0017 — a first period priced from
+// provisioning to the first expiry, at rate/30, with an optional discount —
+// were removed on 11 Oct 2026: there is no first period for anyone. A
+// connection month is charged, or not, as a calendar month: see
+// lib/prepaid-calendar.ts and lib/data/prepaid-calendar.ts
+// #chargesConnectionMonth.)
 
 /** Money is stored as numeric; keep float drift out of what we write back. */
 function round2(n: number): number {

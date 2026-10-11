@@ -5,6 +5,7 @@ import { ArrowLeft } from 'lucide-react'
 
 import { getBillRun, listRunCharges } from '@/lib/data/billing-engine'
 import { formatCurrency, formatDateOnly, formatDateTime } from '@/lib/format'
+import { monthLabel } from '@/lib/prepaid-calendar'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
@@ -108,7 +109,7 @@ export default async function BillingRunPage({
             <thead className="text-gray-500">
               <tr>
                 <th className="px-4 py-2 font-medium">Customer</th>
-                <th className="px-4 py-2 font-medium">Period</th>
+                <th className="px-4 py-2 font-medium">Month</th>
                 <th className="px-4 py-2 text-right font-medium">Amount</th>
                 <th className="px-4 py-2 text-right font-medium">From credit</th>
                 <th className="px-4 py-2 text-right font-medium">Balance before</th>
@@ -124,7 +125,7 @@ export default async function BillingRunPage({
                     </Link>
                     <span className="ml-1 text-gray-600">#{c.customerId}</span>
                   </td>
-                  <td className="px-4 py-2">{formatDateOnly(c.periodStart)} to {formatDateOnly(c.periodEnd)}</td>
+                  <td className="px-4 py-2">{monthLabel(c.periodStart)}</td>
                   <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(c.amount)}</td>
                   <td className="px-4 py-2 text-right tabular-nums text-gray-500">{c.creditApplied ? formatCurrency(c.creditApplied) : '—'}</td>
                   <td className="px-4 py-2 text-right tabular-nums text-gray-500">{formatCurrency(c.carriedBefore)}</td>
@@ -141,7 +142,7 @@ export default async function BillingRunPage({
               <tr>
                 <th className="px-4 py-2 font-medium">Customer</th>
                 <th className="px-4 py-2 font-medium">Bill day</th>
-                <th className="px-4 py-2 font-medium">Period</th>
+                <th className="px-4 py-2 font-medium">Month</th>
                 <th className="px-4 py-2 text-right font-medium">Amount</th>
                 <th className="px-4 py-2 text-right font-medium">Add-ons</th>
                 <th className="px-4 py-2 text-right font-medium">From credit</th>
@@ -157,7 +158,7 @@ export default async function BillingRunPage({
                     <span className="ml-1 text-gray-600">#{p.customer_id}</span>
                   </td>
                   <td className="px-4 py-2 text-gray-500">{p.bill_day}</td>
-                  <td className="px-4 py-2">{formatDateOnly(p.period_start)} to {formatDateOnly(p.period_end)}</td>
+                  <td className="px-4 py-2">{monthLabel(p.period_start)}{p.service_days != null ? ', ' + p.service_days + ' days' : ''}</td>
                   <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(p.amount)}</td>
                   <td className="px-4 py-2 text-right tabular-nums text-gray-500">{p.addons ? formatCurrency(p.addons) : '—'}</td>
                   <td className="px-4 py-2 text-right tabular-nums text-gray-500">{p.credit_applied ? formatCurrency(p.credit_applied) : '—'}</td>

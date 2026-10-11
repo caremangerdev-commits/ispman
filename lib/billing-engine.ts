@@ -45,7 +45,7 @@
  */
 
 import { effectiveBillDay } from '@/lib/billing'
-import { daysNotBilled, monthFigure, monthOf, round100 } from '@/lib/prepaid-calendar'
+import { daysNotBilled, daysToMonthEnd, monthFigure, monthOf, round100 } from '@/lib/prepaid-calendar'
 
 /** `settings.billing_type`. No per-customer override exists. */
 export type CompanyBillingType = 'prepaid' | 'postpaid'
@@ -140,10 +140,10 @@ export type EngineVerdict =
   /** The charge date is before the company's engine start date. Never charged. */
   | 'before_start'
   /**
-   * The customer joined after the charge date. Their first charge is the next
-   * period's. THIS IS THE GAP PRO-RATA JOINING CLOSES: the stretch between
-   * joining and the next charge date is priced at the till by the first-period
-   * rule (migration 0017) for now, and by nothing in this engine.
+   * The customer was connected after the charge date, or connected this month
+   * with the company's connection month OFF (0032). This month is not charged
+   * by the engine: with the connection month on, a prepaid customer's was
+   * charged at Provision; with it off, they start on the 1st of next month.
    */
   | 'joined_after'
   /**
@@ -174,6 +174,12 @@ export type EngineCustomer = {
    * has always billed. Prepaid reads it; postpaid ignores it.
    */
   billedThrough?: string | null
+  /**
+   * `customers.connected_on` (migration 0032): the day they were first
+   * provisioned. The engine counts them as joined on it, falling back to
+   * dateAdded for a customer never provisioned in ISPMan.
+   */
+  connectedOn?: string | null
 }
 
 export type EngineDecision = {
@@ -225,6 +231,12 @@ export function engineVerdict(opts: {
   customer: EngineCustomer
   /** From the registry. Undefined when the caller could not resolve an identity. */
   service: 'active' | 'disconnected' | 'unprovisioned' | undefined
+  /**
+   * settings.charge_connection_month (migration 0032). On: the month a
+   * customer was connected in is charged from the connection day to its end.
+   * Off: that month is not charged at all. Prepaid and postpaid alike.
+   */
+  chargeConnectionMonth?: boolean
 }): EngineDecision {
   const { customer } = opts
 
@@ -232,22 +244,36 @@ export function engineVerdict(opts: {
   // through the same function the rest of the app uses.
   const billDay = effectiveBillDay(null, opts.companyBillDay)
   const period = monthPeriod(opts.today, billDay)
+  const month = monthOf(period.start)
 
   const exact = Math.round((Number.isFinite(customer.monthlyCharge) ? customer.monthlyCharge : 0) * 100) / 100
   const prepaid = opts.billingType === 'prepaid'
   const fullAmount = prepaid ? round100(exact) : exact
 
-  // THE HAND-OVER (migration 0030, owner 8 Oct 2026). Only the days after the
-  // last day charged by hand: none of a month wholly inside it, the days after
-  // it in the month it ends in, whole months after that.
-  const open = prepaid ? daysNotBilled(period.start, customer.billedThrough ?? null) : null
-  const amount = open === null ? fullAmount : monthFigure(exact, open, monthOf(period.start).days)
+  // JOINED ON THE CONNECTION DAY (0032), not the day the record was made.
+  const joined = (customer.connectedOn ?? customer.dateAdded ?? null)?.slice(0, 10) ?? null
+  // Connected partway through this month: the connection month.
+  const connectionMonth = joined !== null && joined > period.start && joined <= month.end
+
+  // Days of the month to charge; null for all of them.
+  //   THE HAND-OVER (0030, owner 8 Oct 2026): only the days after the last day
+  //   charged by hand.
+  //   THE CONNECTION MONTH (0032, owner 11 Oct 2026): from the connection day.
+  const handover = prepaid ? daysNotBilled(period.start, customer.billedThrough ?? null) : null
+  const fromConnection = connectionMonth ? daysToMonthEnd(joined) : null
+  const open = handover === null ? fromConnection
+    : fromConnection === null ? handover
+      : Math.min(handover, fromConnection)
+  const amount = open === null ? fullAmount : monthFigure(exact, open, month.days)
   const out = (verdict: EngineVerdict): EngineDecision =>
     ({ verdict, period, billDay, amount, serviceDays: open, fullAmount })
 
   if (period.chargeDate > opts.today) return out('not_due')
   if (opts.startDate === null || period.chargeDate < opts.startDate) return out('before_start')
-  if (customer.dateAdded && customer.dateAdded.slice(0, 10) > period.chargeDate) return out('joined_after')
+  if (joined !== null && joined > period.chargeDate) return out('joined_after')
+  // Connected this month, on or before its charge date, with the connection
+  // month OFF: not charged — they start on the 1st of the next month.
+  if (connectionMonth && !opts.chargeConnectionMonth) return out('joined_after')
   if (open === 0) return out('covered')
   if (amount <= 0) return out('zero_rate')
   if (opts.service === 'disconnected') return out('no_service')

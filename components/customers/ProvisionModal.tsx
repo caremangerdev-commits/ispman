@@ -117,17 +117,24 @@ export function ProvisionModal({
             {plan.firstCharge && plan.choices ? (
               <div className="space-y-1 rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2.5 text-sm">
                 <div className="flex items-baseline justify-between gap-3">
-                  <span className="text-xs text-gray-500">First charge</span>
+                  <span className="text-xs text-gray-500">{plan.firstCharge.label}</span>
                   <span className="font-semibold tabular-nums text-gray-100">
                     {formatCurrencyExact(plan.firstCharge.amount)}
                   </span>
                 </div>
                 <p className="text-xs text-gray-500">
-                  {plan.firstCharge.label}, {plan.firstCharge.days} of {plan.firstCharge.monthDays} days
-                  (today to the month&rsquo;s end). Added to the balance when the customer is provisioned.
-                  The months after are charged in full on the bill date.
+                  {plan.firstCharge.days} of {plan.firstCharge.monthDays} days, today to the month&rsquo;s
+                  end. Added to the balance when the customer is provisioned. Every month after is
+                  charged in full on the bill day.
                 </p>
               </div>
+            ) : null}
+
+            {plan.freeMonth && plan.choices ? (
+              <p className="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2.5 text-xs text-gray-500">
+                No charge for {plan.freeMonth.label}: this company does not charge the connection month.
+                Their first charge is {plan.freeMonth.next}, on the bill day.
+              </p>
             ) : null}
 
             <div className="flex justify-end gap-2">

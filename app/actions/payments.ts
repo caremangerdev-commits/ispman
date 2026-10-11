@@ -4,8 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import {
-  billingPeriod, carriedBalanceAfter, effectiveBillDay, firstPeriodCharge, firstPeriodDays,
-  firstPaymentMonths, firstPeriodDiscount, isPartialPayment, monthsCovered,
+  billingPeriod, calendarMonthSettled, carriedBalanceAfter, effectiveBillDay, isPartialPayment, monthsCovered,
   outstandingBalance, parseYmd, periodAlreadyGranted, periodCompletion, prepaymentCredit,
   proportionalDate, reverseCredit, serviceExpiry, ymd, type AccessDecision, type PriorGrant,
 } from '@/lib/billing'
@@ -18,13 +17,12 @@ import {
   calendarExpiry, forwardLines, laterYmd, monthLabel, round100, tillBreakdown,
   type BreakdownLine, type MonthCharge, type TillBreakdown,
 } from '@/lib/prepaid-calendar'
-import { getExpiryClock, getFirstPeriodRules } from '@/lib/data/company'
+import { getExpiryClock } from '@/lib/data/company'
 import { applyExpiryClock } from '@/lib/radius/format'
 import { firstPeriodAnchor } from '@/lib/data/first-period'
 import {
   applyExpiryUndo, expiryActionText, planExpiryUndo, planMonthsTakeBack, type ExpiryUndo,
 } from '@/lib/data/payment-expiry'
-import { provisionedUnderModel } from '@/lib/data/provision'
 import { getChargesById, listOpenCharges, type OpenCharge } from '@/lib/data/charges'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
 import { getReversalSubject } from '@/lib/data/payments'
@@ -796,15 +794,15 @@ export async function recordPayment(
   // payment then fails to record, the change is put back.
   const calendar = caps.billing ? await prepaidCalendarFor(company.id) : PREPAID_CALENDAR_OFF
 
-  // OPTION A (owner, 8 Oct 2026). A customer provisioned BEFORE the model came
-  // in, who has not paid since, finishes on the first-payment rule they were
-  // provisioned under: this payment is priced exactly as it was before the
-  // model — first period, months, expiry and all. Anyone provisioned under it
-  // gets the model. lib/data/provision.ts#provisionedUnderModel.
+  // NO FIRST PERIOD FOR ANYONE (owner, 11 Oct 2026; Option A removed). A
+  // customer's connection month is a month charge like any other — or no charge
+  // at all — by the company's setting (0032, lib/data/prepaid-calendar.ts
+  // #chargesConnectionMonth). The till asks for what is on the balance.
+  //
+  // firstAnchor survives only to say "this is their first payment since
+  // provisioning", which decides where the model lands the expiry below.
   const firstAnchor = calendar.enabled ? await firstPeriodAnchor(company.id, customer.id) : null
-  const oldFirstRule =
-    firstAnchor !== null && !(await provisionedUnderModel(company.id, customer.id))
-  const model = calendar.enabled && !oldFirstRule
+  const model = calendar.enabled
 
   // Service has ended: the registry knows the customer and their access is
   // not on. Decides the reconnection fee for every company, and the month's
@@ -894,41 +892,13 @@ export async function recordPayment(
     })
   }
 
-  // --- First period (migration 0017) ---------------------------------------
-  //
-  // Null for everybody except a customer making their first payment since
-  // ISPMan provisioned them, with the company switch on. See resolveFirstPeriod.
-  //
-  // Sits here, after the registry read and before the pricing, because the
-  // expiry provisioning wrote is what says how long the first period is.
-  //
-  // NEVER under calendar-month prepaid: a new customer's first month is charged
-  // from connection day to month end when they are provisioned. Still for one
-  // provisioned before the model (oldFirstRule, above).
-  const firstPeriod = model
-    ? null
-    : await resolveFirstPeriod({
-        companyId: company.id,
-        customerId: customer.id,
-        monthlyCharge,
-        registryExpiry,
-        discountRequested: str(formData, 'first_period_discount') === '1',
-      })
-
   // --- What this payment is settling ---------------------------------------
   //
-  // For everybody else the amount due IS the carried balance and nothing else
-  // (lib/billing.ts#amountDue): the bill run charged the month when it ended,
-  // and this settles it.
-  //
-  // A FIRST PERIOD HAS NEVER BEEN BILLED. Provisioning granted access to the
-  // end of it without charging anything, and the bill run only charges periods
-  // that have already closed — so at the moment of the first payment the
-  // customer owes for days they are already using while the carried balance
-  // still says zero. Folding it in here is what lets the rest of this function
-  // price the payment with no second billing path: the shortfall, the credit
-  // and the partial-payment decision all measure against this one number.
-  const due = round2(carriedBefore + (firstPeriod?.due ?? 0))
+  // The amount due IS the carried balance and nothing else, for everybody
+  // (lib/billing.ts#amountDue). There is no first period any more (owner,
+  // 11 Oct 2026): a connection month is either charged as a month, by the
+  // company's setting, or not charged at all.
+  const due = round2(carriedBefore)
 
   const partial = isPartialPayment(due, paidAmount)
   const carriedAfter = carriedBalanceAfter(due, paidAmount)
@@ -946,15 +916,8 @@ export async function recordPayment(
 
   // MONTHS BOUGHT FORWARD, from the MONEY and never from the form's dropdown.
   //
-  // A FIRST PAYMENT goes through firstPaymentMonths. The first period itself is
-  // never a month — the customer already holds it, provisioning wrote it — but
-  // a carried balance folded in beside it IS (the billing engine charged the
-  // month ahead before the first payment came in), and settling it counts the
-  // same as on any other payment. Plus a month per whole charge beyond all of
-  // it. Before 6 Oct 2026 the carried part bought nothing; see that function.
-  //
-  // Everybody else goes through monthsCovered: the month being settled, if
-  // there is one, plus a month per whole charge beyond what was owed. That can
+  // monthsCovered: the month being settled, if there is one, plus a month per
+  // whole charge beyond what was owed. That can
   // be ZERO — nothing owed and less than a month's money — and zero is handled
   // below as "access unchanged, money held as credit", never passed to
   // serviceExpiry, which would floor it to a month nobody paid for.
@@ -973,22 +936,27 @@ export async function recordPayment(
   // is stamped on the row below, so the key the guard compares is the key the
   // row will carry.
   //
-  // NOT FOR A FIRST PAYMENT. Its period was never billed and no earlier
-  // payment can have granted it; the branch below is untouched.
-  const period = billingPeriod(
-    paymentDate,
-    effectiveBillDay(customer.bill_date, companySettings?.bill_date),
-    carriedBefore
-  )
+  // UNDER THE MODEL it is the CALENDAR MONTH the charge covers, on the
+  // company's bill day (the engine's day), and a prior grant is compared by the
+  // month ITS payment date settled under the same rule — not by the label it
+  // was stamped with under the arrears rule, one month behind.
+  const periodBillDay = model
+    ? effectiveBillDay(null, companySettings?.bill_date)
+    : effectiveBillDay(customer.bill_date, companySettings?.bill_date)
+  const period = billingPeriod(paymentDate, periodBillDay, carriedBefore, model)
 
   // Not for a returning calendar-month customer either: their month was just
   // recomputed from the days they had, and paying it is what brings them back.
-  const grant = caps.billing && !firstPeriod && !returning && !calendarFirst
+  const grant = caps.billing && !returning && !calendarFirst
     ? await latestGrant(company.id, customer.id)
     : null
   const periodGranted =
     grant !== null &&
-    periodAlreadyGranted({ periodStart: period?.start ?? null, carriedBefore, grant })
+    periodAlreadyGranted({
+      periodStart: period?.start ?? null,
+      carriedBefore,
+      grant: model ? { ...grant, periodStart: calendarMonthSettled(grant.paidOn, periodBillDay) } : grant,
+    })
 
   // Where a guarded payment may complete an open month to, or null: the
   // expiry then stays where it is. Only a grant that picked a date left a
@@ -1007,16 +975,9 @@ export async function recordPayment(
   // returning customer's months are counted against that figure: the current
   // month if any money is paid (a part payment reconnects, as today), plus one
   // per whole rounded month beyond what is owed.
-  const monthsPaid = firstPeriod
-    ? firstPaymentMonths({
-        carriedBalance: carriedBefore,
-        firstPeriodDue: firstPeriod.due,
-        monthlyCharge,
-        amountPaid: paidAmount,
-      })
-    : returning || calendarFirst
-      ? monthsCovered(due, round100(monthlyCharge), paidAmount, false)
-      : monthsCovered(due, monthlyCharge, paidAmount, periodGranted)
+  const monthsPaid = returning || calendarFirst
+    ? monthsCovered(due, round100(monthlyCharge), paidAmount, false)
+    : monthsCovered(due, monthlyCharge, paidAmount, periodGranted)
 
   // A decision only means something for a payment that is actually short. One
   // sent for a payment that covers the bill is dropped rather than stored.
@@ -1082,7 +1043,7 @@ export async function recordPayment(
       : null
   const fullPeriodExpiry: Date | null =
     monthsPaid === 0
-      ? firstPeriod ? firstPeriod.expiry : walkFrom
+      ? walkFrom
       : calendarDate ?? serviceExpiry({
           // cut_off_date, not bill_date: the bill day says when the charge is
           // raised, the cut-off day says when access ends. Anchored on the
@@ -1207,16 +1168,12 @@ export async function recordPayment(
   }
   if (caps.firstPeriod) {
     // WHAT THE CUSTOMER WAS ASKED FOR, so the receipt can restate it rather
-    // than reassembling it from parts. Equal to carried_balance_before for an
-    // ordinary payment; larger for a first payment, whose period the carried
-    // balance has never held. See migration 0017 and lib/data/receipts.ts.
+    // than reassembling it from parts. See migration 0017 and
+    // lib/data/receipts.ts.
     insertRow.amount_due = due
-    // Stamped for EVERY payment, zero included, on the same reasoning as
-    // credit_applied in 0015: a stamped 0 says no discount was given, where
-    // NULL would only say nobody recorded one. The receipt prints neither, but
-    // the two are different facts.
-    insertRow.first_period_discount =
-      firstPeriod?.discountApplied ? firstPeriod.discount : 0
+    // No first-period discount exists any more (11 Oct 2026); a stamped 0 says
+    // none was given, where NULL would only say nobody recorded one.
+    insertRow.first_period_discount = 0
   }
 
   // A payment that bought nothing still stamps the expiry the customer holds,
@@ -1359,28 +1316,6 @@ export async function recordPayment(
         formatCurrencyExact(monthChange.current.amount) + ' (' + monthChange.current.serviceDays + ' days)' +
         ' | payment_id=' + paymentId +
         ' | by=' + profile.email,
-    })
-  }
-
-  // A SHORT FIRST PERIOD IS CHARGED AT FULL RATE UNLESS SOMEONE DECIDES
-  // OTHERWISE, and this row is the record of who decided. The reduction is open
-  // to any role and is never applied automatically, so nothing else in the
-  // system says it happened or names the person who allowed it.
-  if (firstPeriod?.discountApplied) {
-    await logEvent({
-      customerId: customer.id,
-      type: 'first_period_discount',
-      tag: '[payments]',
-      details:
-        'First period discount applied | days=' + firstPeriod.days +
-        ' | full_charge=' + firstPeriod.charge.toFixed(2) +
-        ' | discount=' + firstPeriod.discount.toFixed(2) +
-        ' | charged=' + firstPeriod.due.toFixed(2) +
-        ' | payment_id=' + paymentId +
-        ' | by=' + agent,
-      // Negative: this reduced what the customer owed. Dropped with a console
-      // warning until migration 0016 is applied, which is by design.
-      amount: -firstPeriod.discount,
     })
   }
 
@@ -1620,49 +1555,12 @@ export async function recordPayment(
 }
 
 /**
- * What a customer owes for their FIRST period, or null when this is not one.
- *
- * Null is the answer for almost every payment, and the checks are ordered so
- * that the common case costs nothing: the company switch is a settings read
- * that getFirstPeriodRules keeps narrow, and the two history queries in
- * lib/data/first-period.ts only run once it says the feature is on.
- *
- * WHY A MISSING REGISTRY EXPIRY RETURNS NULL RATHER THAN A ZERO-DAY PERIOD.
- * The expiry is what the period is measured to. When RADIUS is unconfigured or
- * the NAS is unreachable there is no honest length to price, and treating that
- * as "0 days" would charge the customer the bare monthly rate while telling
- * them it was pro-rata. Falling back to the ordinary path charges them the same
- * thing without the claim.
- *
- * THE DISCOUNT IS REQUESTED, NEVER ASSUMED. discountRequested is the cashier
- * ticking a box; a period of 30 days or more offers nothing to tick, which is
- * why the flag is combined with a positive discount rather than trusted alone.
- */
-type FirstPeriod = {
-  /** When ISPMan provisioned them. The start of the period. */
-  anchor: Date
-  /** The expiry provisioning wrote. The end of the period. */
-  expiry: Date
-  /** Whole days from anchor to expiry. */
-  days: number
-  /** The full charge for those days. Never below the monthly rate. */
-  charge: number
-  /** What may be taken off when the period is SHORT of 30 days. Often 0. */
-  discount: number
-  /** Whether the cashier actually applied it. */
-  discountApplied: boolean
-  /** charge less the discount if applied. What this payment is settling. */
-  due: number
-}
-
-/**
  * What the till needs to know about ONE customer before pricing a payment,
- * beyond what the search hit carries: their first period, if this is one, and
- * the most recent payment that moved their expiry, for the one-month-per-
- * period guard.
+ * beyond what the search hit carries: the most recent payment that moved their
+ * expiry, for the one-month-per-period guard; their open one-off charges; the
+ * reconnection fee; and, under calendar-month prepaid, their month charges.
  *
- * Both are null for the overwhelming majority of customers, which is what the
- * form treats as "price this the ordinary way".
+ * There is no first period any more (owner, 11 Oct 2026).
  *
  * WHY A SERVER ACTION AND NOT A FIELD ON THE SEARCH HIT. Answering this needs
  * two history queries and a radcheck read per customer. On a search that is a
@@ -1675,7 +1573,6 @@ type FirstPeriod = {
  * proportional date.
  */
 export type PaymentContext = {
-  firstPeriod: { days: number; charge: number; discount: number } | null
   /**
    * The prior grant, with the registry expiry it anchored on ("YYYY-MM-DD",
    * null when unknown or when it did not pick a date), so the form can say
@@ -1695,10 +1592,8 @@ export type PaymentContext = {
   reconnectionFee: number
   /**
    * Calendar-month prepaid (migration 0028), when the model applies to the
-   * company; null otherwise — and null for a customer provisioned before the
-   * model who has not paid yet (Option A: the till as it was before the model).
-   * `returning` says the customer's service has ended, so the till recomputes
-   * this month.
+   * company; null otherwise. `returning` says the customer's service has
+   * ended, so the till recomputes this month.
    */
   calendar: {
     returning: boolean
@@ -1715,7 +1610,7 @@ export type PaymentContext = {
 }
 
 export async function loadPaymentContext(customerId: number): Promise<PaymentContext> {
-  const none: PaymentContext = { firstPeriod: null, grant: null, charges: [], reconnectionFee: 0, calendar: null }
+  const none: PaymentContext = { grant: null, charges: [], reconnectionFee: 0, calendar: null }
 
   const { company, profile } = await getSession()
   if (!can(profile.role, 'record_payment')) return none
@@ -1744,19 +1639,6 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
 
   if (!customer) return none
 
-  // The same monthly charge the till prices against: rate plus active add-ons.
-  let addonTotal = 0
-  if (caps.billing && caps.catalog) {
-    const { data: links } = await db
-      .from('customer_additional_services')
-      .select('additional_services(monthly_price)')
-      .eq('customer_id', customer.id)
-
-    addonTotal = ((links ?? []) as unknown as {
-      additional_services: { monthly_price: number | string | null } | null
-    }[]).reduce((sum, l) => sum + Number(l.additional_services?.monthly_price ?? 0), 0)
-  }
-
   const identity =
     customer.customer_type === 'pppoe' ? customer.pppoe_username : customer.mac_address
 
@@ -1765,40 +1647,23 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
       ? await readNetworkRecord(identity).catch(() => null)
       : null
 
-  // Calendar-month prepaid: no first period (a new customer's first month is
-  // charged at connection), and a returning customer's month is recomputed.
-  // The same tests recordPayment makes before it prices, Option A included: a
-  // customer provisioned before the model and not yet paid gets the till as it
-  // was before the model.
+  // The same tests recordPayment makes before it prices: a returning customer's
+  // month is recomputed under the model, and a first payment since
+  // provisioning lands its expiry by the model.
   const prepaid = caps.billing ? await prepaidCalendarFor(company.id) : PREPAID_CALENDAR_OFF
   const firstAnchor = prepaid.enabled ? await firstPeriodAnchor(company.id, customer.id) : null
-  const oldFirstRule =
-    firstAnchor !== null && !(await provisionedUnderModel(company.id, customer.id))
-  const model = prepaid.enabled && !oldFirstRule
+  const model = prepaid.enabled
   const disconnectedNow = registered !== null && registered.exists && registered.status !== 'active'
   const returning = model && disconnectedNow
-
-  const period = model ? null : await resolveFirstPeriod({
-    companyId: company.id,
-    customerId: customer.id,
-    monthlyCharge: Number(customer.monthly_rate ?? 0) + addonTotal,
-    registryExpiry: registered?.expiry ?? null,
-    // The preview always shows what the discount WOULD be. Whether it is
-    // applied is the cashier’s tick at submit time, not a property of the
-    // customer, so it is deliberately not asked here.
-    discountRequested: false,
-  })
+  const firstPayment = model && !returning && (registered?.expiry ?? null) !== null && firstAnchor !== null
 
   // A first payment has no prior grant by definition (no service payment since
   // provisioning), so the read is skipped rather than made and ignored.
-  const prior = period ? null : await latestGrant(company.id, customer.id)
+  const prior = firstPayment || returning ? null : await latestGrant(company.id, customer.id)
   const anchor = prior ? await grantAnchor(company.id, customer.id, prior) : null
   const charges = await listOpenCharges(company.id, customer.id)
 
   return {
-    firstPeriod: period
-      ? { days: period.days, charge: period.charge, discount: period.discount }
-      : null,
     grant: prior ? { ...prior, anchorThen: anchor ? ymd(anchor) : null } : null,
     charges,
     reconnectionFee:
@@ -1808,42 +1673,11 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
     calendar: model
       ? {
           returning,
-          firstPayment: !returning && (registered?.expiry ?? null) !== null && firstAnchor !== null,
+          firstPayment,
           monthCharges: returning ? await readMonthCharges(company.id, customer.id) : [],
           billedThrough: returning ? await billedThroughOf(company.id, customer.id) : null,
         }
       : null,
-  }
-}
-async function resolveFirstPeriod(opts: {
-  companyId: number
-  customerId: number
-  monthlyCharge: number
-  registryExpiry: Date | null
-  discountRequested: boolean
-}): Promise<FirstPeriod | null> {
-  const { companyId, customerId, monthlyCharge, registryExpiry, discountRequested } = opts
-
-  const { prorataFirstPaymentEnabled } = await getFirstPeriodRules(companyId)
-  if (!prorataFirstPaymentEnabled) return null
-  if (!registryExpiry) return null
-
-  const anchor = await firstPeriodAnchor(companyId, customerId)
-  if (!anchor) return null
-
-  const days = firstPeriodDays(anchor, registryExpiry)
-  const charge = firstPeriodCharge(monthlyCharge, days)
-  const discount = firstPeriodDiscount(monthlyCharge, days)
-  const discountApplied = discountRequested && discount > 0
-
-  return {
-    anchor,
-    expiry: registryExpiry,
-    days,
-    charge,
-    discount,
-    discountApplied,
-    due: round2(charge - (discountApplied ? discount : 0)),
   }
 }
 /**

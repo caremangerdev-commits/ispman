@@ -40,6 +40,7 @@ import {
 import {
   canDisconnect, canExtendAccess, canProvision, canReconnect,
 } from '@/lib/status'
+import { monthLabel } from '@/lib/prepaid-calendar'
 
 export type DetailCustomer = {
   id: number
@@ -802,16 +803,16 @@ export function CustomerDetail({
                   two rows carrying the same number under two labels is how the
                   two columns got confused in the first place. */}
               {/* DATE column — same reason as Date Added. The engine's latest
-                  charge (bill_charges, migration 0024) wins when there is one:
-                  it names the period as well as the day. Otherwise Run Bills'
-                  stamp, last_billed_date, which is the end of the period. */}
+                  charge (bill_charges, migration 0024) wins when there is one,
+                  named by the CALENDAR MONTH it covers (owner, 11 Oct 2026) and
+                  the day it was charged. Otherwise Run Bills' stamp,
+                  last_billed_date. */}
               <Row
                 label="Last Billed"
                 value={
                   c.lastCharge
-                    ? formatDateOnly(c.lastCharge.chargedOn) +
-                      ' (' + formatDateOnly(c.lastCharge.periodStart) + ' to ' +
-                      formatDateOnly(c.lastCharge.periodEnd) + ')'
+                    ? monthLabel(c.lastCharge.periodStart) +
+                      ' (charged ' + formatDateOnly(c.lastCharge.chargedOn) + ')'
                     : formatDateOnly(c.last_billed_date)
                 }
               />

@@ -153,6 +153,12 @@ export type SchemaCapabilities = {
    * expiry back. Absent, the delete finds them from the payment's log row.
    */
   paymentExpiry: boolean
+  /**
+   * Migration 0032: settings.charge_connection_month and
+   * customers.connected_on. Absent, Provision and the engine behave exactly as
+   * before it.
+   */
+  connectionMonth: boolean
 }
 
 /**
@@ -185,6 +191,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     brandingRes, engineRunsRes, engineChargesRes,
     chargesTableRes, chargePaymentRes,
     billedThroughRes, skippedCoveredRes, paymentExpiryRes,
+    connectionSettingRes, connectedOnRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -263,6 +270,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('bill_runs').select('skipped_covered').limit(1),
     // 0031: what a payment did to the expiry.
     db.from('payments').select('expiry_before, expiry_after').limit(1),
+    // 0032: the connection-month setting and the connection day.
+    db.from('settings').select('charge_connection_month').limit(1),
+    db.from('customers').select('connected_on').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -481,6 +491,15 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for payments expiry columns: ' + paymentExpiryRes.error.message)
   }
 
+  // 0032: two ALTERs; either missing disables it.
+  const missingConnectionMonth =
+    connectionSettingRes.error?.code === '42703' || connectedOnRes.error?.code === '42703'
+  for (const [what, res] of [['settings.charge_connection_month', connectionSettingRes], ['customers.connected_on', connectedOnRes]] as const) {
+    if (res.error && res.error.code !== '42703') {
+      throw new Error('Schema probe failed for ' + what + ': ' + res.error.message)
+    }
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -510,6 +529,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     charges: !missingOtherPaymentCols && !missingPaymentCategories && !missingCharges,
     handover: !missingHandover && !missingEngine,
     paymentExpiry: !missingPaymentExpiry,
+    connectionMonth: !missingConnectionMonth,
   }
 })
 
