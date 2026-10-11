@@ -12,6 +12,8 @@ import {
   chargesConnectionMonth, prepaidCalendarFor, readBilledThrough, readConnectedOn,
 } from '@/lib/data/prepaid-calendar'
 import { runServicePass } from '@/lib/data/prepaid-service'
+import { readServiceBreaks } from '@/lib/data/service-breaks'
+import { settlePreviousMonth } from '@/lib/data/postpaid-settle'
 import { formatCurrency, instantToDateOnly } from '@/lib/format'
 import { serviceStateFor, type ServiceState } from '@/lib/radius/service-state'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -198,6 +200,11 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
   const billedThrough = await readBilledThrough(company.id)
   const connectedOn = await readConnectedOn(company.id)
   const chargeConnectionMonth = await chargesConnectionMonth(company.id)
+  // Postpaid is priced by the day (owner, 11 Oct 2026): every customer's
+  // breaks in service, from the log and the registry.
+  const breaks = company.billingType === 'postpaid'
+    ? await readServiceBreaks({ companyId: company.id, timezone: company.timezone, today, customers: base })
+    : null
 
   const decided = base.map((c) => {
     const customer = { ...c, addons: addons.get(c.id) ?? 0, monthlyCharge: c.monthlyRate + (addons.get(c.id) ?? 0) }
@@ -210,6 +217,7 @@ export async function decideCompany(company: EngineCompany, today: string): Prom
         id: c.id, dateAdded: c.dateAdded, monthlyCharge: customer.monthlyCharge,
         billedThrough: billedThrough.get(c.id) ?? null,
         connectedOn: connectedOn.get(c.id) ?? null,
+        breaks: breaks ? breaks.get(c.id) ?? [] : undefined,
       },
       service: service.get(c.id),
       chargeConnectionMonth,
@@ -278,6 +286,9 @@ export type TickCompanySummary = {
   /** Calendar-month prepaid's hourly service pass (lib/data/prepaid-service.ts), when it ran. */
   service?: { ended: number; resumed: number; failed: number } | null
   serviceError?: string | null
+  /** Postpaid: the month just ended, settled on this bill day (lib/data/postpaid-settle.ts). */
+  settled?: { checked: number; changed: number; failed: number } | null
+  settleError?: string | null
 }
 
 type RunRow = {
@@ -512,8 +523,24 @@ async function runCompany(company: EngineCompany, actor: SystemActor): Promise<T
       })
     }
 
+    // POSTPAID: the month just ended is settled on this month's bill day —
+    // once, after this month's charges are raised (lib/data/postpaid-settle.ts).
+    // A failure here is reported on the summary and leaves the charges made.
+    let settled: TickCompanySummary['settled'] = null
+    let settleError: string | null = null
+    const thisMonth = decision.lines[0]?.decision.period
+    if (company.billingType === 'postpaid' && thisMonth && thisMonth.chargeDate <= today) {
+      try {
+        settled = await settlePreviousMonth(company, today, actor)
+      } catch (err) {
+        settleError = (err as Error).message
+        console.error('[settle] %s: %s', company.name, settleError)
+      }
+    }
+
     return summary({
       runId, charged: result.inserted, totalAmount: Number(result.total_amount), creditApplied: Number(result.credit_applied),
+      settled, settleError,
     })
   } catch (err) {
     const message = (err as Error).message

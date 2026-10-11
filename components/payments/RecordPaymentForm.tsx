@@ -199,6 +199,9 @@ export function RecordPaymentForm({
   // default whenever it is offered; the cashier may leave it off, and the
   // server logs which.
   const [reconnectionFee, setReconnectionFee] = useState(0)
+  // The engine bills this company by calendar month (prepaid or postpaid):
+  // payments are named by the month they settle, as the server stamps them.
+  const [calendarMonths, setCalendarMonths] = useState(false)
   const [feeTicked, setFeeTicked] = useState(true)
   // One-off charges the customer can pay against (migration 0025), and what the
   // cashier is taking against each, keyed by charge id. Empty for almost
@@ -357,6 +360,7 @@ export function RecordPaymentForm({
         setOpenCharges(context.charges)
         setCalendar(context.calendar)
         setReconnectionFee(context.reconnectionFee)
+        setCalendarMonths(context.calendarMonths)
 
         // A returning calendar-month customer: seed with this month recomputed
         // for the return, unless the cashier has already typed over the seed.
@@ -388,6 +392,7 @@ export function RecordPaymentForm({
         setOpenCharges(context.charges)
         setCalendar(context.calendar)
         setReconnectionFee(context.reconnectionFee)
+        setCalendarMonths(context.calendarMonths)
 
         const calendarNext = calendarSeed(customer, context.calendar, 1, browserToday())
         if (calendarNext !== null) {
@@ -412,6 +417,7 @@ export function RecordPaymentForm({
     setPriorGrant(null)
     setCalendar(null)
     setReconnectionFee(0)
+    setCalendarMonths(false)
     setFeeTicked(true)
     setOpenCharges([])
     setChargePay({})
@@ -445,6 +451,7 @@ export function RecordPaymentForm({
     setPriorGrant(null)
     setCalendar(null)
     setReconnectionFee(0)
+    setCalendarMonths(false)
     setFeeTicked(true)
     setOpenCharges([])
     setChargePay({})
@@ -643,9 +650,9 @@ export function RecordPaymentForm({
   // across the bill day settles a different month, and the label has to say
   // the one the row will carry.
   const paidOnDate = parseYmd(paidOn) ?? today
-  // Under the calendar-month model the company's bill day, as the engine uses;
+  // Billed by calendar month: the company's bill day, as the engine uses;
   // otherwise the customer's own (app/actions/payments.ts#recordPayment).
-  const model = calendar !== null
+  const model = calendarMonths
   const billDay = selected
     ? effectiveBillDay(model ? null : selected.bill_date, companyBillDate)
     : 1

@@ -940,10 +940,13 @@ export async function recordPayment(
   // company's bill day (the engine's day), and a prior grant is compared by the
   // month ITS payment date settled under the same rule — not by the label it
   // was stamped with under the arrears rule, one month behind.
-  const periodBillDay = model
+  // Prepaid or postpaid alike once the engine bills the company by calendar
+  // month (calendar.calendarMonths).
+  const byMonth = calendar.calendarMonths
+  const periodBillDay = byMonth
     ? effectiveBillDay(null, companySettings?.bill_date)
     : effectiveBillDay(customer.bill_date, companySettings?.bill_date)
-  const period = billingPeriod(paymentDate, periodBillDay, carriedBefore, model)
+  const period = billingPeriod(paymentDate, periodBillDay, carriedBefore, byMonth)
 
   // Not for a returning calendar-month customer either: their month was just
   // recomputed from the days they had, and paying it is what brings them back.
@@ -955,7 +958,7 @@ export async function recordPayment(
     periodAlreadyGranted({
       periodStart: period?.start ?? null,
       carriedBefore,
-      grant: model ? { ...grant, periodStart: calendarMonthSettled(grant.paidOn, periodBillDay) } : grant,
+      grant: byMonth ? { ...grant, periodStart: calendarMonthSettled(grant.paidOn, periodBillDay) } : grant,
     })
 
   // Where a guarded payment may complete an open month to, or null: the
@@ -1591,6 +1594,11 @@ export type PaymentContext = {
    */
   reconnectionFee: number
   /**
+   * The engine bills this company by calendar month (prepaid or postpaid):
+   * the till names the month a payment settles that way, as recordPayment does.
+   */
+  calendarMonths: boolean
+  /**
    * Calendar-month prepaid (migration 0028), when the model applies to the
    * company; null otherwise. `returning` says the customer's service has
    * ended, so the till recomputes this month.
@@ -1610,7 +1618,7 @@ export type PaymentContext = {
 }
 
 export async function loadPaymentContext(customerId: number): Promise<PaymentContext> {
-  const none: PaymentContext = { grant: null, charges: [], reconnectionFee: 0, calendar: null }
+  const none: PaymentContext = { grant: null, charges: [], reconnectionFee: 0, calendarMonths: false, calendar: null }
 
   const { company, profile } = await getSession()
   if (!can(profile.role, 'record_payment')) return none
@@ -1670,6 +1678,7 @@ export async function loadPaymentContext(customerId: number): Promise<PaymentCon
       disconnectedNow && prepaid.reconnectionFee > 0 && caps.otherPayments && caps.charges
         ? prepaid.reconnectionFee
         : 0,
+    calendarMonths: prepaid.calendarMonths,
     calendar: model
       ? {
           returning,

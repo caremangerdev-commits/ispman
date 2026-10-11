@@ -118,6 +118,23 @@ export function logField(body: string, name: string): string | null {
 }
 
 /**
+ * The expiry change a network row records, as dates: "… Expiry 2026-10-07 ->
+ * 2026-11-07 …" (Extend, Reconnect, Disconnect, Correct Expiry —
+ * lib/radius/operations.ts#networkEventDetails) or "Provisioned …, expiry
+ * 2026-11-08" (no expiry before it). Null when the row names no change.
+ *
+ * THE ONE READER OF THIS PHRASE. The postpaid service days are rebuilt from it
+ * (lib/data/service-breaks.ts); do not write a second.
+ */
+export function logExpiryChange(body: string): { from: string | null; to: string } | null {
+  const change = /Expiry ([0-9]{4}-[0-9]{2}-[0-9]{2}|none) -> ([0-9]{4}-[0-9]{2}-[0-9]{2})/.exec(body)
+  if (change) return { from: change[1] === 'none' ? null : change[1], to: change[2] }
+  const provisioned = /^Provisioned .*, expiry ([0-9]{4}-[0-9]{2}-[0-9]{2})/.exec(body)
+  if (provisioned) return { from: null, to: provisioned[1] }
+  return null
+}
+
+/**
  * The subject of an "<X> updated | …" row — the customer's name as it stood.
  *
  * Non-greedy up to the first pipe, so a name containing spaces survives and one

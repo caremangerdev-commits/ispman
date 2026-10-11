@@ -46,6 +46,7 @@
 
 import { effectiveBillDay } from '@/lib/billing'
 import { daysNotBilled, daysToMonthEnd, monthFigure, monthOf, round100 } from '@/lib/prepaid-calendar'
+import { postpaidMonthCharge, type ServiceBreak } from '@/lib/service-days'
 
 /** `settings.billing_type`. No per-customer override exists. */
 export type CompanyBillingType = 'prepaid' | 'postpaid'
@@ -180,6 +181,12 @@ export type EngineCustomer = {
    * dateAdded for a customer never provisioned in ISPMan.
    */
   connectedOn?: string | null
+  /**
+   * POSTPAID, DAY-BASED (owner, 11 Oct 2026): the customer's breaks in service
+   * (lib/data/service-breaks.ts). Given for every postpaid customer; the month
+   * is then priced by lib/service-days.ts#postpaidMonthCharge.
+   */
+  breaks?: ServiceBreak[]
 }
 
 export type EngineDecision = {
@@ -252,6 +259,31 @@ export function engineVerdict(opts: {
 
   // JOINED ON THE CONNECTION DAY (0032), not the day the record was made.
   const joined = (customer.connectedOn ?? customer.dateAdded ?? null)?.slice(0, 10) ?? null
+
+  // POSTPAID, DAY-BASED (owner, 11 Oct 2026). The month running is priced
+  // from the days of service — those had so far, and the rest of the month for
+  // a customer on service now — so a customer off on the bill day still pays
+  // for the days they had, and one off all month pays nothing. Changes after
+  // the bill day are settled on the next one (lib/data/postpaid-settle.ts).
+  if (!prepaid && customer.breaks !== undefined) {
+    const p = postpaidMonthCharge({
+      monthStart: period.start,
+      monthlyCharge: exact,
+      breaks: customer.breaks,
+      joinedOn: joined,
+      chargeConnectionMonth: opts.chargeConnectionMonth === true,
+    })
+    const outDays = (verdict: EngineVerdict): EngineDecision =>
+      ({ verdict, period, billDay, amount: p.amount, serviceDays: p.serviceDays, fullAmount: p.fullAmount })
+    if (period.chargeDate > opts.today) return outDays('not_due')
+    if (opts.startDate === null || period.chargeDate < opts.startDate) return outDays('before_start')
+    if (joined !== null && joined > period.chargeDate) return outDays('joined_after')
+    if (p.connectionMonth && opts.chargeConnectionMonth !== true) return outDays('joined_after')
+    if (exact <= 0) return outDays('zero_rate')
+    if (opts.service === 'unprovisioned') return outDays('unprovisioned')
+    if (p.days === 0) return outDays('no_service')
+    return outDays('charge')
+  }
   // Connected partway through this month: the connection month.
   const connectionMonth = joined !== null && joined > period.start && joined <= month.end
 

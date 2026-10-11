@@ -130,11 +130,17 @@ export type PrepaidCalendar = {
   available: boolean
   /** The model applies to this company. */
   enabled: boolean
+  /**
+   * The company is billed by calendar month by the engine — calendar-month
+   * prepaid, or postpaid's day-based model (owner, 11 Oct 2026): live and past
+   * its start date. Payments are then named by the calendar month they settle.
+   */
+  calendarMonths: boolean
   reconnectionFee: number
 }
 
 export const PREPAID_CALENDAR_OFF: PrepaidCalendar = {
-  available: false, enabled: false, reconnectionFee: 0,
+  available: false, enabled: false, calendarMonths: false, reconnectionFee: 0,
 }
 
 export async function prepaidCalendarFor(companyId: number): Promise<PrepaidCalendar> {
@@ -161,9 +167,11 @@ export async function prepaidCalendarFor(companyId: number): Promise<PrepaidCale
   const today = instantToDateOnly(new Date(), row?.timezone || 'America/Jamaica')
   const started = row?.billing_engine_start_date != null && row.billing_engine_start_date <= today
 
+  const engineBills = row?.billing_engine_mode === 'live' && started
   return {
     available: true,
-    enabled: row?.billing_type === 'prepaid' && row?.billing_engine_mode === 'live' && started,
+    enabled: row?.billing_type === 'prepaid' && engineBills,
+    calendarMonths: engineBills,
     reconnectionFee: Math.max(0, Number(row?.reconnection_fee ?? 0)),
   }
 }
