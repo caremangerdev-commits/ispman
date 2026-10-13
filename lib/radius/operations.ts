@@ -345,6 +345,10 @@ export function reconnectExpiry(cutOffDate: number | null, from: Date = new Date
 // routers on public IPs, and those keep working until each router is cut over.
 // Nothing here may write or delete one of them, so every function refuses a
 // nasname outside the tunnel network before it reaches the database.
+//
+// The error text reaches company admins on the Router Tunnels card, so it says
+// "the RADIUS server" and never names the software or the table (owner,
+// 13 Oct 2026).
 
 export type NasWriteResult = { ok: true } | { ok: false; error: string; code: string | null }
 
@@ -361,7 +365,11 @@ function tunnelGuard(tunnelIp: string): { ok: false; error: string; code: null }
   if (!radiusConfigured()) {
     // Unlike radcheck there is no skipping this: a tunnel without its nas row
     // is a router FreeRADIUS will not answer.
-    return { ok: false, code: null, error: 'The RADIUS database is not configured, so no nas row can be written.' }
+    return {
+      ok: false,
+      code: null,
+      error: "ISPMan is not connected to the RADIUS server's database, so the router cannot be added to it.",
+    }
   }
   if (normaliseTunnelIp(tunnelIp) !== tunnelIp) {
     return { ok: false, code: null, error: tunnelIp + ' is not a router tunnel address (' + TUNNEL_NETWORK + ').' }
@@ -390,8 +398,8 @@ export async function addTunnelNas(row: {
         ok: false,
         code: null,
         error:
-          'FreeRADIUS already has a nas row for ' + row.tunnelIp + ' (#' + existing.id +
-          ', ' + (existing.shortname ?? 'no shortname') + '). Not overwriting it.',
+          'The RADIUS server already has an entry for ' + row.tunnelIp + ' (#' + existing.id +
+          ', ' + (existing.shortname ?? 'unnamed') + '). Not overwriting it.',
       }
     }
     const inserted = await insertNasRow({
@@ -401,11 +409,15 @@ export async function addTunnelNas(row: {
       description: row.description,
     })
     if (!inserted) {
-      return { ok: false, code: null, error: 'A nas row for ' + row.tunnelIp + ' appeared while this one was being written.' }
+      return {
+        ok: false,
+        code: null,
+        error: 'An entry for ' + row.tunnelIp + ' appeared on the RADIUS server while this one was being written.',
+      }
     }
     return { ok: true }
   } catch (err) {
-    return nasFailure('Could not write the nas row for ' + row.tunnelIp, err)
+    return nasFailure('Could not add ' + row.tunnelIp + ' to the RADIUS server', err)
   }
 }
 
@@ -418,7 +430,7 @@ export async function removeTunnelNas(tunnelIp: string): Promise<NasWriteResult>
     await deleteNasRows(tunnelIp)
     return { ok: true }
   } catch (err) {
-    return nasFailure('Could not remove the nas row for ' + tunnelIp, err)
+    return nasFailure('Could not remove ' + tunnelIp + ' from the RADIUS server', err)
   }
 }
 
@@ -436,6 +448,6 @@ export async function readTunnelSecret(
   try {
     return { ok: true, secret: (await getNasRow(tunnelIp))?.secret ?? null }
   } catch (err) {
-    return nasFailure('Could not read the nas row for ' + tunnelIp, err)
+    return nasFailure('Could not read the RADIUS server entry for ' + tunnelIp, err)
   }
 }

@@ -13,7 +13,12 @@ import { ROUTER_SERVICES, type ConfigBlock } from '@/lib/tunnels/wireguard'
 
 export type TunnelStatus = 'waiting' | 'up' | 'down' | 'never' | 'not_on_server' | 'unknown'
 
-/** One router as the card shows it. Nothing secret: config is fetched on demand. */
+/**
+ * One router as the card shows it. Nothing secret: config is fetched on demand.
+ *
+ * Seen by company admins as well as the platform operator, so nothing on this
+ * card names the RADIUS server's software or shows how the server is set up.
+ */
 export type TunnelView = {
   id: number
   name: string
@@ -183,7 +188,7 @@ function KeyPanel({ id, replace }: { id: number; replace: boolean }) {
             pending="Saving…"
             confirmText={
               replace
-                ? "Replace this router's key? The server keeps the old key until you run the server block."
+                ? "Replace this router's key? The tunnel is down until the server side has the new key."
                 : undefined
             }
           />
@@ -218,8 +223,8 @@ function RevokePanel({ id, name }: { id: number; name: string }) {
         <form action={action} className="flex items-center gap-3">
           <input type="hidden" name="id" value={id} />
           <p className="text-xs text-gray-500">
-            Removes the nas row. If the router still uses the tunnel, put its public RADIUS entry back
-            first, or it loses RADIUS altogether.
+            Removes the router from the RADIUS server. If the router has no other RADIUS entry, it
+            loses RADIUS altogether.
           </p>
           <SubmitButton
             label="Revoke"
@@ -305,9 +310,15 @@ function TunnelRow({ tunnel }: { tunnel: TunnelView }) {
 
 export function RouterTunnelsManager({
   tunnels,
+  operator,
+  canAdd,
   statusReported,
 }: {
   tunnels: TunnelView[]
+  /** The platform operator: the only one told how status is reported. */
+  operator: boolean
+  /** False for a tenant while the server is not set up: a step 1 they could never finish. */
+  canAdd: boolean
   statusReported: boolean
 }) {
   const [adding, setAdding] = useState(false)
@@ -318,9 +329,9 @@ export function RouterTunnelsManager({
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-gray-500">
           {live.length} {live.length === 1 ? 'router' : 'routers'}
-          {statusReported ? '' : ' · tunnel status is not reported (WG_HANDSHAKES_FILE)'}
+          {statusReported || !operator ? '' : ' · tunnel status is not reported (WG_HANDSHAKES_FILE)'}
         </p>
-        {!adding ? (
+        {!adding && canAdd ? (
           <button
             type="button"
             onClick={() => setAdding(true)}

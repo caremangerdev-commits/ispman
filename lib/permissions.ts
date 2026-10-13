@@ -39,6 +39,7 @@ export type Permission =
   | 'manage_users'
   | 'manage_company_settings'
   | 'manage_router_tunnels'
+  | 'apply_router_tunnels_on_server'
   | 'send_bulk_sms'
   | 'view_super_admin_dashboard'
   | 'assign_company_admin'
@@ -146,13 +147,17 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // an admin role, whichever role they hold.
   manage_users: ['super_admin', 'company_admin', 'manager'],
   manage_company_settings: ['super_admin', 'company_admin', 'manager'],
-  // The platform operator alone. Every change here has a second half that
-  // needs root on the server — adding the WireGuard peer, restarting
-  // FreeRADIUS — and a company admin who could issue a router config without
-  // that half would hand their owner a block that cannot connect. The nas
-  // table is also shared by every tenant on the box; it is not one company's
-  // setting.
-  manage_router_tunnels: ['super_admin'],
+  // Company admin and above (owner, 13 Oct 2026; was the platform operator
+  // alone). Adding a router writes a client entry on the RADIUS server every
+  // tenant shares and hands out that router's RADIUS secret, so it stops above
+  // manager. A company sees and changes only its own routers; the gateway in
+  // lib/radius/operations.ts refuses any address outside the tunnel network.
+  manage_router_tunnels: ['super_admin', 'company_admin'],
+  // The other half of every tunnel change needs root on the server — adding
+  // the WireGuard peer, restarting the RADIUS server — and only the platform
+  // operator has that. So only they are shown the server blocks and how the
+  // server is set up; a tenant is told the operator does that half.
+  apply_router_tunnels_on_server: ['super_admin'],
   // Texting the customer base is not a counter action. A cashier records a
   // payment for one person standing in front of them; this reaches every
   // customer at once, from the company's own number, and cannot be recalled

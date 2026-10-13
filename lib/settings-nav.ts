@@ -89,7 +89,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: 'Router Tunnels',
     href: '/dashboard/settings/tunnels',
     icon: 'network',
-    description: "WireGuard tunnels that carry each router's RADIUS to the server. Platform operator only.",
+    description: "WireGuard tunnels that carry each router's RADIUS to the server, from an address that never changes.",
     permission: 'manage_router_tunnels',
     needsTunnels: true,
   },

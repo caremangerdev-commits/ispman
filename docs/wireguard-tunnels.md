@@ -13,6 +13,8 @@ address with its own permanent `nas` row and secret.
 **Decided (owner, 13 Oct 2026).** One peer per router, not per company. The
 router generates its own key; ISPMan only ever sees the public half. The public
 RADIUS path stays as a fallback during the move, then is closed: tunnel only.
+Company admins manage their own routers; the server half stays with the
+platform operator.
 
 **The values** (defined once, in `lib/tunnels/wireguard.ts`):
 
@@ -193,7 +195,16 @@ A minute later `/var/lib/ispman/wg-handshakes` exists and is world-readable.
 
 3. Restart ISPMan the way it is normally deployed.
 
-**Settings → Router Tunnels** appears for the super admin only, inside a company.
+**Settings → Router Tunnels** appears for company admins and the super admin
+(owner, 13 Oct 2026). A company admin can add, key, show and revoke their own
+company's routers and is handed the router blocks only. The server blocks, and
+anything about how the server is set up, are shown to the platform operator
+alone (`apply_router_tunnels_on_server`). So when a tenant adds a router, the
+server half still waits for you: its card reads "Waiting for the server side"
+until the peer is on the server.
+
+Nothing a tenant sees names the RADIUS server's software. It is "the RADIUS
+server" or "the server" everywhere on screen.
 
 **Try it on Demo ISP Jamaica (company 23) first.** Add a router; step 1 should
 appear. Pasting a key writes a real `nas` row (`10.250.0.x`) into the live RADIUS

@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
   }
   if (!expiry) {
     return NextResponse.json(
-      { success: false, error: 'expiry is required, in FreeRADIUS format e.g. "21 Sep 2026 00:00".' },
+      { success: false, error: 'expiry is required, in the RADIUS server\'s date format e.g. "21 Sep 2026 00:00".' },
       { status: 400 }
     )
   }
@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
   const parsed = parseRadiusExpiration(expiry)
   if (!parsed) {
     return NextResponse.json(
-      { success: false, error: 'expiry must be in FreeRADIUS format e.g. "21 Sep 2026 00:00".' },
+      { success: false, error: 'expiry must be in the RADIUS server\'s date format e.g. "21 Sep 2026 00:00".' },
       { status: 400 }
     )
   }

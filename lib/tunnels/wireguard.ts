@@ -286,8 +286,12 @@ function peerMarker(tunnelId: number): string {
 }
 
 /**
- * On the server: the peer, live and in the config file, then the FreeRADIUS
- * restart that loads the router's new nas row.
+ * On the server: the peer, live and in the config file, then the RADIUS
+ * server restart that loads the router's new nas row.
+ *
+ * Operator only (apply_router_tunnels_on_server). Its comments still say "the
+ * RADIUS server", like everything else on screen; only the service command
+ * itself has to name the software, because that is what gets typed.
  */
 export function serverAddPeer(input: PeerInput): ConfigBlock {
   return {
@@ -304,15 +308,16 @@ export function serverAddPeer(input: PeerInput): ConfigBlock {
       'AllowedIPs = ' + input.tunnelIp + '/32',
       'EOF',
       '#',
-      '# FreeRADIUS reads the nas table only when it starts, so it must restart',
-      '# to know this router. The check runs first; if it fails, nothing restarts.',
+      '# The RADIUS server reads its client list only when it starts, so it must',
+      '# restart to know this router. The config check runs first; if it fails,',
+      '# nothing restarts.',
       '# Adding several routers? Run this once, after the last one.',
       'freeradius -C && systemctl restart freeradius',
     ].join('\n'),
   }
 }
 
-/** On the server: swap a router's key. The nas row is keyed on the tunnel address, which has not moved, so FreeRADIUS needs no restart. */
+/** On the server: swap a router's key. The nas row is keyed on the tunnel address, which has not moved, so the RADIUS server needs no restart. */
 export function serverReplacePeer(input: PeerInput & { oldPublicKey: string }): ConfigBlock {
   return {
     title: 'Server (root)',
@@ -322,7 +327,7 @@ export function serverReplacePeer(input: PeerInput & { oldPublicKey: string }): 
       'wg set ' + SERVER_INTERFACE + ' peer ' + input.oldPublicKey + ' remove',
       'wg set ' + SERVER_INTERFACE + ' peer ' + input.publicKey + ' allowed-ips ' + input.tunnelIp + '/32',
       "sed -i 's|" + input.oldPublicKey + '|' + input.publicKey + "|' " + SERVER_CONFIG_FILE,
-      '# No FreeRADIUS restart: the tunnel address and its nas row are unchanged.',
+      '# No RADIUS server restart: the tunnel address and its client entry are unchanged.',
     ].join('\n'),
   }
 }
