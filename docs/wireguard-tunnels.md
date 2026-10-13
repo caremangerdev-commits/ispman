@@ -311,27 +311,42 @@ company, with how the last sync went.
 
 ## 7. Adding a router
 
-In **Settings → Router Tunnels**, inside the router's company:
+**Settings → Router Tunnels**, inside the router's company, is a numbered guide.
+Each step appears once the one before it is done; a router left half-way is
+picked up again with **Continue setup** in the list below the guide.
 
-1. **Add Router.** Give it a name and the services its RADIUS carries (DHCP for
+**Router commands are one line each, with their own copy button.** Pasting
+several lines at once into Winbox's terminal runs them joined together or
+several times over. Copy one, paste it, press Enter, come back for the next.
+
+1. **Add the router here.** Give it a name and what it uses RADIUS for (DHCP for
    the tenants on this server today). It gets the next free address. A company
    admin is held to the per-company limits.
-2. **Step 1, on the router.** It prints the RouterOS version (must start with 7,
-   see section 11) and whether the NTP client is on. NTP must be `true`: after a
-   reboot, WireGuard won't reconnect until the router's clock is right. Then it
-   creates `wg-ispman` and prints the router's public key.
-3. **Paste key**, then **Save key**. ISPMan writes the router's `nas` row with a
-   fresh secret and shows step 2.
-4. **Step 2, on the router.** It adds the peer, the tunnel address (which brings
-   its own route), and a `/radius` entry for `10.250.0.1` moved to the top. **The
-   existing public entry stays below it** as the fallback.
+2. **Paste these on the router.**
+   - **The check comes first.** It ends in one word: `READY`, `NTP IS OFF` or
+     `TOO OLD`. The guide asks which word it printed before showing anything
+     else.
+   - **`NTP IS OFF` stops the guide.** It says so plainly and gives the command
+     to turn clock sync on (after a reboot, WireGuard won't reconnect until the
+     router's clock is right), then the check is run again. The create command
+     also refuses on its own when NTP is off, so skipping the check can't leave
+     a router that won't come back.
+   - **`TOO OLD` (RouterOS 6) stops it too,** with the upgrade commands (section 11).
+   - **On `READY`:** create the tunnel, then print the router's public key.
+3. **Paste the key it printed back here.** ISPMan writes the router's `nas` row
+   with a fresh secret.
+4. **Paste these on the router.** Four lines:
+   - the server end
+   - the tunnel address, which brings its own route
+   - the RADIUS entry for `10.250.0.1`
+   - moving that entry to the top
 
-**On the server:**
-
-- **Automatic mode:** the job adds the peer within 30 seconds, and the RADIUS
-  server answers on the router's first request. The card goes from "Waiting for
-  the server side" to **Up**.
-- **Hand-run mode:** the platform operator also gets the server block.
+   **The existing public entry stays below it** as the fallback. In hand-run
+   mode the platform operator also gets the server block here, for SSH, where
+   a whole block pastes fine.
+5. **Done — it shows Up within a minute.** The step refreshes itself every 15
+   seconds. If it stays at "never connected" or "down", it says what to check
+   and gives the command to look from the router's side.
 
 Check it:
 

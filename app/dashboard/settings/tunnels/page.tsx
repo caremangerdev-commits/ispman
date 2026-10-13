@@ -7,9 +7,9 @@ import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { canOpenSetting } from '@/lib/settings-nav'
-import { readHandshakes, tunnelServer } from '@/lib/tunnels/server'
+import { readHandshakes, tunnelServer, tunnelSyncConfigured } from '@/lib/tunnels/server'
 import { tunnelStatus } from '@/lib/tunnels/status'
-import { ROUTER_SERVICES, shortKey, TUNNEL_NETWORK, TUNNEL_SERVER_IP } from '@/lib/tunnels/wireguard'
+import { ROUTER_SERVICES, shortKey } from '@/lib/tunnels/wireguard'
 
 export const metadata: Metadata = { title: 'Router Tunnels · ISPMan' }
 
@@ -25,8 +25,14 @@ async function guard() {
 const dateText = (iso: string) =>
   new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
+/**
+ * Router Tunnels: a numbered guide, not an explanation (owner, 13 Oct 2026).
+ * The page says one sentence about what a tunnel is for; everything else is
+ * the five steps, each shown once the one before it is done — see
+ * components/settings/RouterTunnelsManager.tsx.
+ */
 export default async function RouterTunnelsPage() {
-  const { company, profile } = await guard()
+  const { profile, company } = await guard()
   const caps = await getSchemaCapabilities()
   // The platform operator, who runs the server half; everyone else is told
   // the operator does it, and never shown how the server is set up.
@@ -52,7 +58,7 @@ export default async function RouterTunnelsPage() {
   const serviceLabel = new Map<string, string>(ROUTER_SERVICES.map((s) => [s.value, s.label]))
 
   // No secret leaves this page: the RADIUS secret is fetched by an action only
-  // when someone asks to see a router's config.
+  // when step 4 asks for a router's commands.
   const views: TunnelView[] = tunnels.map((t) => {
     const { status, text } = tunnelStatus(t.publicKey, handshakes, now)
     return {
@@ -60,6 +66,7 @@ export default async function RouterTunnelsPage() {
       name: t.name,
       tunnelIp: t.tunnelIp,
       services: t.services.map((s) => serviceLabel.get(s) ?? s),
+      hasKey: t.publicKey !== null,
       keyPrefix: t.publicKey ? shortKey(t.publicKey) : null,
       status,
       statusText: text,
@@ -70,13 +77,10 @@ export default async function RouterTunnelsPage() {
 
   return (
     <div className="max-w-3xl space-y-4">
-      <p className="text-sm leading-relaxed text-gray-500">
-        Each of {company.name}&apos;s routers reaches the RADIUS server through its own WireGuard
-        tunnel, from a fixed address in {TUNNEL_NETWORK} with its own secret, so a new public IP
-        from its ISP changes nothing. RADIUS goes to {TUNNEL_SERVER_IP}. The router makes its own
-        key; ISPMan only ever sees the public half. The router&apos;s current RADIUS settings stay
-        in place as the fallback until the move is finished.
-        {operator ? ' Server half and rollout: docs/wireguard-tunnels.md.' : ''}
+      <p className="text-sm text-gray-500">
+        Each router sends RADIUS through its own tunnel, from an address that never changes, so
+        a new IP from its internet provider can&apos;t take {company.name} off the air.
+        {operator ? ' Server side and rollout: docs/wireguard-tunnels.md.' : ''}
       </p>
 
       {!server.ok ? (
@@ -85,8 +89,8 @@ export default async function RouterTunnelsPage() {
             <>
               <p className="text-sm font-semibold text-amber-300">Server not set up in ISPMan</p>
               <p className="mt-1 text-xs leading-relaxed text-amber-300/80">
-                {server.problem} Routers can be added and given step 1 meanwhile, but no router key
-                can be saved until it is set.
+                {server.problem} Routers can be added and taken through step 2 meanwhile, but no
+                router key can be saved until it is set.
               </p>
             </>
           ) : (
@@ -103,6 +107,7 @@ export default async function RouterTunnelsPage() {
 
       <RouterTunnelsManager
         tunnels={views}
+        half={tunnelSyncConfigured() ? 'auto' : operator ? 'operator' : 'tenant'}
         operator={operator}
         canAdd={operator || server.ok}
         statusReported={handshakes !== null}

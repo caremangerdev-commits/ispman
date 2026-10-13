@@ -221,15 +221,31 @@ export function nasDescription(tunnelId: number, companyName: string, routerName
 }
 
 // ---------------------------------------------------------------------------
-// Config blocks
+// What gets pasted
 // ---------------------------------------------------------------------------
+//
+// ON A ROUTER: ONE COMMAND AT A TIME. Pasting several lines into Winbox's
+// terminal runs them joined together, or several times over (owner, 13 Oct
+// 2026, doing it by hand). So nothing here hands a router a block: every
+// command is a single line with its own copy button, pasted and entered on
+// its own. What the blocks used to explain in # comments, the settings page
+// explains beside each command.
+//
+// No company or router name goes into any router command, so nothing a tenant
+// types can reach a router's command line.
+//
+// ON THE SERVER: blocks, as before. They go into a root shell over SSH, where
+// a multi-line paste is fine and the heredoc needs its lines together.
 
-export type ConfigBlock = {
-  title: string
-  /** Where it is pasted: a router's terminal, or a root shell on the server. */
-  where: 'router' | 'server'
-  text: string
+/** One RouterOS command: one line, copied by its own button, pasted on its own. */
+export type RouterCommand = {
+  /** What it does, in a few words, shown beside the copy button. */
+  label: string
+  line: string
 }
+
+/** A root-shell block for the server. Only the platform operator is shown one. */
+export type ConfigBlock = { title: string; text: string }
 
 export type TunnelLabel = { companyName: string; routerName: string }
 
@@ -238,35 +254,76 @@ function heading(label: TunnelLabel): string {
 }
 
 /**
- * Step 1, on the router: two checks, then the interface. The router generates
- * its key pair here and prints only the public half for the owner to paste
- * back. Contains nothing secret, so it can be shown again at any time.
+ * The one word the check prints on its last line, which the guide asks the
+ * owner to read back before it shows anything else. Nobody reads a version
+ * number or a "false" in the middle of output; asked for one word, they do.
  */
-export function routerStepOne(label: TunnelLabel): ConfigBlock {
-  return {
-    title: 'Router, step 1 of 2',
-    where: 'router',
-    text: [
-      '# ISPMan RADIUS tunnel - ' + heading(label) + ' - STEP 1 OF 2',
-      "# Paste into the router's terminal. RouterOS 7 only.",
-      '#',
-      '# Two checks first. The version must start with 7. NTP must say true:',
-      '# after a reboot WireGuard will not reconnect until the clock is right.',
-      ':put ("RouterOS " . [/system resource get version])',
-      ':put ("NTP client enabled: " . [/system ntp client get enabled])',
-      '#',
-      '# The tunnel interface. The router generates its own private key here,',
-      '# and the private key never leaves the router.',
-      '/interface wireguard add name=' + ROUTER_INTERFACE + ' listen-port=' + ROUTER_LISTEN_PORT +
-        ' comment="' + COMMENT_INTERFACE + '"',
-      '#',
-      "# The router's PUBLIC key. Paste the line this prints back into ISPMan.",
-      ':put [/interface wireguard get [find name=' + ROUTER_INTERFACE + '] public-key]',
-    ].join('\n'),
-  }
+export const CHECK_VERDICTS = { ready: 'READY', ntpOff: 'NTP IS OFF', tooOld: 'TOO OLD' } as const
+
+/**
+ * The first thing pasted on a router, and the gate before anything else.
+ *
+ * NTP matters because WireGuard refuses a handshake timestamped older than the
+ * last one it saw, and a MikroTik without a battery clock boots in the past:
+ * with NTP off, the tunnel does not come back after a reboot until someone
+ * sets the clock by hand.
+ */
+export const ROUTER_CHECK: RouterCommand = {
+  label: 'Check the router',
+  line:
+    ':put ("RouterOS " . [/system resource get version]); ' +
+    ':if ([:pick [/system resource get version] 0 1] != "7") do={ :put "' + CHECK_VERDICTS.tooOld +
+    ' - this router needs RouterOS 7" } else={ :if ([/system ntp client get enabled]) do={ :put "' +
+    CHECK_VERDICTS.ready + '" } else={ :put "' + CHECK_VERDICTS.ntpOff + ' - turn it on before going further" } }',
 }
 
-export type StepTwoInput = TunnelLabel & {
+/**
+ * Turns the NTP client on. Offered only once the check has said it is off, so
+ * the servers it sets replace nothing that was in use.
+ */
+export const ROUTER_NTP_ON: RouterCommand = {
+  label: 'Turn clock sync (NTP) on',
+  line: '/system ntp client set enabled=yes servers=time.cloudflare.com,pool.ntp.org',
+}
+
+/**
+ * RouterOS 6 to 7: the last 6.49 first, then the upgrade channel. Each install
+ * reboots the router. Shown only when the check said TOO OLD.
+ */
+export const ROUTER_UPGRADE: RouterCommand[] = [
+  { label: 'Back up the router', line: '/system backup save name=pre-v7' },
+  { label: 'Save its config as text too', line: '/export file=pre-v7' },
+  { label: 'Choose the last RouterOS 6', line: '/system package update set channel=long-term' },
+  { label: 'Look for it', line: '/system package update check-for-updates' },
+  { label: 'Install it (the router reboots)', line: '/system package update install' },
+  { label: 'After the reboot: choose RouterOS 7', line: '/system package update set channel=upgrade' },
+  { label: 'Look for it', line: '/system package update check-for-updates' },
+  { label: 'Install it (the router reboots onto 7)', line: '/system package update install' },
+]
+
+/**
+ * Step 2, after the check: the tunnel interface, then its public key.
+ *
+ * The router generates its own key pair here, and the private key never leaves
+ * it. The create command checks NTP itself and stops with a plain message when
+ * it is off, so skipping the check cannot leave a router that will not come
+ * back after a reboot.
+ */
+export const ROUTER_CREATE: RouterCommand[] = [
+  {
+    label: 'Create the tunnel',
+    line:
+      ':if (![/system ntp client get enabled]) do={ :error "NTP is off - turn it on first (ISPMan, step 2)" }; ' +
+      '/interface wireguard add name=' + ROUTER_INTERFACE + ' listen-port=' + ROUTER_LISTEN_PORT +
+      ' comment="' + COMMENT_INTERFACE + '"',
+  },
+  {
+    label: "Print the router's public key",
+    line: ':put [/interface wireguard get [find name=' + ROUTER_INTERFACE + '] public-key]',
+  },
+]
+
+export type ConnectInput = {
   tunnelIp: string
   serverPublicKey: string
   serverEndpoint: string
@@ -277,50 +334,54 @@ export type StepTwoInput = TunnelLabel & {
 }
 
 /**
- * Step 2, on the router: the peer, the address, and the /radius entry.
+ * Step 4, on the router: the server end of the tunnel, the router's fixed
+ * address (point-to-point, so it brings its own route and no /ip route is
+ * needed), and the RADIUS entry, moved to the top of the list.
  *
- * ADDS ONLY. The router's existing public /radius entry stays, below the new
- * one, as the fallback for the move. Removing it is the cutover, done by hand
- * per router once the tunnel has run clean (docs/wireguard-tunnels.md).
+ * ADDS ONLY. The router's existing public RADIUS entry stays below the new one
+ * as the fallback for the move. Removing it is the cutover, done by hand per
+ * router once the tunnel has run clean (docs/wireguard-tunnels.md).
  */
-export function routerStepTwo(input: StepTwoInput): ConfigBlock {
+export function routerConnect(input: ConnectInput): RouterCommand[] {
   const ip = input.tunnelIp
-  return {
-    title: 'Router, step 2 of 2',
-    where: 'router',
-    text: [
-      '# ISPMan RADIUS tunnel - ' + heading(input) + ' - STEP 2 OF 2',
-      "# This router's tunnel address is " + ip + '. RouterOS 7 only.',
-      '#',
-      '# The server end of the tunnel. The keepalive holds the router\'s NAT open',
-      '# so the tunnel stays up between RADIUS requests.',
-      '/interface wireguard peers add interface=' + ROUTER_INTERFACE +
+  return [
+    {
+      label: 'Point the tunnel at the server',
+      line:
+        '/interface wireguard peers add interface=' + ROUTER_INTERFACE +
         ' public-key="' + input.serverPublicKey + '"' +
         ' endpoint-address=' + input.serverEndpoint +
         ' endpoint-port=' + input.serverPort +
         ' allowed-address=' + TUNNEL_SERVER_IP + '/32' +
         ' persistent-keepalive=' + KEEPALIVE +
         ' comment="' + COMMENT_PEER + '"',
-      '#',
-      "# The router's fixed tunnel address. Point-to-point, so it brings its own",
-      '# route to ' + TUNNEL_SERVER_IP + ' and no /ip route is needed.',
-      '/ip address add address=' + ip + '/32 network=' + TUNNEL_SERVER_IP +
+    },
+    {
+      label: "Give the router its tunnel address",
+      line:
+        '/ip address add address=' + ip + '/32 network=' + TUNNEL_SERVER_IP +
         ' interface=' + ROUTER_INTERFACE + ' comment="' + COMMENT_INTERFACE + '"',
-      '#',
-      '# RADIUS through the tunnel, sent from the tunnel address, then moved to',
-      '# the top of the list so it is asked first. KEEP the existing public entry',
-      '# below it: it is the fallback until this router is cut over.',
-      '/radius add address=' + TUNNEL_SERVER_IP + ' src-address=' + ip +
+    },
+    {
+      label: 'Send RADIUS through the tunnel',
+      line:
+        '/radius add address=' + TUNNEL_SERVER_IP + ' src-address=' + ip +
         ' secret="' + input.secret + '" service=' + input.services.join(',') +
         ' timeout=1s comment="' + COMMENT_RADIUS + '"',
-      ':do { /radius move [find comment="' + COMMENT_RADIUS + '"] destination=[:pick [/radius find] 0] } on-error={ :put "tunnel entry already first" }',
-      '#',
-      '# Check: last-handshake should appear within a minute, and the tunnel',
-      '# entry should be first in the list.',
-      '/interface wireguard peers print detail where comment="' + COMMENT_PEER + '"',
-      '/radius print',
-    ].join('\n'),
-  }
+    },
+    {
+      label: 'Make it the first RADIUS entry',
+      line:
+        ':do { /radius move [find comment="' + COMMENT_RADIUS + '"] destination=[:pick [/radius find] 0] } ' +
+        'on-error={ :put "already first" }',
+    },
+  ]
+}
+
+/** From the router's side: last-handshake should be within the last few minutes. */
+export const ROUTER_CHECK_TUNNEL: RouterCommand = {
+  label: 'See the tunnel from the router',
+  line: '/interface wireguard peers print detail where comment="' + COMMENT_PEER + '"',
 }
 
 type PeerInput = TunnelLabel & { tunnelId: number; tunnelIp: string; publicKey: string }
@@ -340,7 +401,6 @@ function peerMarker(tunnelId: number): string {
 export function serverAddPeer(input: PeerInput): ConfigBlock {
   return {
     title: 'Server (root)',
-    where: 'server',
     text: [
       '# On the ISPMan server, as root - add ' + heading(input) + ' (' + input.tunnelIp + ')',
       'wg set ' + SERVER_INTERFACE + ' peer ' + input.publicKey + ' allowed-ips ' + input.tunnelIp + '/32',
@@ -365,7 +425,6 @@ export function serverAddPeer(input: PeerInput): ConfigBlock {
 export function serverReplacePeer(input: PeerInput & { oldPublicKey: string }): ConfigBlock {
   return {
     title: 'Server (root)',
-    where: 'server',
     text: [
       '# On the ISPMan server, as root - new key for ' + heading(input) + ' (' + input.tunnelIp + ')',
       'wg set ' + SERVER_INTERFACE + ' peer ' + input.oldPublicKey + ' remove',
@@ -380,7 +439,6 @@ export function serverReplacePeer(input: PeerInput & { oldPublicKey: string }): 
 export function serverRemovePeer(input: PeerInput): ConfigBlock {
   return {
     title: 'Server (root)',
-    where: 'server',
     text: [
       '# On the ISPMan server, as root - remove ' + heading(input) + ' (' + input.tunnelIp + ')',
       'wg set ' + SERVER_INTERFACE + ' peer ' + input.publicKey + ' remove',
@@ -390,19 +448,13 @@ export function serverRemovePeer(input: PeerInput): ConfigBlock {
   }
 }
 
-/** On the router: take the tunnel out again. */
-export function routerRemove(label: TunnelLabel): ConfigBlock {
-  return {
-    title: 'Router',
-    where: 'router',
-    text: [
-      '# ISPMan RADIUS tunnel - ' + heading(label) + ' - REMOVE',
-      '# Only if the router still has its public /radius entry, or is being',
-      '# retired: without one it has no RADIUS at all.',
-      '/radius remove [find comment="' + COMMENT_RADIUS + '"]',
-      '/ip address remove [find comment="' + COMMENT_INTERFACE + '"]',
-      '/interface wireguard peers remove [find comment="' + COMMENT_PEER + '"]',
-      '/interface wireguard remove [find name=' + ROUTER_INTERFACE + ']',
-    ].join('\n'),
-  }
-}
+/**
+ * On the router: take the tunnel off again. Only if the router still has its
+ * public RADIUS entry, or is being retired: without one it has no RADIUS at all.
+ */
+export const ROUTER_REMOVE: RouterCommand[] = [
+  { label: 'Remove the tunnel RADIUS entry', line: '/radius remove [find comment="' + COMMENT_RADIUS + '"]' },
+  { label: 'Remove the tunnel address', line: '/ip address remove [find comment="' + COMMENT_INTERFACE + '"]' },
+  { label: 'Remove the server end', line: '/interface wireguard peers remove [find comment="' + COMMENT_PEER + '"]' },
+  { label: 'Remove the tunnel', line: '/interface wireguard remove [find name=' + ROUTER_INTERFACE + ']' },
+]
