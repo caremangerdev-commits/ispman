@@ -3,14 +3,18 @@ import 'server-only'
 import {
   activateInRadius,
   correctExpiryInRadius,
+  deleteNasRows,
   disconnectInRadius,
   extendInRadius,
+  getNasRow,
   getRadiusStatus as readRadcheck,
+  insertNasRow,
   radiusConfigured,
 } from '@/lib/radius-db'
 import { addMonths, firstExpiry, nextCutOff } from '@/lib/expiry'
 import { formatRadiusExpiration, parseRadiusExpiration } from '@/lib/radius/format'
 import type { NetworkEventType } from '@/lib/status'
+import { normaliseTunnelIp, TUNNEL_NETWORK } from '@/lib/tunnels/wireguard'
 
 /**
  * The single gateway for every write to the live FreeRADIUS database.
@@ -329,4 +333,109 @@ export function provisionExpiry(cutOffDate: number | null, from: Date = new Date
 export function reconnectExpiry(cutOffDate: number | null, from: Date = new Date()): Date {
   const anchor = new Date(from.getFullYear(), from.getMonth(), from.getDate(), 0, 0, 0, 0)
   return nextCutOff(anchor, cutOffDate) ?? addMonths(anchor, 1)
+}
+
+// ---------------------------------------------------------------------------
+// nas rows for router tunnels
+// ---------------------------------------------------------------------------
+//
+// The same rules as the radcheck writes above — read first, never throw, a
+// structured error the caller must check before touching Supabase — plus one
+// more: ONLY TUNNEL ADDRESSES. The nas table also holds the hand-made rows for
+// routers on public IPs, and those keep working until each router is cut over.
+// Nothing here may write or delete one of them, so every function refuses a
+// nasname outside the tunnel network before it reaches the database.
+
+export type NasWriteResult = { ok: true } | { ok: false; error: string; code: string | null }
+
+function nasFailure(what: string, err: unknown): { ok: false; error: string; code: string | null } {
+  const e = err as { code?: string; sqlMessage?: string; message?: string }
+  return {
+    ok: false,
+    code: e.code ?? null,
+    error: what + ' (' + (e.code ?? 'error') + '): ' + (e.sqlMessage ?? e.message ?? 'unknown error'),
+  }
+}
+
+function tunnelGuard(tunnelIp: string): { ok: false; error: string; code: null } | null {
+  if (!radiusConfigured()) {
+    // Unlike radcheck there is no skipping this: a tunnel without its nas row
+    // is a router FreeRADIUS will not answer.
+    return { ok: false, code: null, error: 'The RADIUS database is not configured, so no nas row can be written.' }
+  }
+  if (normaliseTunnelIp(tunnelIp) !== tunnelIp) {
+    return { ok: false, code: null, error: tunnelIp + ' is not a router tunnel address (' + TUNNEL_NETWORK + ').' }
+  }
+  return null
+}
+
+/**
+ * Writes a router's nas row. Refuses when one already exists for the address
+ * rather than overwriting it: addresses are never reused, so a row already
+ * there was put there by something else, and its secret may be in use.
+ */
+export async function addTunnelNas(row: {
+  tunnelIp: string
+  shortname: string
+  secret: string
+  description: string
+}): Promise<NasWriteResult> {
+  const refused = tunnelGuard(row.tunnelIp)
+  if (refused) return refused
+
+  try {
+    const existing = await getNasRow(row.tunnelIp)
+    if (existing) {
+      return {
+        ok: false,
+        code: null,
+        error:
+          'FreeRADIUS already has a nas row for ' + row.tunnelIp + ' (#' + existing.id +
+          ', ' + (existing.shortname ?? 'no shortname') + '). Not overwriting it.',
+      }
+    }
+    const inserted = await insertNasRow({
+      nasname: row.tunnelIp,
+      shortname: row.shortname,
+      secret: row.secret,
+      description: row.description,
+    })
+    if (!inserted) {
+      return { ok: false, code: null, error: 'A nas row for ' + row.tunnelIp + ' appeared while this one was being written.' }
+    }
+    return { ok: true }
+  } catch (err) {
+    return nasFailure('Could not write the nas row for ' + row.tunnelIp, err)
+  }
+}
+
+/** Removes a router's nas row. Already gone counts as done. */
+export async function removeTunnelNas(tunnelIp: string): Promise<NasWriteResult> {
+  const refused = tunnelGuard(tunnelIp)
+  if (refused) return refused
+
+  try {
+    await deleteNasRows(tunnelIp)
+    return { ok: true }
+  } catch (err) {
+    return nasFailure('Could not remove the nas row for ' + tunnelIp, err)
+  }
+}
+
+/**
+ * A router's RADIUS secret, read back from its nas row for the router's
+ * config block. The nas row is the only copy: ISPMan does not keep one.
+ * `secret` is null when the router has no row.
+ */
+export async function readTunnelSecret(
+  tunnelIp: string
+): Promise<{ ok: true; secret: string | null } | { ok: false; error: string; code: string | null }> {
+  const refused = tunnelGuard(tunnelIp)
+  if (refused) return refused
+
+  try {
+    return { ok: true, secret: (await getNasRow(tunnelIp))?.secret ?? null }
+  } catch (err) {
+    return nasFailure('Could not read the nas row for ' + tunnelIp, err)
+  }
 }

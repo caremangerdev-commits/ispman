@@ -124,6 +124,7 @@ const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/settings\/additional-services$/, title: 'Additional Services' },
   { match: /^\/dashboard\/settings\/misc-categories$/, title: 'Misc Categories' },
   { match: /^\/dashboard\/settings\/users$/, title: 'Users' },
+  { match: /^\/dashboard\/settings\/tunnels$/, title: 'Router Tunnels' },
   { match: /^\/dashboard\/settings/, title: 'Settings' },
   { match: /^\/dashboard$/, title: 'Dashboard' },
 ]

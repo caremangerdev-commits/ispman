@@ -604,3 +604,61 @@ export async function getRadiusIp(identity: string): Promise<string | null> {
   const address = (rows as { framedipaddress: string }[])[0]?.framedipaddress.trim()
   return address || null
 }
+
+// ---------------------------------------------------------------------------
+// nas — FreeRADIUS's client list
+// ---------------------------------------------------------------------------
+
+/**
+ * One nas row. FreeRADIUS reads the table only when it starts (read_clients),
+ * so a row written here does nothing until the next restart, and a row
+ * deleted here stays loaded until then too.
+ *
+ * Callers go through lib/radius/operations.ts, which refuses any nasname
+ * outside the router tunnel network: the public-IP rows hand-made on the box
+ * are not this app's to touch.
+ */
+export type NasRow = { id: number; nasname: string; shortname: string | null; secret: string }
+
+export async function getNasRow(nasname: string): Promise<NasRow | null> {
+  const [rows] = await withRetry(() =>
+    radiusPool().execute(
+      'SELECT id, nasname, shortname, secret FROM nas WHERE nasname = ? ORDER BY id LIMIT 1',
+      [nasname]
+    )
+  )
+  return (rows as NasRow[])[0] ?? null
+}
+
+/**
+ * Inserts a nas row unless one with that nasname already exists. Returns
+ * false when it did not insert.
+ *
+ * nasname is not unique in the stock schema, so the guard is in the statement
+ * itself. That is also what keeps it safe under withRetry: a retry after a
+ * dropped connection cannot insert the row a second time.
+ */
+export async function insertNasRow(row: {
+  nasname: string
+  shortname: string
+  secret: string
+  description: string
+}): Promise<boolean> {
+  const [result] = await withRetry(() =>
+    radiusPool().execute(
+      "INSERT INTO nas (nasname, shortname, type, secret, description) " +
+        "SELECT ?, ?, 'other', ?, ? FROM DUAL " +
+        'WHERE NOT EXISTS (SELECT 1 FROM nas WHERE nasname = ?)',
+      [row.nasname, row.shortname, row.secret, row.description, row.nasname]
+    )
+  )
+  return ((result as mysql.ResultSetHeader).affectedRows ?? 0) > 0
+}
+
+/** Deletes every nas row with this nasname. Returns how many went. */
+export async function deleteNasRows(nasname: string): Promise<number> {
+  const [result] = await withRetry(() =>
+    radiusPool().execute('DELETE FROM nas WHERE nasname = ?', [nasname])
+  )
+  return (result as mysql.ResultSetHeader).affectedRows ?? 0
+}

@@ -159,6 +159,11 @@ export type SchemaCapabilities = {
    * before it.
    */
   connectionMonth: boolean
+  /**
+   * Migration 0033: the `router_tunnels` table. Absent, the Router Tunnels
+   * settings card says so and nothing reads or writes a nas row.
+   */
+  routerTunnels: boolean
 }
 
 /**
@@ -192,6 +197,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     chargesTableRes, chargePaymentRes,
     billedThroughRes, skippedCoveredRes, paymentExpiryRes,
     connectionSettingRes, connectedOnRes,
+    routerTunnelsRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -273,6 +279,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     // 0032: the connection-month setting and the connection day.
     db.from('settings').select('charge_connection_month').limit(1),
     db.from('customers').select('connected_on').limit(1),
+    // 0033: router tunnels.
+    db.from('router_tunnels').select('id').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -500,6 +508,13 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     }
   }
 
+  // 0033: one table.
+  const missingRouterTunnels =
+    routerTunnelsRes.error?.code === 'PGRST205' || routerTunnelsRes.error?.code === '42P01'
+  if (routerTunnelsRes.error && !missingRouterTunnels) {
+    throw new Error('Schema probe failed for router_tunnels: ' + routerTunnelsRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -530,6 +545,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     handover: !missingHandover && !missingEngine,
     paymentExpiry: !missingPaymentExpiry,
     connectionMonth: !missingConnectionMonth,
+    routerTunnels: !missingRouterTunnels,
   }
 })
 

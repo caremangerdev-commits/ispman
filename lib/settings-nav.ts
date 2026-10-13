@@ -2,6 +2,7 @@ import { can, type Permission, type Role } from '@/lib/permissions'
 
 export type SettingsIcon =
   | 'building' | 'gauge' | 'package' | 'tags' | 'users' | 'userCog' | 'messageSquare' | 'receipt'
+  | 'network'
 
 export type SettingsSection = {
   key: string
@@ -14,6 +15,8 @@ export type SettingsSection = {
   needsCatalog?: boolean
   /** Needs migration 0021. */
   needsSms?: boolean
+  /** Needs migration 0033. */
+  needsTunnels?: boolean
 }
 
 /**
@@ -80,6 +83,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     icon: 'userCog',
     description: 'Staff accounts and the roles they hold.',
     permission: 'manage_users',
+  },
+  {
+    key: 'tunnels',
+    label: 'Router Tunnels',
+    href: '/dashboard/settings/tunnels',
+    icon: 'network',
+    description: "WireGuard tunnels that carry each router's RADIUS to the server. Platform operator only.",
+    permission: 'manage_router_tunnels',
+    needsTunnels: true,
   },
 ]
 
