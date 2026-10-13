@@ -1,17 +1,14 @@
 import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 
-import {
-  RouterTunnelsManager, type TunnelStatus, type TunnelView,
-} from '@/components/settings/RouterTunnelsManager'
-import { listRouterTunnels, type RouterTunnel } from '@/lib/data/tunnels'
+import { RouterTunnelsManager, type TunnelView } from '@/components/settings/RouterTunnelsManager'
+import { listRouterTunnels } from '@/lib/data/tunnels'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { canOpenSetting } from '@/lib/settings-nav'
-import {
-  HANDSHAKE_FRESH_SECONDS, readHandshakes, tunnelServer, type Handshakes,
-} from '@/lib/tunnels/server'
+import { readHandshakes, tunnelServer } from '@/lib/tunnels/server'
+import { tunnelStatus } from '@/lib/tunnels/status'
 import { ROUTER_SERVICES, shortKey, TUNNEL_NETWORK, TUNNEL_SERVER_IP } from '@/lib/tunnels/wireguard'
 
 export const metadata: Metadata = { title: 'Router Tunnels · ISPMan' }
@@ -23,45 +20,6 @@ async function guard() {
     redirect('/dashboard?denied=manage_router_tunnels')
   }
   return session
-}
-
-function ago(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000))
-  if (s < 90) return s + 's ago'
-  const m = Math.round(s / 60)
-  if (m < 90) return m + ' min ago'
-  const h = Math.round(m / 60)
-  if (h < 36) return h + ' h ago'
-  return Math.round(h / 24) + ' days ago'
-}
-
-/**
- * What the server last saw of a router's tunnel. Reported only when the root
- * cron job's file is present and recent: a missing or stale file says nothing
- * about the routers, and must not be shown as every tunnel being down.
- */
-function statusOf(
-  tunnel: RouterTunnel,
-  handshakes: Handshakes | null,
-  now: Date
-): { status: TunnelStatus; text: string } {
-  if (!tunnel.publicKey) return { status: 'waiting', text: "Waiting for the router's key" }
-  if (!handshakes) return { status: 'unknown', text: 'Status not available' }
-  if (!handshakes.fresh) {
-    return {
-      status: 'unknown',
-      text: 'Status out of date (' + ago(now.getTime() - handshakes.writtenAt.getTime()) + ')',
-    }
-  }
-  if (!handshakes.peers.has(tunnel.publicKey)) {
-    return { status: 'not_on_server', text: 'Waiting for the server side' }
-  }
-  const at = handshakes.peers.get(tunnel.publicKey) ?? null
-  if (!at) return { status: 'never', text: 'Never connected' }
-  const age = now.getTime() - at.getTime()
-  return age <= HANDSHAKE_FRESH_SECONDS * 1000
-    ? { status: 'up', text: 'Up, handshake ' + ago(age) }
-    : { status: 'down', text: 'Down, last handshake ' + ago(age) }
 }
 
 const dateText = (iso: string) =>
@@ -81,7 +39,7 @@ export default async function RouterTunnelsPage() {
           <p className="text-sm font-semibold text-amber-300">Migration required</p>
           <p className="mt-1 text-xs leading-relaxed text-amber-300/80">
             Router tunnels need migration 0033. Until it is applied nothing here is saved and no
-            nas row is written.
+            router is added to the RADIUS server.
           </p>
         </div>
       </div>
@@ -96,7 +54,7 @@ export default async function RouterTunnelsPage() {
   // No secret leaves this page: the RADIUS secret is fetched by an action only
   // when someone asks to see a router's config.
   const views: TunnelView[] = tunnels.map((t) => {
-    const { status, text } = statusOf(t, handshakes, now)
+    const { status, text } = tunnelStatus(t.publicKey, handshakes, now)
     return {
       id: t.id,
       name: t.name,

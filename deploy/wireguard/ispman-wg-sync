@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""ispman-wg-sync: keeps the server's WireGuard peers in step with ISPMan.
+
+Runs as root from ispman-wg-sync.timer every 30 seconds, and once from the
+WireGuard interface's PostUp (--restore), so peers come back at boot without
+waiting for ISPMan. Install and checks: docs/wireguard-tunnels.md, section 5.
+
+EACH RUN
+  1. Asks ISPMan (127.0.0.1:3000/api/tunnels/peers, shared secret) for every
+     live router with a key: its public key and tunnel address.
+  2. Checks every entry against THIS JOB'S OWN copy of the range, from
+     /etc/ispman/wg-sync.env. One bad entry rejects the whole list: nothing is
+     applied from a list that is partly wrong.
+  3. Adds or updates peers with `wg set`, and removes peers ISPMan no longer
+     lists, unless that is more than MAX_REMOVALS_PER_RUN at once, or every
+     peer at once. Then the removals are HELD until a person allows them
+     (--allow-removals N); additions still go ahead.
+  4. Records what is on the interface (for --restore), the latest handshakes
+     (ISPMan's status column) and how the run went (the platform overview).
+
+WHY PULL, NOT PUSH. ISPMan never runs anything as root. This job reads a list
+and decides for itself what it will accept, so a fault or a compromise in the
+web app can do no more through it than add peers inside the tunnel range, and
+the tunnel firewall lets those reach RADIUS and nothing else.
+
+WHAT IT NEVER DOES. It never reads, prints or writes the server's private key
+(no `wg showconf`, no `wg show dump`), never touches an interface other than
+WG_INTERFACE, and never changes anything when ISPMan cannot be reached or
+answers with anything but a well-formed list. An error is never an empty list.
+
+USAGE
+  ispman-wg-sync                      one run (what the timer does)
+  ispman-wg-sync --dry-run            print what it would do, change nothing
+  ispman-wg-sync --allow-removals N   allow up to N removals in this run
+  ispman-wg-sync --restore            re-apply the last recorded peers, offline
+
+EXIT STATUS: 0 done, 1 nothing changed because of an error, 3 done but
+removals held (the unit shows as failed until someone looks).
+
+Python 3.8 or later, standard library only (Ubuntu 20.04 ships 3.8).
+"""
+
+import argparse
+import base64
+import fcntl
+import ipaddress
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+ENV_FILE = '/etc/ispman/wg-sync.env'
+
+
+def read_env_file(path):
+    """KEY=VALUE lines from the root-only settings file. The process
+    environment wins, so a value can be overridden for one manual run."""
+    values = {}
+    try:
+        info = os.stat(path)
+        if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            log('WARNING: %s is readable by others; it holds the shared secret. chmod 600 it.' % path)
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                name, value = line.split('=', 1)
+                values[name.strip()] = value.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return values
+
+
+def log(message):
+    print('ispman-wg-sync: ' + message, file=sys.stderr, flush=True)
+
+
+_FILE = read_env_file(os.environ.get('ISPMAN_WG_SYNC_ENV', ENV_FILE))
+
+
+def setting(name, default):
+    return os.environ.get(name) or _FILE.get(name) or default
+
+
+URL = setting('ISPMAN_PEERS_URL', 'http://127.0.0.1:3000/api/tunnels/peers')
+SECRET = setting('TUNNEL_SYNC_SECRET', '')
+IFACE = setting('WG_INTERFACE', 'wg-routers')
+NETWORK = ipaddress.ip_network(setting('TUNNEL_NETWORK', '10.250.0.0/16'))
+SERVER_IP = ipaddress.ip_address(setting('TUNNEL_SERVER_IP', '10.250.0.1'))
+MAX_REMOVALS = int(setting('MAX_REMOVALS_PER_RUN', '3'))
+MAX_PEERS = int(setting('MAX_PEERS', '5000'))
+STATE_DIR = setting('STATE_DIR', '/var/lib/ispman')
+WG = setting('WG_BINARY', 'wg')
+
+CACHE = os.path.join(STATE_DIR, 'wg-peers.json')
+HANDSHAKES = os.path.join(STATE_DIR, 'wg-handshakes')
+STATUS = os.path.join(STATE_DIR, 'wg-sync.json')
+LOCK = os.path.join(STATE_DIR, 'wg-sync.lock')
+
+# 32 bytes in base64: 43 characters and '='. The 43rd carries 2 bits that
+# must be zero, so only 16 characters can stand there. Same rule as ISPMan's
+# lib/tunnels/wireguard.ts#parseWireGuardKey, checked again here on purpose.
+KEY_RE = re.compile(r'^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$')
+
+
+class Refused(Exception):
+    """A list this job will not apply, or a state it will not act on."""
+
+
+def wg(*args):
+    try:
+        return subprocess.run([WG] + list(args), check=True, capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError as e:
+        raise Refused('wg %s failed: %s' % (' '.join(args[:2]), (e.stderr or '').strip() or e.returncode))
+    except FileNotFoundError:
+        raise Refused('the wg command was not found')
+
+
+def write_atomic(path, text):
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.' + os.path.basename(path) + '.')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(text)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def valid_key(key):
+    if not isinstance(key, str) or not KEY_RE.match(key):
+        return False
+    try:
+        return len(base64.b64decode(key, validate=True)) == 32
+    except ValueError:
+        return False
+
+
+def valid_ip(text):
+    """A router's tunnel address as a string, or None. Judged by this job's
+    own range, never by anything the list says about itself."""
+    try:
+        ip = ipaddress.ip_address(str(text))
+    except ValueError:
+        return None
+    if ip.version != 4 or ip not in NETWORK:
+        return None
+    if ip in (SERVER_IP, NETWORK.network_address, NETWORK.broadcast_address):
+        return None
+    return str(ip)
+
+
+def validate(peers):
+    """{public_key: tunnel_ip} from ISPMan's list, or Refused for the lot."""
+    if not isinstance(peers, list):
+        raise Refused('the peer list is not a list')
+    if len(peers) > MAX_PEERS:
+        raise Refused('%d peers is more than MAX_PEERS (%d)' % (len(peers), MAX_PEERS))
+    by_key, by_ip = {}, {}
+    for i, p in enumerate(peers):
+        if not isinstance(p, dict):
+            raise Refused('entry %d is not an object' % i)
+        key, ip = p.get('publicKey'), valid_ip(p.get('tunnelIp'))
+        if not valid_key(key):
+            raise Refused('entry %d: not a WireGuard public key' % i)
+        if ip is None:
+            raise Refused('entry %d: %r is not a router address in %s' % (i, p.get('tunnelIp'), NETWORK))
+        if key in by_key:
+            raise Refused('entry %d: the same key is listed twice' % i)
+        if ip in by_ip:
+            raise Refused('entry %d: %s is listed twice' % (i, ip))
+        by_key[key] = ip
+        by_ip[ip] = key
+    return by_key
+
+
+def fetch():
+    if not SECRET:
+        raise Refused('TUNNEL_SYNC_SECRET is not set in ' + ENV_FILE)
+    req = urllib.request.Request(URL, headers={
+        'x-tunnel-sync-secret': SECRET,
+        'accept': 'application/json',
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read(5000000)
+    except urllib.error.HTTPError as e:
+        raise Refused('ISPMan answered HTTP %d' % e.code)
+    except (urllib.error.URLError, OSError) as e:
+        raise Refused('could not reach ISPMan: %s' % e)
+    try:
+        data = json.loads(body)
+    except ValueError:
+        # Includes a redirect to the login page: HTML, not a list.
+        raise Refused('ISPMan did not answer with JSON')
+    if not isinstance(data, dict) or data.get('ok') is not True:
+        raise Refused('ISPMan did not answer ok: %s' % (data.get('error') if isinstance(data, dict) else data))
+    return validate(data.get('peers'))
+
+
+def current():
+    """{public_key: 'a.b.c.d/32 ...'} for every peer on the interface."""
+    out = {}
+    for line in wg('show', IFACE, 'allowed-ips').splitlines():
+        parts = line.split('\t')
+        if len(parts) == 2:
+            out[parts[0].strip()] = parts[1].strip()
+    return out
+
+
+def plan(desired, have):
+    """What to add or update, and what to remove."""
+    adds = {k: ip for k, ip in desired.items() if have.get(k) != ip + '/32'}
+    removes = sorted(k for k in have if k not in desired)
+    return adds, removes
+
+
+def apply(adds, removes):
+    # Adds first: when a router's key was replaced, the new peer takes the
+    # address over from the old one before the old one goes.
+    for key, ip in sorted(adds.items(), key=lambda kv: ipaddress.ip_address(kv[1])):
+        wg('set', IFACE, 'peer', key, 'allowed-ips', ip + '/32')
+    for key in removes:
+        wg('set', IFACE, 'peer', key, 'remove')
+
+
+def finish(status, write_cache):
+    """Handshakes and status always; the restore cache only after a clean run,
+    so a failed run can never overwrite a good record with an empty one."""
+    status['ranAt'] = datetime.now(timezone.utc).isoformat()
+    try:
+        have = current()
+        status['peers'] = len(have)
+        write_atomic(HANDSHAKES, wg('show', IFACE, 'latest-handshakes'))
+        if write_cache:
+            write_atomic(CACHE, json.dumps(
+                [{'publicKey': k, 'allowedIps': v} for k, v in sorted(have.items())], indent=1) + '\n')
+    except Refused as e:
+        status['ok'] = False
+        status['error'] = status.get('error') or str(e)
+    write_atomic(STATUS, json.dumps(status) + '\n')
+
+
+def sync(dry_run, allow_removals):
+    status = {'ok': False, 'error': None, 'added': 0, 'removed': 0, 'held': []}
+    try:
+        desired = fetch()
+        have = current()
+    except Refused as e:
+        log('changed nothing: %s' % e)
+        status['error'] = str(e)
+        if not dry_run:
+            finish(status, write_cache=False)
+        return 1
+
+    adds, removes = plan(desired, have)
+
+    # THE MASS-REMOVAL GUARD. One revoke at a time is normal; many at once,
+    # or a list that would empty the interface, is far more likely a fault
+    # than a decision, and getting it wrong takes tenants off the air.
+    limit = MAX_REMOVALS if allow_removals is None else allow_removals
+    empties = bool(have) and not desired
+    held = []
+    if removes and (len(removes) > limit or (empties and allow_removals is None)):
+        held, removes = removes, []
+        log('HELD %d removal(s): %s. Check the list in ISPMan, then run: ispman-wg-sync --allow-removals %d'
+            % (len(held), 'it would remove every peer' if empties else 'more than %d at once' % limit, len(held)))
+
+    if dry_run:
+        for key, ip in sorted(adds.items()):
+            print('add     %s %s' % (key, ip))
+        for key in removes:
+            print('remove  %s %s' % (key, have.get(key, '')))
+        for key in held:
+            print('HELD    %s %s' % (key, have.get(key, '')))
+        print('%d to add or update, %d to remove, %d held. Dry run: nothing changed.'
+              % (len(adds), len(removes), len(held)))
+        return 0
+
+    try:
+        apply(adds, removes)
+    except Refused as e:
+        log('stopped part way: %s' % e)
+        status['error'] = str(e)
+        finish(status, write_cache=False)
+        return 1
+
+    status.update(ok=True, added=len(adds), removed=len(removes),
+                  held=[{'publicKey': k, 'allowedIps': have.get(k, '')} for k in held])
+    finish(status, write_cache=True)
+    if adds or removes:
+        log('added or updated %d peer(s), removed %d' % (len(adds), len(removes)))
+    return 3 if held else 0
+
+
+def restore():
+    """At interface start: put back what was on it last time, without asking
+    ISPMan. Each recorded entry is checked again; one that does not check out
+    is skipped, never applied."""
+    try:
+        with open(CACHE) as f:
+            entries = json.load(f)
+    except FileNotFoundError:
+        log('no recorded peers to restore')
+        return 0
+    except ValueError:
+        log('the recorded peers file is not valid JSON; restored nothing')
+        return 1
+
+    restored = 0
+    for e in entries if isinstance(entries, list) else []:
+        key = e.get('publicKey') if isinstance(e, dict) else None
+        raw = str(e.get('allowedIps', '')).split() if isinstance(e, dict) else []
+        ips = [valid_ip(x.split('/')[0]) for x in raw if x != '(none)']
+        if not valid_key(key) or not ips or None in ips:
+            log('skipped a recorded peer that does not check out')
+            continue
+        try:
+            wg('set', IFACE, 'peer', key, 'allowed-ips', ','.join(ip + '/32' for ip in ips))
+            restored += 1
+        except Refused as err:
+            log('could not restore a peer: %s' % err)
+    log('restored %d peer(s)' % restored)
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description='Apply ISPMan router tunnel peers to WireGuard.')
+    ap.add_argument('--dry-run', action='store_true', help='print what would change, change nothing')
+    ap.add_argument('--allow-removals', type=int, metavar='N', help='allow up to N removals in this run')
+    ap.add_argument('--restore', action='store_true', help='re-apply the last recorded peers, offline')
+    args = ap.parse_args(argv)
+
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(LOCK, 'w') as lock:
+        # One run at a time: the timer and a manual run, or PostUp at boot.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if args.restore:
+            return restore()
+        return sync(args.dry_run, args.allow_removals)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

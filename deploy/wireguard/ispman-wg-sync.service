@@ -1,0 +1,31 @@
+# ISPMan router tunnels: apply the peer list from ISPMan to WireGuard.
+# Installed to /etc/systemd/system/. Started by ispman-wg-sync.timer.
+# docs/wireguard-tunnels.md, section 5.
+
+[Unit]
+Description=ISPMan router tunnels: apply peers from ISPMan to WireGuard
+After=network-online.target wg-quick@wg-routers.service
+# Nothing to do until the interface exists.
+ConditionPathExists=/sys/class/net/wg-routers
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ispman-wg-sync
+
+# Root only because WireGuard needs CAP_NET_ADMIN. Everything else is taken
+# away: no other capability, the whole filesystem read-only except its own
+# state directory, no home directories, no devices.
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ispman
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native

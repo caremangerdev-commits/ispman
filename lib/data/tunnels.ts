@@ -85,6 +85,72 @@ export async function allocatedTunnelIps(): Promise<string[]> {
 }
 
 /**
+ * How many routers a company holds now, and how many addresses it has ever
+ * been handed (revoked included: an address is never reused). For the caps
+ * in lib/tunnels/wireguard.ts.
+ */
+export async function companyTunnelCounts(companyId: number): Promise<{ live: number; total: number }> {
+  const { data, error } = await tenantClient()
+    .from('router_tunnels')
+    .select('revoked_at')
+    .eq('company_id', companyId)
+  if (error) throw new Error('Could not count router tunnels: ' + error.message)
+  const rows = (data ?? []) as { revoked_at: string | null }[]
+  return { live: rows.filter((r) => r.revoked_at === null).length, total: rows.length }
+}
+
+/** A router the server's WireGuard interface should have as a peer. */
+export type LivePeer = {
+  id: number
+  companyId: number
+  companyName: string
+  name: string
+  tunnelIp: string
+  publicKey: string
+  keySetAt: string | null
+}
+
+/**
+ * Every live router with a key, in every company: exactly the peer list the
+ * server's WireGuard interface should hold. Read by the root job through
+ * /api/tunnels/peers, and by the platform overview.
+ *
+ * Unscoped on purpose, like allocatedTunnelIps: the server serves every tenant.
+ * Never reachable from a tenant's session — both callers are the platform's.
+ */
+export async function livePeersAllCompanies(): Promise<LivePeer[]> {
+  const { data, error } = await tenantClient()
+    .from('router_tunnels')
+    .select('id, company_id, name, tunnel_ip, public_key, key_set_at, companies(name)')
+    .not('public_key', 'is', null)
+    .is('revoked_at', null)
+    .order('id')
+  if (error) throw new Error('Could not load live router tunnels: ' + error.message)
+
+  const rows = (data ?? []) as unknown as {
+    id: number
+    company_id: number
+    name: string
+    tunnel_ip: string
+    public_key: string
+    key_set_at: string | null
+    companies: { name: string } | { name: string }[] | null
+  }[]
+  return rows.map((r) => {
+    const company = Array.isArray(r.companies) ? r.companies[0] : r.companies
+    return {
+      id: r.id,
+      companyId: r.company_id,
+      companyName: company?.name ?? 'Company #' + r.company_id,
+      name: r.name,
+      tunnelIp: normaliseTunnelIp(r.tunnel_ip) ?? String(r.tunnel_ip),
+      publicKey: r.public_key,
+      keySetAt: r.key_set_at,
+    }
+  })
+}
+
+/**
  * The tunnel already holding this public key, in any company, revoked or
  * not, or null. Unscoped for the same reason as allocatedTunnelIps: one key
  * on two peers would have the server flapping between two routers. A revoked

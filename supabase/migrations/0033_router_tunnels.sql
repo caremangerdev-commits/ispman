@@ -24,7 +24,8 @@
 --
 -- ADDRESSES ARE NEVER REUSED. tunnel_ip is unique across revoked rows too, so
 -- a revoked router's leftover config can never collide with a new router's.
--- The range (10.250.0.0/24) is defined once, in lib/tunnels/wireguard.ts.
+-- The range is defined once, in lib/tunnels/wireguard.ts: 10.250.0.0/16 since
+-- 13 Oct 2026 (it began as /24; nothing in this file depends on which).
 --
 -- ON DELETE RESTRICT on the company: deleting a company with live tunnels would
 -- leave their nas rows behind in FreeRADIUS, answering for routers nobody owns.

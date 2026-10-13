@@ -1,0 +1,16 @@
+# ISPMan router tunnels: run ispman-wg-sync every 30 seconds.
+# Installed to /etc/systemd/system/; enable with
+#   systemctl enable --now ispman-wg-sync.timer
+
+[Unit]
+Description=ISPMan router tunnels: sync peers every 30 seconds
+
+[Timer]
+OnBootSec=30s
+# From each start, so a run that fails (or holds removals) does not stop the
+# next one from coming.
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

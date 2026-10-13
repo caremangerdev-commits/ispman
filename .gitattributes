@@ -1,2 +1,6 @@
 # Shell scripts run on the Linux server: always LF, even when edited on Windows.
 *.sh text eol=lf
+# So does everything installed on the box from deploy/: the root job (a Python
+# script without an extension, whose shebang breaks on a CR), its systemd
+# units and the RADIUS server's config files.
+deploy/** text eol=lf

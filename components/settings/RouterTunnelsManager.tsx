@@ -9,9 +9,8 @@ import {
   type TunnelActionResult,
 } from '@/app/actions/tunnels'
 import { settingsInput } from '@/components/settings/Modal'
+import type { TunnelStatus } from '@/lib/tunnels/status'
 import { ROUTER_SERVICES, type ConfigBlock } from '@/lib/tunnels/wireguard'
-
-export type TunnelStatus = 'waiting' | 'up' | 'down' | 'never' | 'not_on_server' | 'unknown'
 
 /**
  * One router as the card shows it. Nothing secret: config is fetched on demand.

@@ -1,0 +1,41 @@
+#  ISPMan router tunnels: RADIUS clients looked up when they first ask.
+#
+#  Installed to /etc/freeradius/3.0/sites-available/ispman-tunnel-clients and
+#  linked into sites-enabled/. Paired with the client block in
+#  clients-ispman-tunnels.conf, which hands every address in 10.250.0.0/16 to
+#  this server. docs/wireguard-tunnels.md, section 4.
+#
+#  Every router reaches RADIUS through its WireGuard tunnel from an address in
+#  10.250.0.0/16, and ISPMan writes its nas row (address, secret, shortname)
+#  the moment the router's key is saved. Without this, the RADIUS server reads
+#  nas only when it starts, so every new router needed a restart. With it, a
+#  router whose row is newer than the last start is looked up on its first
+#  request.
+#
+#  EACH ROUTER IS STILL ITS OWN CLIENT, with its own secret and its own state:
+#  this is not the shared 0.0.0.0/0 catch-all over again. A tunnel address with
+#  no nas row gets no client at all, so no answer.
+#
+#  Require-MA is "no" because the request has already arrived through the
+#  router's own authenticated WireGuard tunnel, where the attack
+#  Message-Authenticator guards against (BlastRADIUS, a forged reply on the
+#  path) is not possible.
+#
+#  This is the stock sites-available/dynamic-clients SQL lookup, narrowed to
+#  ISPMan's tunnel network. Packet-Src-IP-Address is an address, not text the
+#  router chooses, and the sql module escapes it in any case.
+
+server ispman_tunnel_clients {
+	authorize {
+		if ("%{sql: SELECT nasname FROM nas WHERE nasname = '%{Packet-Src-IP-Address}'}") {
+			update control {
+				&FreeRADIUS-Client-IP-Address = "%{Packet-Src-IP-Address}"
+				&FreeRADIUS-Client-Require-MA = no
+				&FreeRADIUS-Client-Secret = "%{sql: SELECT secret FROM nas WHERE nasname = '%{Packet-Src-IP-Address}'}"
+				&FreeRADIUS-Client-Shortname = "%{sql: SELECT shortname FROM nas WHERE nasname = '%{Packet-Src-IP-Address}'}"
+				&FreeRADIUS-Client-NAS-Type = "other"
+			}
+			ok
+		}
+	}
+}

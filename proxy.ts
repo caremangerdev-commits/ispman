@@ -17,9 +17,10 @@ import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase/env'
  * Anything added to this list must do its own authorization. See the secret
  * check in app/api/sms/dispatch/route.ts.
  */
-// The two background routes carry their own shared-secret check; a session
-// redirect would hand their tickers the login page as a 200.
-const PUBLIC_PATHS = ['/login', '/auth', '/api/sms/dispatch', '/api/billing/tick']
+// The background routes carry their own shared-secret check; a session
+// redirect would hand their callers the login page as a 200.
+// /api/tunnels/peers also refuses anything that is not a loopback call.
+const PUBLIC_PATHS = ['/login', '/auth', '/api/sms/dispatch', '/api/billing/tick', '/api/tunnels/peers']
 
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some(

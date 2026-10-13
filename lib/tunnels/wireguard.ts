@@ -19,18 +19,47 @@
  */
 
 /**
- * 10.250.0.0/24. Picked because nothing a tenant uses overlaps it: 90 days of
+ * 10.250.0.0/16. Picked because nothing a tenant uses overlaps it: 90 days of
  * radacct (13 Oct 2026) showed customer pools and NAS addresses in 10.5, 10.9,
  * 10.10, 10.11, 10.30, 10.99, 100.100, 172.16, 172.30, 172.168 and 192.168, and
  * the EC2 default VPC is 172.31. A router whose own LAN overlapped the tunnel
  * could not route to it.
+ *
+ * WIDENED FROM /24 (owner, 13 Oct 2026), once three addresses had been handed
+ * out: addresses are never reused, and company admins now add their own
+ * routers. Nothing already issued moves. The server stays 10.250.0.1, and a
+ * router's address is a /32 point-to-point link to it, so the prefix length
+ * never appears in a router's config — only on the server's interface.
+ *
+ * The root job on the server keeps its OWN copy of this range
+ * (deploy/wireguard/ispman-wg-sync) and refuses any peer outside it. That is
+ * deliberate rather than drift: the side with root decides what is allowed,
+ * and does not take the range from the app it is guarding against.
  */
-export const TUNNEL_NETWORK = '10.250.0.0/24'
-const TUNNEL_PREFIX = '10.250.0.'
-export const TUNNEL_SERVER_IP = TUNNEL_PREFIX + '1'
-/** Routers take .2 to .254; .1 is the server. */
-const FIRST_HOST = 2
-const LAST_HOST = 254
+export const TUNNEL_NETWORK = '10.250.0.0/16'
+const NETWORK_PREFIX = '10.250.'
+export const TUNNEL_SERVER_IP = '10.250.0.1'
+
+/**
+ * Routers take 10.250.0.2 upwards, in order. The .0 and .255 of each /24
+ * inside the /16 are skipped: valid host addresses in a /16, but enough
+ * equipment treats them as network or broadcast addresses that they are not
+ * worth the confusion. That leaves 65,023 router addresses.
+ */
+const LAST_THIRD = 255
+const FIRST_FOURTH = 1
+const LAST_FOURTH = 254
+
+/**
+ * The most routers one company may hold at once, and the most addresses it may
+ * ever be handed — revoked ones count, since an address is never reused. A
+ * company admin adding their own routers cannot use up the network for every
+ * other tenant, by mistake or by an add-and-revoke loop. The platform operator
+ * is not held to them (app/actions/tunnels.ts), so a company that genuinely
+ * needs more asks.
+ */
+export const MAX_LIVE_ROUTERS_PER_COMPANY = 25
+export const MAX_ADDRESSES_PER_COMPANY = 100
 
 /**
  * The server's interface. Not wg0: something already gives WCN's router
@@ -76,18 +105,27 @@ export function parseServices(values: readonly string[]): RouterService[] {
   return ROUTER_SERVICES.map((s) => s.value).filter((v) => wanted.has(v))
 }
 
+/** The last two octets of a router address, or null when it is not one. */
+function routerOctets(ip: string | null | undefined): [number, number] | null {
+  const bare = String(ip ?? '').trim().replace(/\/32$/, '')
+  if (!bare.startsWith(NETWORK_PREFIX)) return null
+  const parts = bare.slice(NETWORK_PREFIX.length).split('.')
+  if (parts.length !== 2 || !parts.every((p) => /^[0-9]{1,3}$/.test(p))) return null
+  const [third, fourth] = parts.map(Number)
+  if (third > LAST_THIRD || fourth < FIRST_FOURTH || fourth > LAST_FOURTH) return null
+  // .0.1 is the server.
+  if (third === 0 && fourth === 1) return null
+  return [third, fourth]
+}
+
 /**
- * A tunnel address as ISPMan writes it ("10.250.0.12"), or null if it is not
- * one. Postgres hands an inet back without a prefix for a host address, but a
- * "/32" is tolerated so the check cannot be defeated by formatting.
+ * A router's tunnel address as ISPMan writes it ("10.250.0.12"), or null if it
+ * is not one. Postgres hands an inet back without a prefix for a host address,
+ * but a "/32" is tolerated so the check cannot be defeated by formatting.
  */
 export function normaliseTunnelIp(ip: string | null | undefined): string | null {
-  const bare = String(ip ?? '').trim().replace(/\/32$/, '')
-  if (!bare.startsWith(TUNNEL_PREFIX)) return null
-  const host = bare.slice(TUNNEL_PREFIX.length)
-  if (!/^[0-9]{1,3}$/.test(host)) return null
-  const n = Number(host)
-  return n >= FIRST_HOST && n <= LAST_HOST ? TUNNEL_PREFIX + n : null
+  const octets = routerOctets(ip)
+  return octets ? NETWORK_PREFIX + octets[0] + '.' + octets[1] : null
 }
 
 /**
@@ -101,9 +139,11 @@ export function nextTunnelIp(used: Iterable<string>): string | null {
     const n = normaliseTunnelIp(ip)
     if (n) taken.add(n)
   }
-  for (let host = FIRST_HOST; host <= LAST_HOST; host++) {
-    const ip = TUNNEL_PREFIX + host
-    if (!taken.has(ip)) return ip
+  for (let third = 0; third <= LAST_THIRD; third++) {
+    for (let fourth = FIRST_FOURTH; fourth <= LAST_FOURTH; fourth++) {
+      const ip = NETWORK_PREFIX + third + '.' + fourth
+      if (normaliseTunnelIp(ip) === ip && !taken.has(ip)) return ip
+    }
   }
   return null
 }
@@ -159,11 +199,15 @@ function slug(text: string): string {
 }
 
 /**
- * The nas.shortname (varchar 32). FreeRADIUS names a client by this in its
- * log, so it has to say whose router it is at a glance: "wg12-west-central-n-main".
+ * The nas.shortname (varchar 32). The RADIUS server names a client by this in
+ * its log, so it has to say whose router it is at a glance:
+ * "wg12-west-central-n-main". The number is the address's place in the /16
+ * (third octet x 256 + fourth), which for 10.250.0.x is the same number the
+ * /24 gave, so shortnames written before the widening still read the same way.
  */
 export function nasShortname(tunnelIp: string, companyName: string, routerName: string): string {
-  const host = tunnelIp.slice(TUNNEL_PREFIX.length)
+  const octets = routerOctets(tunnelIp)
+  const host = octets ? String(octets[0] * 256 + octets[1]) : 'x'
   return ('wg' + host + '-' + slug(companyName).slice(0, 14) + '-' + slug(routerName))
     .slice(0, 32)
     .replace(/-+$/, '')

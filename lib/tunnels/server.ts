@@ -50,7 +50,18 @@ export function tunnelServer(): { ok: true; server: TunnelServer } | { ok: false
   return { ok: true, server: { publicKey, endpoint, port } }
 }
 
-const SECRET_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
+/**
+ * True once the server half runs itself: the root job (ispman-wg-sync) applies
+ * peers from /api/tunnels/peers, and the RADIUS server looks tunnel clients up
+ * on demand. TUNNEL_SYNC_SECRET is what the job authenticates with, so it is
+ * set only once both are installed (docs/wireguard-tunnels.md). Until then
+ * the platform operator is handed server blocks to run by hand.
+ */
+export function tunnelSyncConfigured(): boolean {
+  return Boolean(process.env.TUNNEL_SYNC_SECRET)
+}
+
+const SECRET_ALPHABET ='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789'
 
 /**
  * A router's RADIUS shared secret: 24 characters, letters and digits only.
@@ -115,6 +126,52 @@ export async function readHandshakes(now: Date = new Date()): Promise<Handshakes
       writtenAt,
       fresh: now.getTime() - writtenAt.getTime() <= HANDSHAKE_FRESH_SECONDS * 1000,
       peers,
+    }
+  } catch (err) {
+    console.warn('[tunnels] could not read %s: %s', path, (err as Error).message)
+    return null
+  }
+}
+
+/** What the root job reported about its last run (WG_SYNC_STATUS_FILE). */
+export type SyncStatus = {
+  ranAt: Date
+  /** False when the job has not run recently: its timer or unit has stopped. */
+  fresh: boolean
+  ok: boolean
+  error: string | null
+  added: number
+  removed: number
+  /**
+   * Peers ISPMan no longer lists but the job would not remove: more at once
+   * than it is allowed to (MAX_REMOVALS_PER_RUN), or every peer at once.
+   * They stay until a person checks and allows it.
+   */
+  held: { publicKey: string; allowedIps: string }[]
+}
+
+export async function readSyncStatus(now: Date = new Date()): Promise<SyncStatus | null> {
+  const path = process.env.WG_SYNC_STATUS_FILE
+  if (!path) return null
+
+  try {
+    const raw = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
+    const ranAt = new Date(String(raw.ranAt ?? ''))
+    if (Number.isNaN(ranAt.getTime())) return null
+    const held = Array.isArray(raw.held)
+      ? (raw.held as Record<string, unknown>[]).map((h) => ({
+          publicKey: String(h.publicKey ?? ''),
+          allowedIps: String(h.allowedIps ?? ''),
+        }))
+      : []
+    return {
+      ranAt,
+      fresh: now.getTime() - ranAt.getTime() <= HANDSHAKE_FRESH_SECONDS * 1000,
+      ok: raw.ok === true,
+      error: typeof raw.error === 'string' ? raw.error : null,
+      added: Number(raw.added ?? 0) || 0,
+      removed: Number(raw.removed ?? 0) || 0,
+      held,
     }
   } catch (err) {
     console.warn('[tunnels] could not read %s: %s', path, (err as Error).message)

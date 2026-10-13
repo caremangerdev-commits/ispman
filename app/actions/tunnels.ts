@@ -4,15 +4,18 @@ import { revalidatePath } from 'next/cache'
 
 import { logEvent } from '@/lib/audit'
 import {
-  allocatedTunnelIps, getRouterTunnel, tunnelHoldingKey, type RouterTunnel,
+  allocatedTunnelIps, companyTunnelCounts, getRouterTunnel, tunnelHoldingKey, type RouterTunnel,
 } from '@/lib/data/tunnels'
 import { can } from '@/lib/permissions'
 import { addTunnelNas, readTunnelSecret, removeTunnelNas } from '@/lib/radius/operations'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { displayName, requirePermission, type Session } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { generateRadiusSecret, tunnelServer, type TunnelServer } from '@/lib/tunnels/server'
 import {
+  generateRadiusSecret, tunnelServer, tunnelSyncConfigured, type TunnelServer,
+} from '@/lib/tunnels/server'
+import {
+  MAX_ADDRESSES_PER_COMPANY, MAX_LIVE_ROUTERS_PER_COMPANY,
   nasDescription, nasShortname, nextTunnelIp, parseServices, parseWireGuardKey,
   routerNameProblem, routerRemove, routerStepOne, routerStepTwo, serverAddPeer,
   serverRemovePeer, serverReplacePeer, TUNNEL_NETWORK,
@@ -28,6 +31,15 @@ import {
  * restart — needs root on the box, so only apply_router_tunnels_on_server
  * (the platform operator) is handed SERVER blocks or told how the server is
  * set up. A tenant is told the platform operator does that half.
+ *
+ * AND ONCE THE SERVER RUNS ITSELF (tunnelSyncConfigured: the root job and the
+ * RADIUS server's on-demand clients are installed), nobody is handed a server
+ * block at all. The job applies the change within a minute and no restart is
+ * needed, so every message says so instead. A hand-run server block would only
+ * fight the job: it adds peers to the config file the job does not manage.
+ *
+ * THE POOL CAPS (lib/tunnels/wireguard.ts) hold a company admin, not the
+ * platform operator: a tenant cannot use up the shared network.
  *
  * NOTHING TENANT-FACING SAYS "FreeRADIUS" (owner, 13 Oct 2026): messages and
  * log rows say the RADIUS server. The one exception is the literal service
@@ -71,6 +83,19 @@ function label(session: Session, tunnel: Pick<RouterTunnel, 'name'>): TunnelLabe
 /** True for the platform operator, who has root on the server and runs its half. */
 function isOperator(session: Session): boolean {
   return can(session.profile.role, 'apply_router_tunnels_on_server')
+}
+
+/**
+ * Who does the server half of a change:
+ *   auto      the root job, within a minute — nobody is handed a server block
+ *   operator  the caller, by hand, from the server block
+ *   tenant    the platform operator, by hand, later
+ */
+type ServerHalf = 'auto' | 'operator' | 'tenant'
+
+function serverHalf(session: Session): ServerHalf {
+  if (tunnelSyncConfigured()) return 'auto'
+  return isOperator(session) ? 'operator' : 'tenant'
 }
 
 /** The server's details, or a refusal worded for whoever is asking. */
@@ -134,8 +159,26 @@ export async function addRouterTunnel(
 
   // The operator may add routers ahead of finishing the server; a tenant would
   // only be handed a step 1 they could never complete, and an address used up.
-  if (!isOperator(session) && !tunnelServer().ok) {
-    return { ok: false, error: SERVER_UNAVAILABLE }
+  if (!isOperator(session)) {
+    if (!tunnelServer().ok) return { ok: false, error: SERVER_UNAVAILABLE }
+
+    const counts = await companyTunnelCounts(company.id)
+    if (counts.live >= MAX_LIVE_ROUTERS_PER_COMPANY) {
+      return {
+        ok: false,
+        error:
+          company.name + ' already has ' + counts.live + ' routers, the most a company can have. ' +
+          'Revoke one that is no longer used, or ask the platform operator.',
+      }
+    }
+    if (counts.total >= MAX_ADDRESSES_PER_COMPANY) {
+      return {
+        ok: false,
+        error:
+          company.name + ' has been given ' + counts.total + ' tunnel addresses, the most a company ' +
+          'can have. Revoked routers count, because an address is never reused. Ask the platform operator.',
+      }
+    }
   }
 
   const name = str(formData, 'name')
@@ -207,7 +250,7 @@ export async function setRouterTunnelKey(
   if ('refused' in started) return started.refused
   const { session } = started
   const { profile, company } = session
-  const operator = isOperator(session)
+  const half = serverHalf(session)
 
   const found = await liveTunnel(session, formData)
   if ('refused' in found) return found.refused
@@ -292,27 +335,33 @@ export async function setRouterTunnelKey(
       tag: '[tunnels]',
       details:
         'Router tunnel key set: ' + tunnel.name + ' at ' + tunnel.tunnelIp +
-        '. Added to the RADIUS server, which loads it on its next restart' +
+        '. Added to the RADIUS server' +
+        (half === 'auto' ? '' : ', which loads it on its next restart') +
         ' | public_key=' + key + ' | by=' + profile.email,
     })
 
     revalidatePath(PATH)
-    return operator
-      ? {
-          ok: true,
-          message:
-            'Key saved and the router added to the RADIUS server. Run the server block as root (it ' +
-            'restarts the RADIUS server to load the router), then paste step 2 into the router.',
-          blocks: [serverAddPeer(peer), stepTwo(names, tunnel, server, secret)],
-        }
-      : {
-          ok: true,
-          message:
-            'Key saved. Paste step 2 into the router now. The platform operator adds the server ' +
+    const step = stepTwo(names, tunnel, server, secret)
+    if (half === 'operator') {
+      return {
+        ok: true,
+        message:
+          'Key saved and the router added to the RADIUS server. Run the server block as root (it ' +
+          'restarts the RADIUS server to load the router), then paste step 2 into the router.',
+        blocks: [serverAddPeer(peer), step],
+      }
+    }
+    return {
+      ok: true,
+      message:
+        half === 'auto'
+          ? 'Key saved. Paste step 2 into the router. The server adds this router within a ' +
+            'minute, with nothing to restart, and the status here shows Up once the tunnel is working.'
+          : 'Key saved. Paste step 2 into the router now. The platform operator adds the server ' +
             'side; the status here shows Up once the tunnel is working. Until then the router keeps ' +
             'using its current RADIUS settings.',
-          blocks: [stepTwo(names, tunnel, server, secret)],
-        }
+      blocks: [step],
+    }
   }
 
   // --- A replacement --------------------------------------------------------
@@ -348,7 +397,8 @@ export async function setRouterTunnelKey(
       ' | old_key=' + oldKey + ' | new_key=' + key + ' | by=' + profile.email,
   })
 
-  const blocks: ConfigBlock[] = operator ? [serverReplacePeer({ ...peer, oldPublicKey: oldKey })] : []
+  const blocks: ConfigBlock[] =
+    half === 'operator' ? [serverReplacePeer({ ...peer, oldPublicKey: oldKey })] : []
   const secret = await readTunnelSecret(tunnel.tunnelIp)
   if (secret.ok && secret.secret) {
     blocks.push({ ...stepTwo(names, tunnel, server, secret.secret), title: STEP_TWO_IF_LOST })
@@ -357,11 +407,15 @@ export async function setRouterTunnelKey(
   revalidatePath(PATH)
   return {
     ok: true,
-    message: operator
-      ? 'Key replaced. Run the server block as root. The router needs step 2 again only if it was ' +
-        'reset or replaced; if it kept its config, the new key is all that changed.'
-      : 'Key replaced. The tunnel stays down until the platform operator updates the server side. ' +
-        'Paste step 2 again only if the router was reset or replaced.',
+    message:
+      half === 'operator'
+        ? 'Key replaced. Run the server block as root. The router needs step 2 again only if it was ' +
+          'reset or replaced; if it kept its config, the new key is all that changed.'
+        : half === 'auto'
+          ? 'Key replaced. The server switches to the new key within a minute. Paste step 2 again ' +
+            'only if the router was reset or replaced.'
+          : 'Key replaced. The tunnel stays down until the platform operator updates the server side. ' +
+            'Paste step 2 again only if the router was reset or replaced.',
     blocks,
   }
 }
@@ -406,7 +460,7 @@ export async function showRouterTunnelConfig(
   }
 
   const step = stepTwo(names, tunnel, srv.server, secret.secret)
-  return isOperator(session)
+  return serverHalf(session) === 'operator'
     ? {
         ok: true,
         message: 'The server block is only needed if the peer is not on the server yet.',
@@ -464,9 +518,9 @@ export async function revokeRouterTunnel(
   })
 
   const names = label(session, tunnel)
-  const operator = isOperator(session)
+  const half = serverHalf(session)
   const blocks: ConfigBlock[] = []
-  if (operator && tunnel.publicKey) {
+  if (half === 'operator' && tunnel.publicKey) {
     blocks.push(serverRemovePeer({ ...names, tunnelId: tunnel.id, tunnelIp: tunnel.tunnelIp, publicKey: tunnel.publicKey }))
   }
   blocks.push(routerRemove(names))
@@ -474,11 +528,15 @@ export async function revokeRouterTunnel(
   revalidatePath(PATH)
   return {
     ok: true,
-    message: operator
-      ? tunnel.name + ' revoked and removed from the RADIUS server, which keeps it loaded until it next ' +
-        'restarts. Run the server block as root to drop the peer, and the router block on the router.'
-      : tunnel.name + ' revoked and removed from the RADIUS server. Paste the block below into the ' +
-        'router to take the tunnel off it; the platform operator removes the server side.',
+    message:
+      half === 'operator'
+        ? tunnel.name + ' revoked and removed from the RADIUS server, which keeps it loaded until it ' +
+          'next restarts. Run the server block as root to drop the peer, and the router block on the router.'
+        : half === 'auto'
+          ? tunnel.name + ' revoked and removed from the RADIUS server; the server drops its tunnel ' +
+            'within a minute. Paste the block below into the router to take the tunnel off it.'
+          : tunnel.name + ' revoked and removed from the RADIUS server. Paste the block below into the ' +
+            'router to take the tunnel off it; the platform operator removes the server side.',
     blocks,
   }
 }
