@@ -149,6 +149,8 @@ export type CollectionSummary = {
   payments: CollectionPayment[]
   /** Totals per method across the un-checked-off set. */
   byMethod: { method: PaymentMethod; total: number; count: number }[]
+  /** The same, for today's payments only. */
+  todayByMethod: { method: PaymentMethod; total: number; count: number }[]
   /** sinceCheckoffTotal, split into service and one-off. */
   sinceCheckoffSplit: KindSplit
   /** todayTotal, split the same way. */
@@ -168,6 +170,7 @@ export const EMPTY_COLLECTION: CollectionSummary = {
   todayCustomers: 0,
   payments: [],
   byMethod: [],
+  todayByMethod: [],
   sinceCheckoffSplit: { service: 0, oneOff: 0 },
   todaySplit: { service: 0, oneOff: 0 },
   outsidePeriod: { total: 0, count: 0 },
@@ -280,10 +283,15 @@ function summarise(
       : new Date(p.payment_date).getTime() >= todayStart.getTime()
   )
 
-  const methodMap = new Map<PaymentMethod, { total: number; count: number }>()
-  for (const p of payments) {
-    const cur = methodMap.get(p.method) ?? { total: 0, count: 0 }
-    methodMap.set(p.method, { total: cur.total + p.amount, count: cur.count + 1 })
+  const perMethod = (list: CollectionPayment[]) => {
+    const map = new Map<PaymentMethod, { total: number; count: number }>()
+    for (const p of list) {
+      const cur = map.get(p.method) ?? { total: 0, count: 0 }
+      map.set(p.method, { total: cur.total + p.amount, count: cur.count + 1 })
+    }
+    return [...map.entries()]
+      .map(([method, v]) => ({ method, ...v }))
+      .sort((a, b) => b.total - a.total)
   }
 
   const distinct = (list: CollectionPayment[]) =>
@@ -294,9 +302,8 @@ function summarise(
     sinceCheckoffCustomers: distinct(payments),
     todayTotal: today.reduce((s, p) => s + p.amount, 0),
     todayCustomers: distinct(today),
-    byMethod: [...methodMap.entries()]
-      .map(([method, v]) => ({ method, ...v }))
-      .sort((a, b) => b.total - a.total),
+    byMethod: perMethod(payments),
+    todayByMethod: perMethod(today),
     sinceCheckoffSplit: splitByKind(payments),
     todaySplit: splitByKind(today),
   }

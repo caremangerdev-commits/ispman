@@ -54,21 +54,84 @@ export function CollectionStats({
   }
 
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <Stat
-        label="Total Since Checkoff"
-        value={money(symbol, summary.sinceCheckoffTotal)}
-        accent
-        detail={splitLine(symbol, summary.sinceCheckoffSplit)}
-      />
-      <Stat
-        label="Total Today"
-        value={money(symbol, summary.todayTotal)}
-        detail={splitLine(symbol, summary.todaySplit)}
-      />
-      <Stat label="Customers Since Checkoff" value={String(summary.sinceCheckoffCustomers)} />
-      <Stat label="Customers Today" value={String(summary.todayCustomers)} />
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat
+          label="Total Since Checkoff"
+          value={money(symbol, summary.sinceCheckoffTotal)}
+          accent
+          detail={splitLine(symbol, summary.sinceCheckoffSplit)}
+        />
+        <Stat
+          label="Total Today"
+          value={money(symbol, summary.todayTotal)}
+          detail={splitLine(symbol, summary.todaySplit)}
+        />
+        <Stat label="Customers Since Checkoff" value={String(summary.sinceCheckoffCustomers)} />
+        <Stat label="Customers Today" value={String(summary.todayCustomers)} />
+      </div>
+      <MethodBreakdown summary={summary} symbol={symbol} />
     </div>
+  )
+}
+
+/**
+ * The totals above, split by payment type: cash, card, bank transfer and the
+ * rest, since checkoff and today. The totals always included every type; this
+ * is what lets the agent see which is which, rather than reading the one
+ * figure as cash in the drawer.
+ *
+ * The same breakdown the Checkoff page gives a manager (CheckoffClient), for
+ * the agent's own payments only.
+ */
+function MethodBreakdown({ summary, symbol }: { summary: CollectionSummary; symbol: string }) {
+  if (summary.byMethod.length === 0) return null
+
+  const today = new Map(summary.todayByMethod.map((m) => [m.method, m]))
+  const count = (n: number) => n + ' payment' + (n === 1 ? '' : 's')
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
+      <h3 className="border-b border-gray-800 px-4 py-2.5 text-xs font-semibold uppercase tracking-wider text-gray-500">
+        By payment type
+      </h3>
+      <table className="w-full text-left text-sm">
+        <thead>
+          <tr className="text-[11px] uppercase tracking-wider text-gray-500">
+            <th scope="col" className="px-4 py-2 font-semibold">Type</th>
+            <th scope="col" className="px-4 py-2 text-right font-semibold">Since checkoff</th>
+            <th scope="col" className="px-4 py-2 text-right font-semibold">Today</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-800">
+          {summary.byMethod.map((m) => {
+            const t = today.get(m.method)
+            return (
+              <tr key={m.method}>
+                <td className="px-4 py-2">
+                  <span
+                    className={
+                      'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ' +
+                      (METHOD_STYLES[m.method] ?? 'bg-gray-700/40 text-gray-400')
+                    }
+                  >
+                    {PAYMENT_METHOD_LABELS[m.method]}
+                  </span>
+                </td>
+                <td className="px-4 py-2 text-right tabular-nums text-gray-200">
+                  {money(symbol, m.total)}
+                  <span className="block text-[11px] text-gray-500">{count(m.count)}</span>
+                </td>
+                <td className="px-4 py-2 text-right tabular-nums text-gray-300">
+                  {t ? money(symbol, t.total) : '—'}
+                  {t ? <span className="block text-[11px] text-gray-500">{count(t.count)}</span> : null}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </section>
   )
 }
 
