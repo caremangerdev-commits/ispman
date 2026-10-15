@@ -3,8 +3,9 @@
 import { Check, ClipboardCheck, ClipboardCopy, ClipboardPaste } from 'lucide-react'
 import { useId, useState } from 'react'
 
+import { MAC_FORMAT } from '@/lib/mac'
+
 const HEX = /[^0-9A-F]/g
-export const MAC_PATTERN = /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/
 
 /**
  * Strips separators and regroups into XX:XX:XX:XX:XX:XX.
@@ -18,7 +19,7 @@ export function formatMac(raw: string): string {
 }
 
 export function isValidMac(value: string): boolean {
-  return MAC_PATTERN.test(value)
+  return MAC_FORMAT.test(value)
 }
 
 export const MAC_ERROR = 'MAC address must be in format XX:XX:XX:XX:XX:XX'

@@ -18,7 +18,9 @@ import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
 import { parseYmd } from '@/lib/billing'
 import { getExpiryClock } from '@/lib/data/company'
+import { describeMacHolders, findMacHolders, type MacHolder } from '@/lib/data/mac-holders'
 import { FIRST_MONTH_EVENTS, provisionPlan, type ProvisionPlan } from '@/lib/data/provision'
+import { canonicalMac } from '@/lib/mac'
 import { applyExpiryClock } from '@/lib/radius/format'
 import { getSchemaCapabilities } from '@/lib/schema'
 import {
@@ -60,7 +62,14 @@ export type FieldErrors = Record<string, string>
 
 export type ActionResult =
   | { ok: true }
-  | { ok: false; error: string; values?: SubmittedValues; fieldErrors?: FieldErrors }
+  | {
+      ok: false
+      error: string
+      values?: SubmittedValues
+      fieldErrors?: FieldErrors
+      /** Who already holds the MAC, so the form can link to them. */
+      macHolders?: MacHolder[]
+    }
 
 const KEEP_FIELDS = [
   'first_name', 'last_name', 'phone', 'email', 'address', 'gps',
@@ -90,9 +99,6 @@ const numOrNull = (fd: FormData, key: string) => {
   return Number.isFinite(n) ? n : null
 }
 
-/** Basic MAC shape check — the RADIUS username depends on this being sane. */
-const MAC_RE = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/
-
 function todayYmd() {
   const d = new Date()
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString().slice(0, 10)
@@ -111,13 +117,18 @@ export async function createCustomer(
 
   const values = submitted(formData)
   const fieldErrors: FieldErrors = {}
-  const fail = (error: string): ActionResult => ({ ok: false, error, values, fieldErrors })
+  const fail = (error: string, macHolders?: MacHolder[]): ActionResult =>
+    ({ ok: false, error, values, fieldErrors, ...(macHolders ? { macHolders } : {}) })
 
   const first_name = str(formData, 'first_name')
   const last_name = str(formData, 'last_name')
   const phone = str(formData, 'phone')
   const email = str(formData, 'email')
-  const mac_address = str(formData, 'mac_address').toUpperCase()
+  // In the stored form whatever separators were posted (lib/mac.ts). The form
+  // already sends colons, but this is a public POST endpoint, and a MAC
+  // compared in another spelling is invisible to the duplicate check below.
+  const macTyped = str(formData, 'mac_address')
+  const mac_address = canonicalMac(macTyped) ?? ''
   const monthly_rate = numOrNull(formData, 'monthly_rate')
   const cut_off_date = numOrNull(formData, 'cut_off_date')
   const bill_date = numOrNull(formData, 'bill_date')
@@ -139,9 +150,9 @@ export async function createCustomer(
     fieldErrors.email = 'Enter a valid email address.'
   }
 
-  if (macRequired && !mac_address) {
+  if (macRequired && !macTyped) {
     fieldErrors.mac_address = 'MAC address is required for ' + customerType.toUpperCase() + '.'
-  } else if (mac_address && !MAC_RE.test(mac_address)) {
+  } else if (macTyped && !mac_address) {
     fieldErrors.mac_address = 'MAC address must be in format XX:XX:XX:XX:XX:XX.'
   }
 
@@ -184,17 +195,20 @@ export async function createCustomer(
   const db = tenantClient()
 
   // A MAC is the RADIUS username for DHCP/hotspot, so it must be unique.
+  //
+  // The holder is NAMED. "Already taken" alone sent staff to the search box to
+  // find out by whom, and when that found nothing (it matched MACs only as
+  // typed, see lib/search.ts#macForms) they were left with a MAC the system
+  // refused and no way to see why.
   if (mac_address) {
-    const { data: clash } = await db
-      .from('customers')
-      .select('id')
-      .eq('company_id', company.id)
-      .eq('mac_address', mac_address)
-      .maybeSingle()
-
-    if (clash) {
-      fieldErrors.mac_address = 'Another customer already uses this MAC address.'
-      return fail('That MAC address is already taken.')
+    const holders = await findMacHolders(company.id, mac_address)
+    if (holders === null) {
+      return fail('Could not check whether that MAC address is already in use. Nothing was saved.')
+    }
+    if (holders.length > 0) {
+      const who = describeMacHolders(holders)
+      fieldErrors.mac_address = 'Already used by ' + who + '.'
+      return fail('That MAC address is already used by ' + who + '.', holders)
     }
   }
 
@@ -332,8 +346,11 @@ export async function updateCustomer(
   const id = numOrNull(formData, 'id')
   if (id === null) return { ok: false, error: 'Missing customer id.' }
 
-  const mac_address = str(formData, 'mac_address').toUpperCase()
-  if (mac_address && !MAC_RE.test(mac_address)) {
+  // Stored form, as createCustomer: a MAC saved with dashes is a spelling no
+  // other row uses, so no duplicate check or search would ever match it.
+  const macTyped = str(formData, 'mac_address')
+  const mac_address = canonicalMac(macTyped) ?? ''
+  if (macTyped && !mac_address) {
     return { ok: false, error: 'MAC address must look like AA:BB:CC:DD:EE:FF.' }
   }
 

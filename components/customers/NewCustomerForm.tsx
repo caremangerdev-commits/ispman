@@ -35,7 +35,8 @@ function Field({
 }: {
   label: string
   htmlFor?: string
-  error?: string
+  /** A node rather than a string so the MAC error can link to who holds it. */
+  error?: React.ReactNode
   hint?: string
   children: React.ReactNode
   className?: string
@@ -109,6 +110,7 @@ export function NewCustomerForm({
 
   const prior = state && !state.ok ? (state.values ?? {}) : {}
   const errors = state && !state.ok ? (state.fieldErrors ?? {}) : {}
+  const macHolders = state && !state.ok ? (state.macHolders ?? []) : []
   const v = (name: string) => prior[name] ?? ''
 
   const [authType, setAuthType] = useState<CustomerType>(toCustomerType(prior.customer_type))
@@ -249,7 +251,22 @@ export function NewCustomerForm({
           <Field
             label={'MAC Address' + (macRequired ? '' : ' (optional for PPPoE)')}
             htmlFor="mac_address"
-            error={errors.mac_address}
+            error={
+              macHolders.length > 0 ? (
+                <>
+                  Already used by{' '}
+                  {macHolders.map((h, i) => (
+                    <span key={h.id}>
+                      {i > 0 ? (i === macHolders.length - 1 ? ' and ' : ', ') : null}
+                      <Link href={'/dashboard/customers/' + h.id} className="font-medium underline hover:text-red-300">
+                        {'#' + h.id + ' ' + h.name}
+                      </Link>
+                    </span>
+                  ))}
+                  .
+                </>
+              ) : errors.mac_address
+            }
             className="sm:col-span-2"
             required={macRequired}
           >

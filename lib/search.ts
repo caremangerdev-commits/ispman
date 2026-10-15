@@ -69,6 +69,49 @@ function asId(token: string): string | null {
 }
 
 /**
+ * A word that is all or part of a MAC, rewritten the way MACs are stored.
+ *
+ * WHY. Every stored MAC is AA:BB:CC:DD:EE:FF (lib/mac.ts), but people search
+ * with what is in front of them: the label on the router (987DDD56F599), a
+ * Windows screen (98-7D-DD-56-F5-99), the last few characters (F599). Matched
+ * as typed, none of those finds anything, while the add form rewrites the
+ * same text to the colon form and its duplicate check does find the customer.
+ * Vernon staff were told a MAC was taken by a customer search could not find
+ * (15 Oct 2026).
+ *
+ * WHICH WORDS. Only colons, dashes and dots are taken out, and what is left
+ * must be 4 to 12 hex digits holding both a letter and a digit, or all 12. A
+ * name never has a digit ("Ada", "Dee"), and an all-digit fragment is a phone
+ * number or an account number far more often than part of a MAC. A whole MAC
+ * written in digits only is still found, because it has all 12.
+ *
+ * TWO FORMS FOR A FRAGMENT. Written without separators, "F599" may start on a
+ * byte boundary (…:F5:99) or halfway through one (…F:59:9…), so both are
+ * tried. Between them they find every MAC whose digits contain what was typed.
+ * A whole MAC has only the first.
+ *
+ * ADDED to the clauses, never in place of them: the word is still matched as
+ * typed against every field, so this can only add MAC matches.
+ */
+function macForms(token: string): string[] {
+  const hex = token.replace(/[:.-]/g, '').toUpperCase()
+  if (!/^[0-9A-F]{4,12}$/.test(hex)) return []
+  if (hex.length < 12 && !(/[A-F]/.test(hex) && /[0-9]/.test(hex))) return []
+
+  const pairs = (s: string) => (s.match(/.{1,2}/g) as string[]).join(':')
+  const forms = [pairs(hex)]
+  if (hex.length < 12) forms.push(hex[0] + ':' + pairs(hex.slice(1)))
+  // A word typed in the stored form already matches as typed.
+  return forms.filter((f) => f !== token.toUpperCase())
+}
+
+/** Whether a stored MAC matches one of the forms of a word. */
+function macMatches(mac: string | null | undefined, token: string): boolean {
+  const stored = (mac ?? '').toUpperCase()
+  return stored !== '' && macForms(token).some((f) => stored.includes(f))
+}
+
+/**
  * One PostgREST `or` clause per word, to be applied with a `.or()` each.
  *
  * Chained `.or()` calls are ANDed by PostgREST — separate query parameters —
@@ -98,6 +141,9 @@ export function searchClauses(
       'address.ilike.' + p,
       'mac_address.ilike.' + p,
     ]
+    // The same word in the stored MAC spelling; see macForms. Only hex digits
+    // and colons, so nothing in it can change the shape of the `or` filter.
+    for (const form of macForms(token)) parts.push('mac_address.ilike.%' + form + '%')
     if (opts.accountNumbers) parts.push('account_number.ilike.' + p)
     // The row id, still matched now that account numbers exist alongside it.
     // It is what the customer's own URL ends in and what an operator reads off
@@ -135,7 +181,7 @@ export function nameClauses(query: string): string[] {
  *    90  the row id or the whole account number
  *    60  the start of a name word ("bro" in BROWN)
  *    40  anywhere in the name ("ena" in JUDEENA)
- *    20  phone, account number or MAC
+ *    20  phone, account number or MAC (in any spelling; see macForms)
  *     5  the address only
  *
  * So a name match always outranks an address match, and the person whose name
@@ -159,7 +205,7 @@ export function matchScore(row: SearchableCustomer, query: string): number {
     else if (asId(t) === String(row.id) || (account !== '' && account === t)) best = 90
     else if (nameWords.some((w) => w.startsWith(t))) best = 60
     else if (name.includes(t)) best = 40
-    else if (other.some((v) => v.includes(t))) best = 20
+    else if (other.some((v) => v.includes(t)) || macMatches(row.mac_address, t)) best = 20
     else if (address.includes(t)) best = 5
     score += best
   }
@@ -220,6 +266,7 @@ export function matchesCustomer(row: SearchableCustomer, query: string): boolean
     // "38" find customer 388 on the list and not in the payment picker, which
     // is the exact divergence this module exists to prevent.
     if (asId(token) === String(row.id)) return true
+    if (macMatches(row.mac_address, token)) return true
 
     const needle = token.replace(/[%*,()]/g, '').toLowerCase()
     return needle ? haystack.some((v) => v.includes(needle)) : true

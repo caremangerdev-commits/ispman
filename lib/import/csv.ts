@@ -14,6 +14,8 @@
  * step 2.
  */
 
+import { canonicalMac } from '@/lib/mac'
+
 // ---------------------------------------------------------------------------
 // Fields a column can be mapped to
 // ---------------------------------------------------------------------------
@@ -239,20 +241,16 @@ export type MacResult =
 
 /**
  * Normalises to uppercase colon form, accepting colons, dashes, dots or bare
- * hex — every separator an export has been seen to use.
- *
- * Only those separators are stripped. Stray text is NOT filtered out, so
- * "AA:BB:CC:DD:EE:GG" and "n/a" come back invalid rather than being silently
- * reshaped into something that looks like a MAC.
+ * hex — every separator an export has been seen to use. The conversion is
+ * lib/mac.ts#canonicalMac, the same one the add and edit actions use, so an
+ * imported MAC and a typed one are compared in the same spelling.
  */
 export function normaliseMac(raw: string | null | undefined): MacResult {
   const trimmed = (raw ?? '').trim()
   if (!trimmed) return { kind: 'missing' }
 
-  const hex = trimmed.replace(/[\s:.-]/g, '')
-  if (!/^[0-9a-fA-F]{12}$/.test(hex)) return { kind: 'invalid' }
-
-  const mac = (hex.toUpperCase().match(/.{2}/g) as string[]).join(':')
+  const mac = canonicalMac(trimmed)
+  if (!mac) return { kind: 'invalid' }
   return mac === PLACEHOLDER_MAC ? { kind: 'missing' } : { kind: 'ok', mac }
 }
 
