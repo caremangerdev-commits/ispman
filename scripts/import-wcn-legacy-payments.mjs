@@ -98,6 +98,12 @@ const PAYMENTS = [
   { legacyPaymentId: 19210, legacyCustomerId: 1967, ispmanCustomerId: 1922, amount: 3500, paidOn: '2026-09-12', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
   { legacyPaymentId: 19211, legacyCustomerId: 2272, ispmanCustomerId: 2026, amount: 3500, paidOn: '2026-09-14', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
   { legacyPaymentId: 19212, legacyCustomerId: 2022, ispmanCustomerId: 1936, amount: 3500, paidOn: '2026-09-14', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
+  // Added 2026-10-15 with the West Central double-month correction
+  // (scripts/correct-wcn-unapplied-legacy-payments.mjs): the seventh, left in legacy on 29 Sep.
+  // Paid 10 Sep at the legacy till (legacy payment #19204, J$3,500 Cash Deposit, agent 87),
+  // never in ISPMan; he stood at twice his rate after the 2 Oct bill. Importing it records the
+  // money and takes the month off his balance in one step.
+  { legacyPaymentId: 19204, legacyCustomerId: 2046, ispmanCustomerId: 1944, amount: 3500, paidOn: '2026-09-10', method: 'cash', agent: 'Michelle Bennett',  userId: 160 },
 ]
 
 // --- Shapes shared with the app, restated here because a script cannot import TypeScript ---
