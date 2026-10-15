@@ -10,7 +10,7 @@ import {
 
 import {
   createImportPlans, findExistingMacs, importCustomerBatch, logCustomerImport,
-  type NewPlanInput, type RowFailure,
+  type NewPlanInput, type RowFailure, type WithheldMac,
 } from '@/app/actions/import'
 import { formatCurrency } from '@/lib/format'
 import {
@@ -104,6 +104,8 @@ type ImportOutcome = {
   plansCreated: number
   skipped: number
   failures: RowFailure[]
+  /** Imported, but without the MAC in the file: someone already held it. */
+  macsWithheld: WithheldMac[]
 }
 
 export function ImportWizard({
@@ -119,7 +121,8 @@ export function ImportWizard({
   const [mapping, setMapping] = useState<FieldTarget[]>([])
   const [planEdits, setPlanEdits] = useState<PlanEdits>({})
 
-  const [existingMacs, setExistingMacs] = useState<ReadonlySet<string>>(new Set())
+  /** MAC -> who already holds it, from findExistingMacs. */
+  const [existingMacs, setExistingMacs] = useState<ReadonlyMap<string, string>>(new Map())
   const [checkingMacs, setCheckingMacs] = useState(false)
   const [macCheckError, setMacCheckError] = useState<string | null>(null)
 
@@ -257,7 +260,7 @@ export function ImportWizard({
     setParsed(null)
     setMapping([])
     setPlanEdits({})
-    setExistingMacs(new Set())
+    setExistingMacs(new Map())
     setMacCheckError(null)
     setUploadError(null)
     setRunError(null)
@@ -335,9 +338,9 @@ export function ImportWizard({
       if (macs.length > 0) {
         setCheckingMacs(true)
         try {
-          setExistingMacs(new Set(await findExistingMacs(macs)))
+          setExistingMacs(new Map(Object.entries(await findExistingMacs(macs))))
         } catch (error) {
-          setExistingMacs(new Set())
+          setExistingMacs(new Map())
           setMacCheckError(
             'Existing MAC addresses could not be checked, so that exception is not listed below: ' +
             (error as Error).message
@@ -383,6 +386,7 @@ export function ImportWizard({
 
       let imported = 0
       const failures: RowFailure[] = []
+      const macsWithheld: WithheldMac[] = []
 
       for (let i = 0; i < importable.length; i += BATCH_SIZE) {
         const slice = importable.slice(i, i + BATCH_SIZE)
@@ -394,12 +398,13 @@ export function ImportWizard({
 
         imported += result.inserted
         failures.push(...result.failures)
+        macsWithheld.push(...result.macsWithheld)
         setProgress({ done: i + slice.length, total: importable.length })
       }
 
       const skipped = notImported.length + failures.length
       await logCustomerImport({ fileName: parsed.fileName, imported, skipped })
-      setOutcome({ imported, plansCreated: planResult.created, skipped, failures })
+      setOutcome({ imported, plansCreated: planResult.created, skipped, failures, macsWithheld })
     } catch (error) {
       setRunError(
         'The import stopped: ' + (error as Error).message +
@@ -420,6 +425,7 @@ export function ImportWizard({
       data: listed.map((r) => {
         const failure = failedRows.get(r.rowNumber)
         const reasons: string[] = [...r.reasons]
+        if (r.macHeldBy) reasons.push(r.mac + ' is held by ' + r.macHeldBy)
         if (failure) reasons.push('not written: ' + failure)
         return [
           r.rowNumber,
@@ -878,6 +884,11 @@ export function ImportWizard({
                           </td>
                           <td className="px-3 py-1.5 text-xs text-gray-400">
                             {row.reasons.join(', ')}
+                            {row.macHeldBy ? (
+                              <span className="block text-gray-500">
+                                {row.mac} is held by {row.macHeldBy}
+                              </span>
+                            ) : null}
                             {!isImportable(row) ? (
                               <span className="ml-1.5 font-semibold text-red-400">not imported</span>
                             ) : null}
@@ -975,6 +986,26 @@ export function ImportWizard({
                       <li key={failure.rowNumber} className="text-gray-400">
                         <span className="tabular-nums text-gray-500">Row {failure.rowNumber}</span>{' '}
                         — {failure.name}: {failure.error}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
+              {outcome.macsWithheld.length > 0 ? (
+                <div className="space-y-2">
+                  <Notice tone="warn">
+                    {outcome.macsWithheld.length}{' '}
+                    {outcome.macsWithheld.length === 1 ? 'customer was' : 'customers were'} imported
+                    without a MAC, because another customer already holds it. The MAC from the file
+                    is in each one&apos;s notes. Decide which device is real before putting them on
+                    the network.
+                  </Notice>
+                  <ul className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-gray-800 p-2 text-xs">
+                    {outcome.macsWithheld.map((w) => (
+                      <li key={w.rowNumber} className="text-gray-400">
+                        <span className="tabular-nums text-gray-500">Row {w.rowNumber}</span>{' '}
+                        — {w.name}: {w.mac} is held by {w.heldBy}
                       </li>
                     ))}
                   </ul>

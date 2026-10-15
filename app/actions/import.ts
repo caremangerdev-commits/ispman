@@ -6,11 +6,13 @@ import { revalidatePath } from 'next/cache'
 import { logEvent } from '@/lib/audit'
 import { can } from '@/lib/permissions'
 import { getGeneralSettings } from '@/lib/data/company'
+import { macHoldersByMac } from '@/lib/data/mac-holders'
 import { getSchemaCapabilities, type SchemaCapabilities } from '@/lib/schema'
 import { getSession, type Session } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 import {
-  DEFAULT_CUT_OFF_DAY, displayNameOf, isImportable, normaliseKey, resolveRow,
+  DEFAULT_CUT_OFF_DAY, displayNameOf, isImportable, macsToWithhold, normaliseKey, resolveRow,
+  withheldMacNote,
   type RawRow, type ResolveOptions, type ResolvedRow,
 } from '@/lib/import/csv'
 
@@ -47,40 +49,17 @@ function todayYmd() {
 // Step 4 — MACs already in use
 // ---------------------------------------------------------------------------
 
-/** Chunk size for the `in` filter; keeps the querystring inside sane limits. */
-const LOOKUP_CHUNK = 400
-
 /**
- * Which of these MACs already belong to a customer of this company.
+ * Which of these MACs already belong to a customer of this company, and to
+ * whom, for the preview: MAC -> "#2358 Dena Chambers".
  *
- * Only reports the clash — it does not stop anything. `mac_address` carries no
- * unique constraint, so the duplicate inserts perfectly well; it is flagged so
- * a person decides which of the two devices is real, instead of the import
- * deciding for them.
+ * The preview only describes what the write will do. importCustomerBatch
+ * checks again at write time and is what actually keeps the MAC off the row
+ * (lib/import/csv.ts#macsToWithhold).
  */
-export async function findExistingMacs(macs: string[]): Promise<string[]> {
+export async function findExistingMacs(macs: string[]): Promise<Record<string, string>> {
   const { company } = await authorize()
-  const unique = [...new Set(macs.filter(Boolean))]
-  if (unique.length === 0) return []
-
-  const db = tenantClient()
-  const found = new Set<string>()
-
-  for (let i = 0; i < unique.length; i += LOOKUP_CHUNK) {
-    const chunk = unique.slice(i, i + LOOKUP_CHUNK)
-    const { data, error } = await db
-      .from('customers')
-      .select('mac_address')
-      .eq('company_id', company.id)
-      .in('mac_address', chunk)
-
-    if (error) throw new Error('Could not check existing MAC addresses: ' + error.message)
-    for (const row of (data ?? []) as unknown as { mac_address: string | null }[]) {
-      if (row.mac_address) found.add(row.mac_address)
-    }
-  }
-
-  return [...found]
+  return Object.fromEntries(await macHoldersByMac(company.id, macs))
 }
 
 // ---------------------------------------------------------------------------
@@ -195,10 +174,20 @@ export type RowFailure = {
   error: string
 }
 
+/** A row imported without its MAC because someone already held it. */
+export type WithheldMac = {
+  rowNumber: number
+  name: string
+  mac: string
+  heldBy: string
+}
+
 export type BatchResult = {
   inserted: number
   /** Rows the database refused, named individually. Never a silent drop. */
   failures: RowFailure[]
+  /** Rows written without their MAC; see lib/import/csv.ts#macsToWithhold. */
+  macsWithheld: WithheldMac[]
 }
 
 /** The company-wide values every imported customer inherits. */
@@ -347,7 +336,10 @@ export async function importCustomerBatch(batch: ImportBatch): Promise<BatchResu
     })
   }
 
-  if (prepared.length === 0) return { inserted: 0, failures }
+  const macsWithheld: WithheldMac[] = []
+  const done = (inserted: number): BatchResult => ({ inserted, failures, macsWithheld })
+
+  if (prepared.length === 0) return done(0)
 
   // --- account numbers ------------------------------------------------------
   //
@@ -395,12 +387,45 @@ export async function importCustomerBatch(batch: ImportBatch): Promise<BatchResu
 
     prepared.length = 0
     prepared.push(...survivors)
-    if (prepared.length === 0) return { inserted: 0, failures }
+    if (prepared.length === 0) return done(0)
+  }
+
+  // --- MACs already in use ---------------------------------------------------
+  //
+  // IMPORTED WITHOUT THE MAC (owner, 15 Oct 2026); the rule and why are at
+  // lib/import/csv.ts#macsToWithhold. Checked HERE, at write time, against the
+  // database: the preview's check is advice from minutes ago, and the batches
+  // before this one are in the database by now, so a MAC repeated across
+  // batches is caught the same way as one repeated within a batch. After the
+  // account-number step, so a row refused there does not claim a MAC.
+  if (batch.options.macMapped) {
+    const holders = await macHoldersByMac(
+      company.id,
+      prepared.map((p) => p.row.mac).filter((m): m is string => !!m)
+    )
+    const withheld = macsToWithhold(prepared.map((p) => p.row), holders)
+
+    for (const item of prepared) {
+      const heldBy = withheld.get(item.row.rowNumber)
+      if (!heldBy || !item.row.mac) continue
+
+      // Explicitly null, never omitted: an omitted key stores the column
+      // default, 00:00:00:00:00:00 (see buildPayload).
+      item.payload.mac_address = null
+      // The MAC is kept in the notes so it is not lost, where the column exists.
+      if (caps.catalog) item.payload.notes = withheldMacNote(item.row.notes, item.row.mac, heldBy)
+      macsWithheld.push({
+        rowNumber: item.row.rowNumber,
+        name: displayNameOf(item.row),
+        mac: item.row.mac,
+        heldBy,
+      })
+    }
   }
 
   const db = tenantClient()
   const { error } = await db.from('customers').insert(prepared.map((p) => p.payload))
-  if (!error) return { inserted: prepared.length, failures }
+  if (!error) return done(prepared.length)
 
   let inserted = 0
   for (const { row, payload } of prepared) {
@@ -416,7 +441,14 @@ export async function importCustomerBatch(batch: ImportBatch): Promise<BatchResu
     }
   }
 
-  return { inserted, failures }
+  // A withheld row the database then refused was not imported at all, so it is
+  // a failure, not a customer without a MAC.
+  const refused = new Set(failures.map((f) => f.rowNumber))
+  const kept = macsWithheld.filter((w) => !refused.has(w.rowNumber))
+  macsWithheld.length = 0
+  macsWithheld.push(...kept)
+
+  return done(inserted)
 }
 
 // ---------------------------------------------------------------------------

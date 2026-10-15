@@ -445,8 +445,9 @@ export type ExceptionReason =
   | 'missing name'
   | 'missing MAC address'
   | 'invalid MAC format'
-  | 'duplicate MAC within this file'
-  | 'MAC already used by an existing customer'
+  | 'MAC already used by an existing customer, imported without it'
+  | 'MAC used by an earlier row in this file, imported without it'
+  | 'MAC used again later in this file, kept on this row'
   | 'missing or non numeric monthly rate'
   | 'invalid cut off day, using company default'
   | 'unreadable date added, left blank'
@@ -482,6 +483,11 @@ export type ResolvedRow = {
   accountNumber: string
   /** Uppercase colon form, or null for "no MAC" — never the placeholder. */
   mac: string | null
+  /**
+   * Who already holds `mac`, in words, when the row will be imported without
+   * it. Set by withMacConflicts; absent otherwise.
+   */
+  macHeldBy?: string
   rate: number | null
   /** Day from the file, or null for "fall back to the company setting". */
   cutOffDay: number | null
@@ -607,31 +613,79 @@ export function summariseCutOffDays(
 }
 
 /**
- * Adds the two MAC problems that no single row can see on its own.
+ * Which rows are imported WITHOUT their MAC, and who already holds it.
  *
- * Every row sharing a duplicated MAC is flagged, including the first one —
- * whoever fixes this needs the whole set, not the copies. Duplicates still
- * import: `mac_address` carries no unique constraint, so they insert cleanly
- * and are the operator's to sort out afterwards.
+ * THE RULE (owner, 15 Oct 2026): a MAC already held is not given to a second
+ * customer. A MAC is the RADIUS username for DHCP and hotspot, so two customers
+ * on one MAC share one network identity, and a payment or a disconnect for
+ * either moves the other. The customer is still created, without the MAC — a
+ * customer with no MAC is an ordinary, unprovisioned one — and the file's MAC
+ * goes into their notes, naming who holds it, so a person decides which device
+ * is real. Until then the row imported WITH the MAC and was only flagged.
+ *
+ * Held means held by an existing customer (`holders`, from
+ * lib/data/mac-holders.ts#macHoldersByMac) or by an earlier row in `rows`: a
+ * MAC that appears twice in the file goes to its first row only.
+ *
+ * ONE RULE FOR BOTH SIDES. The wizard runs it over the whole file for the
+ * preview; app/actions/import.ts runs it over each batch at write time, when
+ * the batches before are already in the database and so among `holders`. The
+ * two reach the same decision for every row.
+ */
+export function macsToWithhold(
+  rows: { rowNumber: number; mac: string | null }[],
+  holders: ReadonlyMap<string, string>
+): Map<number, string> {
+  const firstRow = new Map<string, number>()
+  const withheld = new Map<number, string>()
+  for (const row of rows) {
+    if (!row.mac) continue
+    const held = holders.get(row.mac)
+    const earlier = firstRow.get(row.mac)
+    if (held) withheld.set(row.rowNumber, held)
+    else if (earlier !== undefined) withheld.set(row.rowNumber, 'row ' + earlier + ' of this file')
+    else firstRow.set(row.mac, row.rowNumber)
+  }
+  return withheld
+}
+
+/** What a withheld row's notes say about the MAC it did not get. */
+export function withheldMacNote(notes: string, mac: string, heldBy: string): string {
+  const line = 'MAC in the import file: ' + mac + ', already used by ' + heldBy + '. Imported without it.'
+  return notes ? notes + '\n' + line : line
+}
+
+/**
+ * Adds the MAC problems that no single row can see on its own, as
+ * macsToWithhold decides them.
+ *
+ * The row that KEEPS a MAC repeated later in the file is flagged too — whoever
+ * sorts this out needs the whole set, not only the copies.
  */
 export function withMacConflicts(
   rows: ResolvedRow[],
-  existingMacs: ReadonlySet<string>
+  holders: ReadonlyMap<string, string>
 ): ResolvedRow[] {
-  const seen = new Set<string>()
-  const duplicated = new Set<string>()
-  for (const row of rows) {
-    if (!row.mac) continue
-    if (seen.has(row.mac)) duplicated.add(row.mac)
-    else seen.add(row.mac)
-  }
+  const withheld = macsToWithhold(rows, holders)
+  // MACs some later row repeats. The one row holding such a MAC without being
+  // withheld is the row that keeps it.
+  const repeated = new Set(
+    rows.filter((r) => r.mac && !holders.has(r.mac) && withheld.has(r.rowNumber)).map((r) => r.mac)
+  )
 
   return rows.map((row) => {
     if (!row.mac) return row
-    const extra: ExceptionReason[] = []
-    if (duplicated.has(row.mac)) extra.push('duplicate MAC within this file')
-    if (existingMacs.has(row.mac)) extra.push('MAC already used by an existing customer')
-    return extra.length ? { ...row, reasons: [...row.reasons, ...extra] } : row
+    const heldBy = withheld.get(row.rowNumber)
+    if (heldBy) {
+      const reason: ExceptionReason = holders.has(row.mac)
+        ? 'MAC already used by an existing customer, imported without it'
+        : 'MAC used by an earlier row in this file, imported without it'
+      return { ...row, macHeldBy: heldBy, reasons: [...row.reasons, reason] }
+    }
+    if (repeated.has(row.mac)) {
+      return { ...row, reasons: [...row.reasons, 'MAC used again later in this file, kept on this row'] }
+    }
+    return row
   })
 }
 

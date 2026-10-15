@@ -16,6 +16,7 @@ import Link from 'next/link'
 import { AdjustBalanceModal } from '@/components/customers/AdjustBalanceModal'
 import { CorrectExpiryModal } from '@/components/customers/CorrectExpiryModal'
 import { ExtendAccessModal } from '@/components/customers/ExtendAccessModal'
+import { MacHolderLinks } from '@/components/customers/MacHolderLinks'
 import { ProvisionModal } from '@/components/customers/ProvisionModal'
 import type { ProvisionPlan } from '@/lib/data/provision'
 import { StatusBadge } from '@/components/customers/StatusBadge'
@@ -500,7 +501,9 @@ export function CustomerDetail({
 
       {state && !state.ok ? (
         <p role="alert" className="rounded-lg border border-red-900/60 bg-red-950/50 px-3 py-2 text-sm text-red-300">
-          {state.error}
+          {state.macHolders?.length
+            ? <><MacHolderLinks holders={state.macHolders} /> Nothing was saved.</>
+            : state.error}
         </p>
       ) : null}
 

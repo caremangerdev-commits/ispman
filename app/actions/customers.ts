@@ -442,10 +442,10 @@ export async function updateCustomer(
 
   const db = tenantClient()
 
-  // READ BEFORE WRITE, so the log can say what the value WAS. This select
-  // exists only for the audit row: nothing else here needs the old customer,
-  // and without it an edit can only ever record its own result, which is the
-  // half of the story already visible on the record itself.
+  // READ BEFORE WRITE, so the log can say what the value WAS, and so the MAC
+  // check below can tell a changed MAC from one simply resubmitted. Without it
+  // an edit can only ever record its own result, which is the half of the
+  // story already visible on the record itself.
   //
   // Only the columns being patched are read, so a schema without 0003 or 0005
   // is not asked for columns it does not have.
@@ -455,6 +455,31 @@ export async function updateCustomer(
     .eq('company_id', company.id)
     .eq('id', id)
     .maybeSingle()
+
+  // A CHANGED MAC must be free, as on the add form (owner, 15 Oct 2026). This
+  // path had no check at all: on 1 Oct an edit put #3026 onto a MAC #5945 had
+  // been given eleven minutes earlier, and the two shared one RADIUS identity.
+  //
+  // ONLY WHEN IT CHANGES. 36 MACs were already shared on 15 Oct, and every save
+  // of those customers resubmits the MAC they hold; refusing that would make
+  // them impossible to edit at all, for any field, until somebody untangled
+  // them.
+  const macBefore = (beforeRow as unknown as { mac_address?: string | null } | null)?.mac_address ?? null
+  if (mac_address && mac_address !== macBefore) {
+    const holders = await findMacHolders(company.id, mac_address, id)
+    if (holders === null) {
+      return { ok: false, error: 'Could not check whether that MAC address is already in use. Nothing was saved.' }
+    }
+    if (holders.length > 0) {
+      const who = describeMacHolders(holders)
+      return {
+        ok: false,
+        error: 'That MAC address is already used by ' + who + '. Nothing was saved.',
+        fieldErrors: { mac_address: 'Already used by ' + who + '.' },
+        macHolders: holders,
+      }
+    }
+  }
 
   const { error } = await db
     .from('customers')

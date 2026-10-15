@@ -6,6 +6,7 @@ import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import { createCustomer, type ActionResult } from '@/app/actions/customers'
+import { MacHolderLinks } from '@/components/customers/MacHolderLinks'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
 import { formatCurrency } from '@/lib/format'
 import {
@@ -251,22 +252,7 @@ export function NewCustomerForm({
           <Field
             label={'MAC Address' + (macRequired ? '' : ' (optional for PPPoE)')}
             htmlFor="mac_address"
-            error={
-              macHolders.length > 0 ? (
-                <>
-                  Already used by{' '}
-                  {macHolders.map((h, i) => (
-                    <span key={h.id}>
-                      {i > 0 ? (i === macHolders.length - 1 ? ' and ' : ', ') : null}
-                      <Link href={'/dashboard/customers/' + h.id} className="font-medium underline hover:text-red-300">
-                        {'#' + h.id + ' ' + h.name}
-                      </Link>
-                    </span>
-                  ))}
-                  .
-                </>
-              ) : errors.mac_address
-            }
+            error={macHolders.length > 0 ? <MacHolderLinks holders={macHolders} /> : errors.mac_address}
             className="sm:col-span-2"
             required={macRequired}
           >
