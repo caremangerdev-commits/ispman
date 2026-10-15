@@ -569,6 +569,9 @@ export async function recordPayment(
     chosenDate,
     checked: charges.rows,
     chargeFee: str(formData, 'reconnection_fee') === '1',
+    // The till files its audit rows under the signed-in cashier, as it always
+    // has; checkedOff defaults to false so the payment joins the float.
+    log: logEvent,
   })
 }
 

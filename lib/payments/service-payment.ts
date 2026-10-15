@@ -39,7 +39,6 @@ import { canExtend } from '@/lib/status'
 import { getRadiusStatus as readNetworkRecord, radiusConfigured } from '@/lib/radius-db'
 import { applyRadiusWrite, radiusLogDetails } from '@/lib/radius/operations'
 import { type SchemaCapabilities } from '@/lib/schema'
-import { logEvent } from '@/lib/audit'
 import { notifyPaymentReceipt } from '@/lib/sms/notify'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -163,6 +162,21 @@ export function oneOffSummary(checked: CheckedAllocation[]) {
   }))
 }
 
+/**
+ * The audit-log writer, injected so one body serves both callers. The till
+ * passes the session logEvent (lib/audit), which files the row under the
+ * signed-in cashier; an online payment passes a sessionless writer wrapping
+ * logSystemEvent, because a webhook has no signed-in user to read. Same rows,
+ * same `details` text — only who the row is filed under differs.
+ */
+export type ServiceLogger = (input: {
+  customerId?: number | null
+  type: string
+  tag?: string
+  details: string
+  amount?: number | null
+}) => Promise<unknown>
+
 /** Who a payment is attributed to, in place of the staff session. */
 export type ServicePaymentActor = {
   /** Free-text agent stamped on the payment row (a cashier's name, or "Online payment (Fygaro)"). */
@@ -198,6 +212,15 @@ export type ServicePaymentInput = {
   checked: CheckedAllocation[]
   /** The reconnection-fee box, ticked; false for an online payment. */
   chargeFee: boolean
+  /**
+   * Stamp the service row as already reconciled. An online payment is in no
+   * cashier's drawer, so it is checked off on arrival and never joins a float
+   * to be counted. Defaults to false — the till's behaviour, where the payment
+   * waits to be checked off with the rest of the collector's takings.
+   */
+  checkedOff?: boolean
+  /** Where this payment's audit rows are written. See ServiceLogger. */
+  log: ServiceLogger
 }
 
 /**
@@ -216,7 +239,7 @@ export type ServicePaymentInput = {
 export async function recordServicePayment(input: ServicePaymentInput): Promise<PaymentResult> {
   const {
     company, caps, actor, customerId, paidAmount, paymentDate, method, notes,
-    accessDecisionRaw, chosenDate, checked, chargeFee,
+    accessDecisionRaw, chosenDate, checked, chargeFee, checkedOff = false, log,
   } = input
   const agent = actor.agent
 
@@ -667,7 +690,9 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
 
   if (caps.checkoff) {
     insertRow.payment_method = method
-    insertRow.checked_off = false
+    // Online payments arrive already reconciled — no drawer to count them in;
+    // a till payment waits to be checked off. See ServicePaymentInput.checkedOff.
+    insertRow.checked_off = checkedOff
     // The collector's identity, so "My Collections" and checkoff can attribute
     // the payment even if the free-text agent field is later edited. Null for a
     // payment no staff member collected (an online payment).
@@ -847,7 +872,7 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
   )?.id as number
 
   if (feeOffered) {
-    await logEvent({
+    await log({
       customerId: customer.id,
       type: feeRow ? 'reconnection_fee_charged' : 'reconnection_fee_waived',
       tag: '[payments]',
@@ -861,7 +886,7 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
   }
 
   if (monthChange) {
-    await logEvent({
+    await log({
       customerId: customer.id,
       type: 'service_resumed',
       tag: '[payments]',
@@ -916,7 +941,7 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
       // it — which earlier payment granted the month — should not have to be
       // reconstructed from balances.
       if (periodGranted && grant && newExpiry) {
-        await logEvent({
+        await log({
           customerId: customer.id,
           type: 'access_already_granted',
           tag: '[payments]',
@@ -975,7 +1000,7 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
             .eq('id', paymentId)
         }
 
-        await logEvent({
+        await log({
           customerId: customer.id,
           type: 'radius_extend',
           tag: '[payments]',
@@ -1002,7 +1027,7 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
       } else {
         warning =
           'Payment recorded, but access could not be extended: ' + result.error
-        await logEvent({
+        await log({
           customerId: customer.id,
           type: 'radius_extend_failed',
           tag: '[payments]',

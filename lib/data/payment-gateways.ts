@@ -183,3 +183,54 @@ export async function markGatewayFailed(rowId: number, message: string): Promise
     .update({ status: 'failed', error: message.slice(0, 500) })
     .eq('id', rowId)
 }
+
+/**
+ * Raises a staff notification (the navbar bell) when an online payment arrives
+ * but the customer is left unsettled — the money was taken but either could not
+ * be recorded, or was recorded without extending access. A customer who paid
+ * and stayed cut off has to reach a person, not sit in a table.
+ *
+ * Best-effort: the gateway_payments row and the audit log are the durable
+ * record; this is the human-facing nudge on top, so a failure to raise it is
+ * logged and swallowed rather than allowed to fail the webhook.
+ */
+export async function alertUnsettledOnlinePayment(input: {
+  companyId: number
+  customerId: number
+  amount: number
+  reference: string
+  /** A full sentence describing what went wrong. */
+  reason: string
+}): Promise<void> {
+  const db = tenantClient()
+  try {
+    const { data } = await db
+      .from('customers')
+      .select('first_name, last_name')
+      .eq('company_id', input.companyId)
+      .eq('id', input.customerId)
+      .maybeSingle()
+    const c = data as { first_name: string | null; last_name: string | null } | null
+    const name = c
+      ? [c.first_name, c.last_name].filter(Boolean).join(' ') || 'A customer'
+      : 'Customer #' + input.customerId
+
+    const message =
+      name + ' paid J$' + input.amount.toFixed(2) + ' online. ' + input.reason +
+      ' They may be cut off — contact them. (ref ' + input.reference + ')'
+
+    const { error } = await db.from('notifications_queue').insert({
+      company_id: input.companyId,
+      customer_id: input.customerId,
+      type: 'payment',
+      channel: 'email',
+      recipient: '',
+      message,
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    })
+    if (error) console.error('[online payment alert] could not raise the bell:', error.message)
+  } catch (err) {
+    console.error('[online payment alert] could not raise the bell:', (err as Error).message)
+  }
+}

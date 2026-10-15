@@ -170,6 +170,13 @@ export async function logEvent(input: LogEventInput): Promise<LogEventResult> {
  */
 export const SYSTEM_BILLING_EMAIL = 'billing-engine@system.ispman'
 
+/**
+ * The `users` row online gateway payments are logged as (migration 0034). Same
+ * reasoning as the billing engine's: a webhook has no signed-in user, so its
+ * audit rows need an identity of their own. Looked up by this email.
+ */
+export const SYSTEM_ONLINE_EMAIL = 'online-payments@system.ispman'
+
 export type SystemActor = { id: number; email: string }
 
 /**
@@ -194,8 +201,8 @@ export async function systemActor(email: string = SYSTEM_BILLING_EMAIL): Promise
 export type LogSystemEventInput = {
   /** The tenant the row is filed against. There is no session to default from. */
   companyId: number
-  /** Which process wrote it: 'billing'. Becomes the `via=system:<process>` marker. */
-  process: 'billing'
+  /** Which process wrote it: 'billing' or 'online'. Becomes `via=system:<process>`. */
+  process: 'billing' | 'online'
   /** The identity to file it under — from systemActor(). */
   actor: SystemActor
   type: string

@@ -1,11 +1,13 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
+import { logSystemEvent, systemActor, SYSTEM_ONLINE_EMAIL } from '@/lib/audit'
 import { toPaymentMethod } from '@/lib/data/checkoff'
 import {
-  claimGatewayPayment, getGatewayCredentials, markGatewayFailed, markGatewayRecorded,
+  alertUnsettledOnlinePayment, claimGatewayPayment, getGatewayCredentials,
+  markGatewayFailed, markGatewayRecorded,
 } from '@/lib/data/payment-gateways'
 import { gatewayFor, WebhookError } from '@/lib/payments/gateways'
-import { recordServicePayment } from '@/lib/payments/service-payment'
+import { recordServicePayment, type ServiceLogger } from '@/lib/payments/service-payment'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -89,6 +91,32 @@ export async function POST(
     return NextResponse.json({ ok: true, duplicate: true })
   }
 
+  // The audit-log writer for this payment. A webhook has no signed-in user, so
+  // its rows are filed under the online-payments system identity (migration
+  // 0034), marked via=system:online — the same device the billing engine uses.
+  // Without that row (0034 not applied) the payment still records; only its
+  // audit rows are dropped, loudly.
+  const actor = await systemActor(SYSTEM_ONLINE_EMAIL)
+  const systemLog: ServiceLogger = actor
+    ? (e) =>
+        logSystemEvent({
+          companyId,
+          process: 'online',
+          actor,
+          type: e.type,
+          details: e.details,
+          customerId: e.customerId,
+          tag: e.tag,
+          amount: e.amount,
+        })
+    : async (e) => {
+        console.error(
+          '[' + provider + ' webhook] no system user (migration 0034) — dropped log:',
+          e.type
+        )
+        return { ok: false as const, error: 'no system actor' }
+      }
+
   try {
     const db = tenantClient()
     const { data: companyRow } = await db
@@ -120,20 +148,62 @@ export async function POST(
       chosenDate: null,
       checked: [],
       chargeFee: false,
+      // In no cashier's drawer: reconciled on arrival, kept out of the float.
+      checkedOff: true,
+      log: systemLog,
     })
 
     if (!result.ok) {
       await markGatewayFailed(claim.rowId, result.error)
+      await systemLog({
+        customerId: event.customerId,
+        type: 'online_payment_failed',
+        tag: '[online]',
+        details:
+          'Online payment J$' + event.amount.toFixed(2) + ' ref ' + event.reference +
+          ' could NOT be recorded: ' + result.error,
+        amount: event.amount,
+      })
+      // Paid but not settled — a person needs to act, not a table.
+      await alertUnsettledOnlinePayment({
+        companyId,
+        customerId: event.customerId,
+        amount: event.amount,
+        reference: event.reference,
+        reason: 'The payment could NOT be recorded: ' + result.error + '.',
+      })
       console.error('[' + provider + ' webhook] record failed:', result.error)
       // 200 so the hook is not suspended; the 'failed' row is the reprocess list.
       return NextResponse.json({ ok: false, recorded: false, error: result.error })
     }
 
     await markGatewayRecorded(claim.rowId, result.paymentId ?? null)
-    return NextResponse.json({ ok: true, paymentId: result.paymentId })
+
+    // Recorded, but the customer stayed cut off — the core could not extend
+    // access (not activated, network unreachable, or the write was refused).
+    // The core already logged why; this is the human-facing alert on top.
+    if (result.warning) {
+      await alertUnsettledOnlinePayment({
+        companyId,
+        customerId: event.customerId,
+        amount: event.amount,
+        reference: event.reference,
+        reason: 'It was recorded but access was not extended: ' + result.warning,
+      })
+      console.error('[' + provider + ' webhook] recorded but not extended:', result.warning)
+    }
+
+    return NextResponse.json({ ok: true, paymentId: result.paymentId, warning: result.warning ?? null })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     await markGatewayFailed(claim.rowId, message).catch(() => {})
+    await alertUnsettledOnlinePayment({
+      companyId,
+      customerId: event.customerId,
+      amount: event.amount,
+      reference: event.reference,
+      reason: 'The payment could NOT be recorded: ' + message + '.',
+    }).catch(() => {})
     console.error('[' + provider + ' webhook] error:', message)
     // Durably stored as 'failed'; 200 keeps the hook alive for later deliveries.
     return NextResponse.json({ ok: false, recorded: false, error: message })

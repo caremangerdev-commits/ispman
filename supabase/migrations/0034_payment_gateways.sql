@@ -141,3 +141,20 @@ BEGIN
   END LOOP;
 END
 $$;
+
+-- ---------------------------------------------------------------------------
+-- The system identity for online payments.
+--
+-- An online payment is recorded by the webhook through the same core the till
+-- uses, and that core writes audit rows. A webhook has no signed-in user, so —
+-- exactly like the billing engine (migration 0024) — these rows are filed under
+-- one `users` row of their own, marked `via=system:online` in the log so a
+-- tenant's trail never shows an online payment as staff work. It has no auth
+-- account and cannot sign in; it lives in the platform owner's company because
+-- users.company_id is NOT NULL. lib/audit.ts#SYSTEM_ONLINE_EMAIL finds it.
+-- ---------------------------------------------------------------------------
+INSERT INTO users (company_id, first_name, last_name, email, role, is_super_admin)
+SELECT
+  (SELECT company_id FROM users WHERE is_super_admin = TRUE ORDER BY id LIMIT 1),
+  'Online', 'Payments', 'online-payments@system.ispman', 'technician', FALSE
+WHERE NOT EXISTS (SELECT 1 FROM users WHERE email = 'online-payments@system.ispman');
