@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
+import { PORTAL_SLUG_HEADER, portalSlugFromHost } from '@/lib/portal/config'
 import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase/env'
 
 /**
@@ -40,6 +41,23 @@ function isPublicPath(pathname: string) {
  * In Next.js 16 the `middleware` file convention was renamed to `proxy`.
  */
 export async function proxy(request: NextRequest) {
+  // A tenant portal answers on its own subdomain and carries its own customer
+  // auth, so it skips the staff Supabase flow entirely. The slug is resolved
+  // from the host and stamped on the request for the portal layout to read;
+  // a client-sent copy of that header is overwritten here, so it cannot be
+  // forged, and the portal is unreachable on the staff host (where it is not a
+  // public path and the redirect below sends it to /login).
+  const portalSlug = portalSlugFromHost(request.headers.get('host'))
+  if (portalSlug) {
+    const url = request.nextUrl.clone()
+    if (!url.pathname.startsWith('/portal')) {
+      url.pathname = url.pathname === '/' ? '/portal' : '/portal' + url.pathname
+    }
+    const headers = new Headers(request.headers)
+    headers.set(PORTAL_SLUG_HEADER, portalSlug)
+    return NextResponse.rewrite(url, { request: { headers } })
+  }
+
   // Must be reassigned by setAll below so rotated auth cookies survive.
   let supabaseResponse = NextResponse.next({ request })
 
