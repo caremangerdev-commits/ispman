@@ -1,7 +1,7 @@
 // READ-ONLY preview of postpaid day-based billing (owner, 11 Oct 2026) on each
 // company's October bill day.
 //
-//   node scripts/preview-postpaid.mjs                 Vernon, Smartcomm Bogue, West Central
+//   node scripts/preview-postpaid.mjs                 Vernon, Smartcomm Bogue, West Central, Smartcomm Networking
 //   node scripts/preview-postpaid.mjs --company=31
 //
 // Writes nothing: no settings, no charges, no log. Needs the RADIUS tunnel.
@@ -83,7 +83,10 @@ const arg = (name) => {
 // 24th; each start date is the October bill day, so September — billed by Run
 // Bills on 28 Sep and 2 Oct — stays as billed. A company with no start date
 // stored is previewed from its October bill day.
-const PLAN = [{ id: 31 }, { id: 32 }, { id: 26 }]
+//
+// Smartcomm Networking (33) added 15 Oct 2026: its engine went live between
+// 14 and 15 Oct (start 23 Oct, bill day 23), after this list was written.
+const PLAN = [{ id: 31 }, { id: 32 }, { id: 26 }, { id: 33 }]
 const only = arg('company') ? Number(arg('company')) : null
 // --connection-month=on|off: the setting as it WILL be, before migration 0032
 // makes it readable. Without it, the stored setting.
