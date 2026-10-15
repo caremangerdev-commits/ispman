@@ -152,7 +152,7 @@ for (const plan of PLAN) {
   // record was made.
   const joinedOn = (c) => String(connectedOn.get(c.id) ?? c.dateAdded ?? '').slice(0, 10)
   const connectedInOctober = (c) => joinedOn(c) > '2026-10-01' && joinedOn(c) <= '2026-10-31'
-  const connectedNote = (c) => 'connected ' + joinedOn(c) + (connectedOn.has(c.id) ? '' : ' (day the record was made; 0032 not applied)')
+  const connectedNote = (c) => 'connected ' + joinedOn(c) + (connectedOn.has(c.id) ? '' : ' (day the record was made; no connection day recorded)')
 
   const monthBreaks = (id) => (breaks.get(id) ?? [])
     .filter((b) => b.off <= '2026-10-31' && (b.back === null || b.back > '2026-10-01'))
