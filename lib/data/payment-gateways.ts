@@ -206,11 +206,16 @@ export async function alertUnsettledOnlinePayment(input: {
   try {
     const { data } = await db
       .from('customers')
-      .select('first_name, last_name')
+      .select('first_name, last_name, phone, email')
       .eq('company_id', input.companyId)
       .eq('id', input.customerId)
       .maybeSingle()
-    const c = data as { first_name: string | null; last_name: string | null } | null
+    const c = data as {
+      first_name: string | null
+      last_name: string | null
+      phone: string | null
+      email: string | null
+    } | null
     const name = c
       ? [c.first_name, c.last_name].filter(Boolean).join(' ') || 'A customer'
       : 'Customer #' + input.customerId
@@ -219,15 +224,19 @@ export async function alertUnsettledOnlinePayment(input: {
       name + ' paid J$' + input.amount.toFixed(2) + ' online. ' + input.reason +
       ' They may be cut off — contact them. (ref ' + input.reference + ')'
 
+    // notifications_queue is the in-app staff bell — nothing is ever delivered
+    // from it (migration 0021). Shape verified against the live table: company_id,
+    // type, channel, recipient and message are NOT NULL; channel defaults to 'sms'
+    // and recipient has no default, so both are set here to real values; status
+    // 'pending' is what the bell counts as unread; id and created_at default.
     const { error } = await db.from('notifications_queue').insert({
       company_id: input.companyId,
       customer_id: input.customerId,
       type: 'payment',
-      channel: 'email',
-      recipient: '',
+      channel: c?.email ? 'email' : 'sms',
+      recipient: c?.email || c?.phone || name,
       message,
       status: 'pending',
-      created_at: new Date().toISOString(),
     })
     if (error) console.error('[online payment alert] could not raise the bell:', error.message)
   } catch (err) {
