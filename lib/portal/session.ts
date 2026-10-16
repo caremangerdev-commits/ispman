@@ -4,6 +4,8 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
 
 import { cookies } from 'next/headers'
 
+import { portalBaseDomain } from './config'
+
 /**
  * The customer's portal session — entirely separate from staff auth.
  *
@@ -69,13 +71,24 @@ function verify<T extends Record<string, unknown>>(token: string | undefined): T
   }
 }
 
-const cookieOptions = (maxAge: number) => ({
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax' as const,
-  path: '/',
-  maxAge,
-})
+function cookieOptions(maxAge: number) {
+  const base = portalBaseDomain()
+  // Scope the cookie to the registrable portal domain so a session set on one
+  // host (wcnet.pay.ispman.online) is readable on the apex and on every other
+  // tenant subdomain — which is what let a cross-host hop after sign-in lose it.
+  // Sharing the domain is safe: getPortalSession/getPendingPick reject any token
+  // whose company does not match the host's company. Host-only in dev, where the
+  // base is a dotless name like "localhost" that browsers refuse as a Domain.
+  const domain = base && base.includes('.') ? base : undefined
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    path: '/',
+    maxAge,
+    ...(domain ? { domain } : {}),
+  }
+}
 
 export type PortalSession = { companyId: number; customerId: number }
 
@@ -90,13 +103,15 @@ export async function getPortalSession(companyId: number): Promise<PortalSession
 export async function setPortalSession(companyId: number, customerId: number): Promise<void> {
   const jar = await cookies()
   jar.set(SESSION_COOKIE, sign({ c: companyId, u: customerId }, SESSION_TTL), cookieOptions(SESSION_TTL))
-  jar.delete(PENDING_COOKIE)
+  // Expire, not delete: a Domain-scoped cookie is only cleared by a Set-Cookie
+  // carrying the same Domain and Path, which jar.delete(name) does not send.
+  jar.set(PENDING_COOKIE, '', cookieOptions(0))
 }
 
 export async function clearPortalSession(): Promise<void> {
   const jar = await cookies()
-  jar.delete(SESSION_COOKIE)
-  jar.delete(PENDING_COOKIE)
+  jar.set(SESSION_COOKIE, '', cookieOptions(0))
+  jar.set(PENDING_COOKIE, '', cookieOptions(0))
 }
 
 export type PendingPick = { companyId: number; phone: string }

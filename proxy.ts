@@ -1,7 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-import { PORTAL_SLUG_HEADER, portalSlugFromHost } from '@/lib/portal/config'
+import { externalHost, isPortalHost, PORTAL_SLUG_HEADER, portalSlugFromHost } from '@/lib/portal/config'
 import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase/env'
 
 /**
@@ -41,13 +41,18 @@ function isPublicPath(pathname: string) {
  * In Next.js 16 the `middleware` file convention was renamed to `proxy`.
  */
 export async function proxy(request: NextRequest) {
+  // The host the client actually asked for. Behind Apache the `Host` header can
+  // be the upstream (127.0.0.1:3000), so this prefers X-Forwarded-Host — keying
+  // on the raw Host is what let a post-OTP redirect be mis-read as a staff
+  // request and bounced to /login.
+  const host = externalHost(request.headers)
+
   // A tenant portal answers on its own subdomain and carries its own customer
-  // auth, so it skips the staff Supabase flow entirely. The slug is resolved
-  // from the host and stamped on the request for the portal layout to read;
-  // a client-sent copy of that header is overwritten here, so it cannot be
-  // forged, and the portal is unreachable on the staff host (where it is not a
-  // public path and the redirect below sends it to /login).
-  const portalSlug = portalSlugFromHost(request.headers.get('host'))
+  // auth, so it NEVER touches the staff Supabase flow below. The slug is
+  // resolved from the host and stamped on the request for the portal layout to
+  // read; a client-sent copy of that header is overwritten here, so it cannot
+  // be forged.
+  const portalSlug = portalSlugFromHost(host)
   if (portalSlug) {
     const url = request.nextUrl.clone()
     if (!url.pathname.startsWith('/portal')) {
@@ -57,6 +62,23 @@ export async function proxy(request: NextRequest) {
     headers.set(PORTAL_SLUG_HEADER, portalSlug)
     return NextResponse.rewrite(url, { request: { headers } })
   }
+
+  // A portal-domain host with no tenant slug — the apex, or an odd multi-level
+  // subdomain — is STILL a portal host and must never reach staff auth. Send it
+  // into the portal (it renders the portal's own not-found), and strip any
+  // client-sent slug header so the apex cannot be made to impersonate a tenant.
+  if (isPortalHost(host)) {
+    const url = request.nextUrl.clone()
+    if (!url.pathname.startsWith('/portal')) {
+      url.pathname = url.pathname === '/' ? '/portal' : '/portal' + url.pathname
+    }
+    const headers = new Headers(request.headers)
+    headers.delete(PORTAL_SLUG_HEADER)
+    return NextResponse.rewrite(url, { request: { headers } })
+  }
+
+  // From here down is the STAFF app. A portal host can never reach it, and a
+  // staff host (a different domain) never reaches the portal above.
 
   // Must be reassigned by setAll below so rotated auth cookies survive.
   let supabaseResponse = NextResponse.next({ request })
