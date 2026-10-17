@@ -3,6 +3,7 @@ import 'server-only'
 import type { Brand } from '@/lib/brand'
 import { brandFor } from '@/lib/data/brand'
 import { loadEnrichedCustomers } from '@/lib/data/customers'
+import { portalUrlForCompany } from '@/lib/data/portal'
 import { getSmsSettings, type MessagingSettings } from '@/lib/data/sms'
 import { daysUntilDateOnly, formatCurrency } from '@/lib/format'
 import type { ChannelAdapter, OutboundMessage } from '@/lib/messaging/adapter'
@@ -112,7 +113,10 @@ async function sweepExpiryWarnings(
   if (hour < QUIET_START_HOUR || hour >= QUIET_END_HOUR) return 0
 
   const today = localDate(timezone)
-  const customers = await loadEnrichedCustomers(companyId)
+  const [customers, portalUrl] = await Promise.all([
+    loadEnrichedCustomers(companyId),
+    portalUrlForCompany(companyId),
+  ])
 
   let queued = 0
   for (const c of customers) {
@@ -142,6 +146,7 @@ async function sweepExpiryWarnings(
         '{{balance}}': formatCurrency(c.carried_balance ?? 0),
         '{{expiry}}': c.radiusExpiryDate ?? '',
         '{{days}}': String(days),
+        '{{portal}}': portalUrl ?? '',
         '{{company}}': companyName,
       },
       text: { sms: settings.smsTemplates.expiry_warning, email: settings.emailTemplates.expiry_warning },

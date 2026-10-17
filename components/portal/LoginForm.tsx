@@ -27,7 +27,7 @@ export function LoginForm({ companyName }: { companyName: string }) {
         <form action={verAction} className="flex flex-col gap-5">
           <div>
             <h1 className="text-2xl font-semibold">Enter your code</h1>
-            <p className="mt-1 text-base text-black/60">
+            <p className="mt-1 text-base text-neutral-500">
               We sent a 6-digit code by text. It expires in 10 minutes.
             </p>
           </div>
@@ -41,13 +41,13 @@ export function LoginForm({ companyName }: { companyName: string }) {
             autoFocus
             placeholder="______"
             aria-label="6-digit code"
-            className="w-full rounded-xl border border-black/15 px-4 py-4 text-center text-3xl tracking-[0.4em] tabular-nums outline-none focus:border-black/40"
+            className="w-full rounded-xl border border-neutral-300 px-4 py-4 text-center text-3xl tracking-[0.4em] tabular-nums outline-none focus:border-neutral-900"
           />
           {verState?.error ? <p className="text-base text-red-600">{verState.error}</p> : null}
           <button
             type="submit"
             disabled={verPending}
-            className="w-full rounded-xl bg-black px-4 py-4 text-lg font-semibold text-white disabled:opacity-50"
+            className="w-full rounded-xl bg-neutral-900 px-4 py-4 text-lg font-semibold text-white active:bg-neutral-700 disabled:opacity-50"
           >
             {verPending ? 'Checking…' : 'Sign in'}
           </button>
@@ -56,7 +56,7 @@ export function LoginForm({ companyName }: { companyName: string }) {
             type="submit"
             form="portal-resend"
             disabled={reqPending}
-            className="w-full py-2 text-base text-black/60 underline"
+            className="w-full py-2 text-base text-neutral-500 underline"
           >
             Send a new code
           </button>
@@ -72,7 +72,7 @@ export function LoginForm({ companyName }: { companyName: string }) {
     <form action={reqAction} className="flex flex-col gap-5">
       <div>
         <h1 className="text-2xl font-semibold">{companyName}</h1>
-        <p className="mt-1 text-base text-black/60">
+        <p className="mt-1 text-base text-neutral-500">
           Sign in with the mobile number on your account to see your balance and pay.
         </p>
       </div>
@@ -84,13 +84,13 @@ export function LoginForm({ companyName }: { companyName: string }) {
         autoFocus
         placeholder="876 000 0000"
         aria-label="Mobile number"
-        className="w-full rounded-xl border border-black/15 px-4 py-4 text-xl outline-none focus:border-black/40"
+        className="w-full rounded-xl border border-neutral-300 px-4 py-4 text-xl outline-none focus:border-neutral-900"
       />
       {reqState?.error ? <p className="text-base text-red-600">{reqState.error}</p> : null}
       <button
         type="submit"
         disabled={reqPending}
-        className="w-full rounded-xl bg-black px-4 py-4 text-lg font-semibold text-white disabled:opacity-50"
+        className="w-full rounded-xl bg-neutral-900 px-4 py-4 text-lg font-semibold text-white active:bg-neutral-700 disabled:opacity-50"
       >
         {reqPending ? 'Sending…' : 'Text me a code'}
       </button>

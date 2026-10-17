@@ -47,9 +47,11 @@ export const PLACEHOLDERS = {
   '{{first_name}}': 'First name only',
   '{{account}}': 'Account number',
   '{{amount}}': 'Amount paid — payment receipt only',
+  '{{date}}': 'Payment date — payment receipt only',
   '{{balance}}': 'Balance owing',
   '{{expiry}}': 'Expiry date',
   '{{days}}': 'Days until expiry — expiry warning only',
+  '{{portal}}': 'Link to the customer portal',
   '{{company}}': 'Your company name',
 } as const
 
@@ -66,14 +68,34 @@ export type PlaceholderValues = Partial<Record<keyof typeof PLACEHOLDERS, string
  */
 export const DEFAULT_TEMPLATES: Record<Exclude<SmsKind, 'bulk'>, string> = {
   payment_receipt:
-    'Hi {{first_name}}, we received your payment of {{amount}}. ' +
-    'Your balance is {{balance}}. Thank you. - {{company}}',
+    'Hi {{first_name}}, we received {{amount}} on {{date}}. ' +
+    'Service active until {{expiry}}. {{portal}} - {{company}}',
   expiry_warning:
-    'Hi {{first_name}}, your internet service expires in {{days}} day(s) on ' +
-    '{{expiry}}. Please pay {{balance}} to stay connected. - {{company}}',
+    'Hi {{first_name}}, your internet expires in {{days}} day(s) on ' +
+    '{{expiry}}. Pay {{balance}} to stay connected. {{portal}} - {{company}}',
   disconnection_notice:
     'Hi {{first_name}}, your internet service has been disconnected for ' +
     'non-payment. Please pay {{balance}} to be reconnected. - {{company}}',
+}
+
+/**
+ * Sent when a payment brings a cut-off customer back online. Not a per-company
+ * editable template: it is a short, factual confirmation of the one thing a
+ * reconnecting customer wants to know — "am I back on?" — and reuses the
+ * payment-receipt channel/route so it travels at the same bypass priority.
+ */
+export const SERVICE_RESTORED_SMS =
+  'Hi {{first_name}}, you are back online. Service active until {{expiry}}. {{portal}} - {{company}}'
+
+export const SERVICE_RESTORED_EMAIL = {
+  subject: 'You are back online — {{company}}',
+  body:
+    'Hi {{first_name}},\n\n' +
+    'Your payment has restored your internet service.\n\n' +
+    'Account: {{account}}\n' +
+    'Service active until: {{expiry}}\n\n' +
+    'View your account: {{portal}}\n\n' +
+    '{{company}}',
 }
 
 /**
@@ -238,9 +260,11 @@ export function worstCaseLength(template: string, companyName: string): SegmentI
     '{{first_name}}': 'MARGARET',
     '{{account}}': 'WCN-10999',
     '{{amount}}': 'J$12,500.00',
+    '{{date}}': '30 September 2026',
     '{{balance}}': 'J$12,500.00',
     '{{expiry}}': '30 September 2026',
     '{{days}}': '30',
+    '{{portal}}': 'https://westcentral.pay.ispman.online',
     '{{company}}': companyName,
   }))
 }

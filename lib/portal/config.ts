@@ -50,6 +50,17 @@ export function portalBaseDomain(): string | null {
 }
 
 /**
+ * The customer-facing portal URL for a tenant slug, or null when the portal is
+ * not configured (no suffix) or the company has no slug. Used in SMS so a
+ * message is a tap into the right tenant's portal, not a URL to remember.
+ */
+export function portalUrlFor(slug: string | null | undefined): string | null {
+  const suffix = portalHostSuffix()
+  if (!suffix || !slug) return null
+  return 'https://' + slug + suffix
+}
+
+/**
  * True for the portal apex AND every tenant subdomain under it — the whole set
  * of hosts that must go to the portal and never to staff auth.
  *

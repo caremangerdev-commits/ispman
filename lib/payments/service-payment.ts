@@ -39,7 +39,7 @@ import { canExtend } from '@/lib/status'
 import { getRadiusStatus as readNetworkRecord, radiusConfigured } from '@/lib/radius-db'
 import { applyRadiusWrite, radiusLogDetails } from '@/lib/radius/operations'
 import { type SchemaCapabilities } from '@/lib/schema'
-import { notifyPaymentReceipt } from '@/lib/sms/notify'
+import { notifyPaymentReceipt, notifyServiceRestored } from '@/lib/sms/notify'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 export type PaymentResult =
@@ -1101,7 +1101,24 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
     customerId: customer.id,
     paymentId,
     amount: round2(paidAmount + chargeTotal + feeAmount),
+    expiry: newExpiry,
+    paidOn: paymentDate,
   })
+
+  // A payment that brought a cut-off customer back online gets the "you're back
+  // on" confirmation on top of the receipt — the two questions a reconnecting
+  // prepaid customer has are "did it land?" and "am I back on?". Only when they
+  // were actually disconnected AND this payment extended them; a routine renewal
+  // by an already-active customer gets the receipt alone.
+  if (disconnectedNow && networkExtended) {
+    await notifyServiceRestored({
+      companyId: company.id,
+      companyName: company.name,
+      customerId: customer.id,
+      paymentId,
+      expiry: newExpiry,
+    })
+  }
 
   revalidatePath('/dashboard/customers/' + customer.id)
   revalidatePath('/dashboard/customers')

@@ -1,0 +1,11 @@
+-- ISPMan: a per-company "how to pay" line for the customer portal.
+--
+-- RUN THIS IN THE SUPABASE SQL EDITOR.
+--
+-- One column. The portal shows it beside the customer's account number, so a
+-- customer reading their number out at a counter also sees, in the company's
+-- own words, where and how that company takes payment ("Pay at any Bill Express,
+-- or online below."). Absent (0036 not applied, or left blank), the portal
+-- simply omits the line — lib/data/portal.ts and lib/data/company.ts both read
+-- it through the `portalNote` capability and treat its absence as "no note".
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS portal_payment_note TEXT;

@@ -163,6 +163,12 @@ export async function saveCompanyProfile(
     patch.account_number_prefix = normalisePrefix(str(formData, 'account_number_prefix'))
   }
 
+  if (caps.portalNote) {
+    // The "how to pay" line the portal shows beside the account number. Trimmed,
+    // capped, blank stored as null so the portal omits the line cleanly.
+    patch.portal_payment_note = str(formData, 'portal_payment_note').slice(0, 300) || null
+  }
+
   const settingsError = await writeSettings(company.id, patch)
   if (settingsError) {
     return { ok: false, error: 'Company saved but settings failed: ' + settingsError }

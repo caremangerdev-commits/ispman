@@ -164,6 +164,12 @@ export type SchemaCapabilities = {
    * settings card says so and nothing reads or writes a nas row.
    */
   routerTunnels: boolean
+  /**
+   * Migration 0036: `settings.portal_payment_note`, the per-company "how to pay"
+   * line shown on the customer portal. Absent, the portal omits the line and
+   * the general settings form hides the field.
+   */
+  portalNote: boolean
 }
 
 /**
@@ -197,7 +203,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     chargesTableRes, chargePaymentRes,
     billedThroughRes, skippedCoveredRes, paymentExpiryRes,
     connectionSettingRes, connectedOnRes,
-    routerTunnelsRes,
+    routerTunnelsRes, portalNoteRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -281,6 +287,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('customers').select('connected_on').limit(1),
     // 0033: router tunnels.
     db.from('router_tunnels').select('id').limit(1),
+    // 0036: the portal "how to pay" note.
+    db.from('settings').select('portal_payment_note').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -515,6 +523,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for router_tunnels: ' + routerTunnelsRes.error.message)
   }
 
+  // 0036: one column.
+  const missingPortalNote = portalNoteRes.error?.code === '42703'
+  if (portalNoteRes.error && !missingPortalNote) {
+    throw new Error('Schema probe failed for portal_payment_note: ' + portalNoteRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -546,6 +560,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     paymentExpiry: !missingPaymentExpiry,
     connectionMonth: !missingConnectionMonth,
     routerTunnels: !missingRouterTunnels,
+    portalNote: !missingPortalNote,
   }
 })
 

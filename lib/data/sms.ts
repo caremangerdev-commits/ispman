@@ -148,8 +148,12 @@ function toSettings(
   return {
     smsEnabled: Boolean(s?.sms_enabled),
     emailEnabled: channelsAvailable && Boolean(s?.email_enabled),
-    paymentReceipt: Boolean(s?.notify_payment_receipt_enabled ?? s?.sms_payment_receipt_enabled),
-    expiryWarning: Boolean(s?.notify_expiry_warning_enabled ?? s?.sms_expiry_warning_enabled),
+    // Payment receipts and expiry warnings DEFAULT ON when never explicitly set
+    // — a useful notification left as opt-in does not get switched on (the 15%
+    // uptake lesson, docs/research/features.md). An explicit false is respected;
+    // and nothing sends anyway unless the SMS master switch and a device are on.
+    paymentReceipt: Boolean(s?.notify_payment_receipt_enabled ?? s?.sms_payment_receipt_enabled ?? true),
+    expiryWarning: Boolean(s?.notify_expiry_warning_enabled ?? s?.sms_expiry_warning_enabled ?? true),
     disconnection: Boolean(s?.notify_disconnection_enabled ?? s?.sms_disconnection_enabled),
     routes: {
       payment_receipt: toRoute(s?.route_payment_receipt),

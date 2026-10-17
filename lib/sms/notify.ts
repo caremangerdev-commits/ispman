@@ -1,9 +1,11 @@
 import 'server-only'
 
+import { portalUrlForCompany } from '@/lib/data/portal'
 import { getSmsSettings } from '@/lib/data/sms'
 import { formatCurrency } from '@/lib/format'
 import { channelReadiness, enqueueForRoute } from '@/lib/messaging/enqueue'
 import { getSchemaCapabilities } from '@/lib/schema'
+import { SERVICE_RESTORED_EMAIL, SERVICE_RESTORED_SMS } from '@/lib/sms/templates'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 /**
@@ -61,27 +63,35 @@ async function loadCustomerBits(
   return data as unknown as CustomerBits
 }
 
-/** Shared preamble: the settings, what the tenant can send on, and the customer. */
+/** Shared preamble: the settings, the channels, the customer, and the portal link. */
 async function prepare(companyId: number, customerId: number) {
   const caps = await getSchemaCapabilities()
   if (!caps.sms) return null
 
-  const [settings, customer] = await Promise.all([
+  const [settings, customer, portalUrl] = await Promise.all([
     getSmsSettings(companyId),
     loadCustomerBits(companyId, customerId),
+    portalUrlForCompany(companyId),
   ])
   if (!customer) return null
 
   const readiness = await channelReadiness(companyId, settings)
-  return { settings, readiness, customer }
+  return { settings, readiness, customer, portalUrl }
 }
 
-function baseValues(customer: CustomerBits, companyName: string) {
+/** "17 Oct 2026", or empty for null — safe to drop straight into a template. */
+function formatDay(d: Date | null): string {
+  if (!d || !Number.isFinite(d.getTime())) return ''
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(d)
+}
+
+function baseValues(customer: CustomerBits, companyName: string, portalUrl: string | null) {
   return {
     '{{name}}': [customer.first_name, customer.last_name].filter(Boolean).join(' '),
     '{{first_name}}': customer.first_name ?? '',
     '{{account}}': customer.account_number ?? '',
     '{{balance}}': formatCurrency(customer.carried_balance ?? 0),
+    '{{portal}}': portalUrl ?? '',
     '{{company}}': companyName,
   }
 }
@@ -100,11 +110,15 @@ export async function notifyPaymentReceipt(opts: {
   customerId: number
   paymentId: number
   amount: number | string
+  /** The expiry the payment leaves the customer with, for "{{expiry}}". */
+  expiry?: Date | null
+  /** The payment date, for "{{date}}". Defaults to today. */
+  paidOn?: Date | null
 }): Promise<void> {
   try {
     const ready = await prepare(opts.companyId, opts.customerId)
     if (!ready) return
-    const { settings, readiness, customer } = ready
+    const { settings, readiness, customer, portalUrl } = ready
     if (!settings.paymentReceipt) return
 
     await enqueueForRoute({
@@ -113,13 +127,58 @@ export async function notifyPaymentReceipt(opts: {
       settings,
       readiness,
       customer,
-      values: { ...baseValues(customer, opts.companyName), '{{amount}}': formatCurrency(opts.amount) },
+      values: {
+        ...baseValues(customer, opts.companyName, portalUrl),
+        '{{amount}}': formatCurrency(opts.amount),
+        '{{date}}': formatDay(opts.paidOn ?? new Date()),
+        '{{expiry}}': formatDay(opts.expiry ?? null),
+      },
       text: { sms: settings.smsTemplates.payment_receipt, email: settings.emailTemplates.payment_receipt },
       dedupeKey: 'payment:' + opts.paymentId,
       attachment: { kind: 'receipt', id: opts.paymentId },
     })
   } catch (err) {
     console.error('[messaging] payment receipt not queued:', (err as Error).message)
+  }
+}
+
+/**
+ * Tells a customer who was cut off that a payment has put them back online.
+ *
+ * Distinct from the receipt (which answers "did my money land?"): this answers
+ * "am I back on?", the other top trust question for a reconnecting prepaid
+ * customer. Called only when a payment actually restored a disconnected one.
+ * Reuses the payment-receipt route so it travels at the same bypass priority,
+ * with its own dedupe key so it is one message per payment.
+ */
+export async function notifyServiceRestored(opts: {
+  companyId: number
+  companyName: string
+  customerId: number
+  paymentId: number
+  expiry?: Date | null
+}): Promise<void> {
+  try {
+    const ready = await prepare(opts.companyId, opts.customerId)
+    if (!ready) return
+    const { settings, readiness, customer, portalUrl } = ready
+    if (!settings.paymentReceipt) return
+
+    await enqueueForRoute({
+      companyId: opts.companyId,
+      kind: 'payment_receipt',
+      settings,
+      readiness,
+      customer,
+      values: {
+        ...baseValues(customer, opts.companyName, portalUrl),
+        '{{expiry}}': formatDay(opts.expiry ?? null),
+      },
+      text: { sms: SERVICE_RESTORED_SMS, email: SERVICE_RESTORED_EMAIL },
+      dedupeKey: 'restored:' + opts.paymentId,
+    })
+  } catch (err) {
+    console.error('[messaging] restoration notice not queued:', (err as Error).message)
   }
 }
 
@@ -140,7 +199,7 @@ export async function notifyDisconnection(opts: {
   try {
     const ready = await prepare(opts.companyId, opts.customerId)
     if (!ready) return
-    const { settings, readiness, customer } = ready
+    const { settings, readiness, customer, portalUrl } = ready
     if (!settings.disconnection) return
 
     const today = new Intl.DateTimeFormat('en-CA', {
@@ -154,7 +213,7 @@ export async function notifyDisconnection(opts: {
       settings,
       readiness,
       customer,
-      values: baseValues(customer, opts.companyName),
+      values: baseValues(customer, opts.companyName, portalUrl),
       text: { sms: settings.smsTemplates.disconnection_notice, email: settings.emailTemplates.disconnection_notice },
       dedupeKey: 'disconnect:' + opts.customerId + ':' + today,
     })

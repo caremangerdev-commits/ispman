@@ -25,6 +25,7 @@ export function GeneralSettingsForm({
   generalAvailable,
   taxIdAvailable,
   accountNumbersAvailable,
+  portalNoteAvailable,
 }: {
   settings: GeneralSettings
   currencies: readonly string[]
@@ -35,6 +36,8 @@ export function GeneralSettingsForm({
   taxIdAvailable: boolean
   /** Migration 0020 — hides the prefix field until applied. */
   accountNumbersAvailable: boolean
+  /** Migration 0036 — hides the portal payment note until applied. */
+  portalNoteAvailable: boolean
 }) {
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveCompanyProfile, null)
 
@@ -186,6 +189,24 @@ export function GeneralSettingsForm({
         <Card title="Notifications &amp; Network">
           <Toggle name="sms_enabled" label="SMS Notifications" checked={sms} onChange={setSms} />
           <Toggle name="email_enabled" label="Email Notifications" checked={emailOn} onChange={setEmailOn} />
+
+          {portalNoteAvailable ? (
+            <Field
+              label="Portal payment note"
+              htmlFor="portal_payment_note"
+              hint="Shown on the customer portal beside the account number — tell customers how to pay you."
+            >
+              <textarea
+                id="portal_payment_note"
+                name="portal_payment_note"
+                rows={3}
+                maxLength={300}
+                defaultValue={settings.portalPaymentNote}
+                placeholder="e.g. Pay at any Bill Express or Paymaster, quote your account number, or pay online below."
+                className={settingsInput + ' resize-y'}
+              />
+            </Field>
+          ) : null}
 
           <Field
             label="Expiry Warning Days"

@@ -78,6 +78,7 @@ export default async function GeneralSettingsPage() {
         generalAvailable={caps.generalSettings}
         taxIdAvailable={caps.taxId}
         accountNumbersAvailable={caps.accountNumbers}
+        portalNoteAvailable={caps.portalNote}
       />
 
       <BrandingCard

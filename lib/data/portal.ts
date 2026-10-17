@@ -3,6 +3,7 @@ import 'server-only'
 import { ymd } from '@/lib/billing'
 import { daysUntil, expiryOf } from '@/lib/domain'
 import { classifyPhone } from '@/lib/phone'
+import { portalUrlFor } from '@/lib/portal/config'
 import { getRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -94,6 +95,10 @@ export type PortalAccount = {
   expirySource: 'network' | 'billing' | null
   daysUntilExpiry: number | null
   billingAvailable: boolean
+  /** The number to read out at a counter; null when 0020 is not applied. */
+  accountNumber: string | null
+  /** The company's "how to pay" line, or null; from settings.portal_payment_note. */
+  paymentNote: string | null
 }
 
 /** Everything the account page shows for one customer. */
@@ -107,13 +112,12 @@ export async function getPortalAccount(
   let cols = 'id, first_name, last_name, last_bill_date, mac_address'
   if (caps.connectionTypes) cols += ', customer_type, pppoe_username'
   if (caps.billing) cols += ', carried_balance, account_credit'
+  if (caps.accountNumbers) cols += ', account_number'
 
-  const { data, error } = await db
-    .from('customers')
-    .select(cols)
-    .eq('company_id', companyId)
-    .eq('id', customerId)
-    .maybeSingle()
+  const [{ data, error }, note] = await Promise.all([
+    db.from('customers').select(cols).eq('company_id', companyId).eq('id', customerId).maybeSingle(),
+    readPaymentNote(companyId, caps.portalNote),
+  ])
 
   if (error) throw new Error('Portal account load failed: ' + error.message)
   if (!data) return null
@@ -128,6 +132,7 @@ export async function getPortalAccount(
     pppoe_username?: string | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
+    account_number?: string | null
   }
 
   // The real expiry is when the network actually cuts them off; the derived
@@ -163,5 +168,43 @@ export async function getPortalAccount(
     expirySource,
     daysUntilExpiry,
     billingAvailable: caps.billing,
+    accountNumber: caps.accountNumbers ? (row.account_number ?? null) : null,
+    paymentNote: note,
   }
+}
+
+/** The company's "how to pay" line, or null when absent / 0036 not applied. */
+async function readPaymentNote(companyId: number, available: boolean): Promise<string | null> {
+  if (!available) return null
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('settings')
+    .select('portal_payment_note')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error) {
+    if (MISSING.has(error.code ?? '')) return null
+    throw new Error('Portal payment note load failed: ' + error.message)
+  }
+  const raw = (data as { portal_payment_note: string | null } | null)?.portal_payment_note
+  return raw && raw.trim() ? raw.trim() : null
+}
+
+/**
+ * The portal URL for a company, for a tokenless link in an SMS. Null when the
+ * portal is not configured or the company has no slug. Reads the slug once; a
+ * missing slug column (0035 not applied) reads as null.
+ */
+export async function portalUrlForCompany(companyId: number): Promise<string | null> {
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('companies')
+    .select('slug')
+    .eq('id', companyId)
+    .maybeSingle()
+  if (error) {
+    if (MISSING.has(error.code ?? '')) return null
+    throw new Error('Portal URL lookup failed: ' + error.message)
+  }
+  return portalUrlFor((data as { slug: string | null } | null)?.slug ?? null)
 }

@@ -73,6 +73,8 @@ export type GeneralSettings = {
   expiryWarningDays: number
   ddnsHostname: string | null
   radiusSecret: string | null
+  /** Migration 0036 — the "how to pay" line shown on the customer portal. */
+  portalPaymentNote: string
 }
 
 /**
@@ -94,6 +96,7 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
   if (caps.defaultMonthlyRate) cols += ', default_monthly_rate'
   if (caps.taxId) cols += ', country, tax_id_label'
   if (caps.accountNumbers) cols += ', account_number_prefix'
+  if (caps.portalNote) cols += ', portal_payment_note'
   if (caps.billingEngine) cols += ', billing_type, billing_engine_mode, billing_engine_start_date'
   if (caps.billingThresholds) {
     cols += ', late_credit_threshold, min_payment_threshold, max_carried_balance'
@@ -145,6 +148,7 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
     max_carried_balance?: number | null
     first_expiry_rule_enabled?: boolean | null
     prorata_first_payment_enabled?: boolean | null
+    portal_payment_note?: string | null
   } | null
 
   return {
@@ -181,6 +185,7 @@ export async function getGeneralSettings(companyId: number): Promise<GeneralSett
     expiryWarningDays: Number(s?.expiry_warning_days ?? 3),
     ddnsHostname: s?.ddns_hostname ?? null,
     radiusSecret: s?.radius_secret ?? null,
+    portalPaymentNote: (s as { portal_payment_note?: string | null })?.portal_payment_note ?? '',
   }
 }
 
