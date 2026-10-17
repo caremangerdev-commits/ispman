@@ -99,6 +99,10 @@ export type PortalAccount = {
   accountNumber: string | null
   /** The company's "how to pay" line, or null; from settings.portal_payment_note. */
   paymentNote: string | null
+  /** The customer's plan + speed for a read-only display; null means "Unavailable". */
+  plan: { name: string; downMbps: number; upMbps: number } | null
+  /** The AP/sector the customer is on, for outage scoping; null if unset/absent. */
+  accessPoint: string | null
 }
 
 /** Everything the account page shows for one customer. */
@@ -110,9 +114,12 @@ export async function getPortalAccount(
   const db = tenantClient()
 
   let cols = 'id, first_name, last_name, last_bill_date, mac_address'
-  if (caps.connectionTypes) cols += ', customer_type, pppoe_username'
+  if (caps.connectionTypes) cols += ', customer_type, pppoe_username, access_point'
   if (caps.billing) cols += ', carried_balance, account_credit'
   if (caps.accountNumbers) cols += ', account_number'
+  if (caps.catalog) {
+    cols += ', service_plans!customers_service_plan_id_fkey(name, speed_down_mbps, speed_up_mbps)'
+  }
 
   const [{ data, error }, note] = await Promise.all([
     db.from('customers').select(cols).eq('company_id', companyId).eq('id', customerId).maybeSingle(),
@@ -130,10 +137,25 @@ export async function getPortalAccount(
     mac_address: string | null
     customer_type?: string | null
     pppoe_username?: string | null
+    access_point?: string | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
     account_number?: string | null
+    service_plans?: {
+      name: string | null
+      speed_down_mbps: number | null
+      speed_up_mbps: number | null
+    } | null
   }
+
+  const plan =
+    caps.catalog && row.service_plans && row.service_plans.name
+      ? {
+          name: row.service_plans.name,
+          downMbps: Number(row.service_plans.speed_down_mbps ?? 0),
+          upMbps: Number(row.service_plans.speed_up_mbps ?? 0),
+        }
+      : null
 
   // The real expiry is when the network actually cuts them off; the derived
   // bill-date expiry is the fallback when the network cannot be read.
@@ -170,7 +192,39 @@ export async function getPortalAccount(
     billingAvailable: caps.billing,
     accountNumber: caps.accountNumbers ? (row.account_number ?? null) : null,
     paymentNote: note,
+    plan,
+    accessPoint: caps.connectionTypes ? (row.access_point ?? null) : null,
   }
+}
+
+/**
+ * The customer id for a MAC in a company, or null. For the walled-garden
+ * reconnection page, which has no login — the MikroTik hands the device's MAC.
+ * Matched case-insensitively with separators ignored.
+ */
+export async function findCustomerIdByMac(companyId: number, mac: string): Promise<number | null> {
+  const norm = mac.replace(/[^0-9a-fA-F]/g, '').toLowerCase()
+  if (norm.length < 12) return null
+
+  const db = tenantClient()
+  // Prefilter on the LAST OCTET (two hex) — the one run that stays contiguous
+  // however the MAC is punctuated ("..:CE:5B") — then confirm the full
+  // normalised match in JS. mac_address is stored in mixed formats and is not
+  // indexed for this. (The last six hex would miss, because separators break them.)
+  const { data, error } = await db
+    .from('customers')
+    .select('id, mac_address')
+    .eq('company_id', companyId)
+    .ilike('mac_address', '%' + norm.slice(-2) + '%')
+    .limit(500)
+  if (error) {
+    if (MISSING.has(error.code ?? '')) return null
+    throw new Error('MAC lookup failed: ' + error.message)
+  }
+  const match = ((data ?? []) as { id: number; mac_address: string | null }[]).find(
+    (c) => (c.mac_address ?? '').replace(/[^0-9a-fA-F]/g, '').toLowerCase() === norm
+  )
+  return match?.id ?? null
 }
 
 /** The company's "how to pay" line, or null when absent / 0036 not applied. */

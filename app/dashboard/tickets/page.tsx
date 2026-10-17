@@ -48,6 +48,15 @@ export default async function TicketsPage({ searchParams }: PageProps<'/dashboar
       <div className="flex flex-wrap items-center justify-between gap-3">
         <TicketFilters agents={agents} />
 
+        {can(profile.role, 'manage_company_settings') ? (
+          <Link
+            href="/dashboard/incidents"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-700 px-3 py-2 text-sm font-semibold text-gray-200 transition hover:bg-gray-800"
+          >
+            Outages
+          </Link>
+        ) : null}
+
         {can(profile.role, 'create_ticket') ? (
           <Link
             href="/dashboard/tickets/new"

@@ -85,6 +85,7 @@ export default async function SmsSettingsPage() {
         reachableCount={sendable.length}
         totalCount={customers.length}
         deviceMinutesAgo={device?.lastSeenMinutesAgo ?? null}
+        portalExtrasAvailable={caps.portalTier2}
       />
     </div>
   )

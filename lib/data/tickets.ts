@@ -164,4 +164,71 @@ export async function listTicketCustomers(companyId: number): Promise<TicketCust
   return rows.sort((a, b) => key(a).localeCompare(key(b)) || a.id - b.id)
 }
 
+// ---------------------------------------------------------------------------
+// Ticket messages — the conversation (migration 0037, ticket_messages).
+// ---------------------------------------------------------------------------
+
+export type TicketMessage = {
+  id: number
+  author: 'customer' | 'staff'
+  authorName: string | null
+  body: string | null
+  photoPath: string | null
+  createdAt: string
+}
+
+type MessageRow = {
+  id: number
+  author: string
+  author_name: string | null
+  body: string | null
+  photo_path: string | null
+  created_at: string
+}
+
+/** Every message on a ticket, oldest first. Empty if 0037 is not applied. */
+export async function listTicketMessages(companyId: number, ticketId: number): Promise<TicketMessage[]> {
+  const { data, error } = await tenantClient()
+    .from('ticket_messages')
+    .select('id, author, author_name, body, photo_path, created_at')
+    .eq('company_id', companyId)
+    .eq('ticket_id', ticketId)
+    .order('created_at', { ascending: true })
+
+  if (error) {
+    if (error.code === 'PGRST205' || error.code === '42P01') return []
+    throw new Error('Failed to load ticket messages: ' + error.message)
+  }
+  return ((data ?? []) as unknown as MessageRow[]).map((m) => ({
+    id: m.id,
+    author: m.author === 'staff' ? 'staff' : 'customer',
+    authorName: m.author_name,
+    body: m.body,
+    photoPath: m.photo_path,
+    createdAt: m.created_at,
+  }))
+}
+
+/** Appends one message to a ticket. */
+export async function addTicketMessage(input: {
+  companyId: number
+  ticketId: number
+  author: 'customer' | 'staff'
+  authorUserId: number | null
+  authorName: string | null
+  body: string | null
+  photoPath: string | null
+}): Promise<void> {
+  const { error } = await tenantClient().from('ticket_messages').insert({
+    company_id: input.companyId,
+    ticket_id: input.ticketId,
+    author: input.author,
+    author_user_id: input.authorUserId,
+    author_name: input.authorName,
+    body: input.body,
+    photo_path: input.photoPath,
+  })
+  if (error) throw new Error('Could not post ticket message: ' + error.message)
+}
+
 export type { TicketPriority, TicketStatus }

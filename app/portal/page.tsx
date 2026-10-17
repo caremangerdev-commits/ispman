@@ -3,11 +3,13 @@ import { notFound } from 'next/navigation'
 import { logout, startCheckout } from '@/app/actions/portal'
 import { LoginForm } from '@/components/portal/LoginForm'
 import { getCustomerPayments, type CustomerPayment } from '@/lib/data/customers'
+import { activeIncidentForCustomer, type Incident } from '@/lib/data/incidents'
 import { getEnabledGateway } from '@/lib/data/payment-gateways'
 import { getPortalAccount, type PortalAccount } from '@/lib/data/portal'
 import { formatCurrency } from '@/lib/format'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPortalSession } from '@/lib/portal/session'
+import { getSchemaCapabilities } from '@/lib/schema'
 
 /** Reads cookies and the subdomain header, so it is always per-request. */
 export const dynamic = 'force-dynamic'
@@ -26,12 +28,21 @@ export default async function PortalHome(props: {
   // cookie in a render (only actions may); just fall back to the sign-in.
   if (!account) return <LoginForm companyName={company.name} />
 
-  const [payments, gateway, sp] = await Promise.all([
+  const [payments, gateway, incident, caps, sp] = await Promise.all([
     getCustomerPayments(company.id, session.customerId),
     getEnabledGateway(company.id),
+    activeIncidentForCustomer(company.id, account.accessPoint),
+    getSchemaCapabilities(),
     props.searchParams,
   ])
   const error = typeof sp.e === 'string' ? sp.e : null
+
+  // Statement periods are derived from the payment history, not the clock, so
+  // this stays pure for a render (and only offers months with activity).
+  const months = [...new Set(payments.map((p) => (p.payment_date ?? '').slice(0, 7)).filter(Boolean))]
+    .sort()
+    .reverse()
+    .slice(0, 12)
 
   return (
     <AccountView
@@ -39,6 +50,9 @@ export default async function PortalHome(props: {
       account={account}
       payments={payments}
       canPay={gateway !== null}
+      incident={incident}
+      months={months}
+      supportAvailable={caps.portalTier2}
       error={error}
     />
   )
@@ -51,17 +65,37 @@ function formatDay(value: string): string {
   return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(d)
 }
 
+/** A fixed instant, "8 Nov, 14:30". Pure — the value is a stored timestamp. */
+function formatWhen(value: string): string {
+  const d = new Date(value)
+  if (!Number.isFinite(d.getTime())) return value
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(d)
+}
+
+/** "2026-09" to "September 2026". Pure. */
+function monthLabel(ym: string): string {
+  const d = new Date(ym + '-01T00:00:00')
+  if (!Number.isFinite(d.getTime())) return ym
+  return new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric' }).format(d)
+}
+
 function AccountView({
   company,
   account,
   payments,
   canPay,
+  incident,
+  months,
+  supportAvailable,
   error,
 }: {
   company: string
   account: PortalAccount
   payments: CustomerPayment[]
   canPay: boolean
+  incident: Incident | null
+  months: string[]
+  supportAvailable: boolean
   error: string | null
 }) {
   const days = account.daysUntilExpiry
@@ -75,6 +109,17 @@ function AccountView({
 
   return (
     <div className="flex flex-col gap-5">
+      {incident ? (
+        <section className="rounded-2xl border border-amber-300 bg-amber-50 p-4">
+          <p className="text-sm font-semibold text-amber-900">{incident.title}</p>
+          {incident.message ? <p className="mt-1 text-sm text-amber-800">{incident.message}</p> : null}
+          <p className="mt-2 text-xs text-amber-700">
+            {incident.nextUpdateAt ? 'Next update by ' + formatWhen(incident.nextUpdateAt) + '. ' : ''}
+            Last updated {formatWhen(incident.updatedAt)}.
+          </p>
+        </section>
+      ) : null}
+
       <header className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm text-neutral-500">{company}</p>
@@ -146,6 +191,20 @@ function AccountView({
       ) : null}
 
       <section className="rounded-2xl border border-neutral-200 p-5">
+        <p className="text-sm text-neutral-500">Your plan</p>
+        {account.plan ? (
+          <>
+            <p className="mt-1 text-lg font-semibold">{account.plan.name}</p>
+            <p className="text-sm text-neutral-600">
+              {account.plan.downMbps} Mbps down · {account.plan.upMbps} Mbps up
+            </p>
+          </>
+        ) : (
+          <p className="mt-1 text-lg font-semibold text-neutral-400">Unavailable</p>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-neutral-200 p-5">
         <p className="text-sm text-neutral-500">{owes ? 'You owe' : 'Balance'}</p>
         <p className="mt-1 text-3xl font-semibold tabular-nums">
           {owes ? formatCurrency(account.balance) : "You're paid up"}
@@ -185,6 +244,39 @@ function AccountView({
           </p>
         )}
       </section>
+
+      <section className="rounded-2xl border border-neutral-200 p-5">
+        <h2 className="mb-3 text-sm font-medium text-neutral-500">Statements</h2>
+        <form method="GET" action="/api/portal/statement" className="flex items-end gap-2">
+          <label className="flex-1">
+            <span className="sr-only">Period</span>
+            <select
+              name="month"
+              defaultValue=""
+              className="w-full rounded-xl border border-neutral-300 px-3 py-3 text-base outline-none focus:border-neutral-900"
+            >
+              <option value="">Full statement</option>
+              {months.map((m) => (
+                <option key={m} value={m}>{monthLabel(m)}</option>
+              ))}
+            </select>
+          </label>
+          <button type="submit" className="rounded-xl bg-neutral-900 px-4 py-3 text-base font-semibold text-white active:bg-neutral-700">
+            Download
+          </button>
+        </form>
+      </section>
+
+      <nav className="grid grid-cols-2 gap-3">
+        {supportAvailable ? (
+          <a href="/support" className="rounded-2xl border border-neutral-200 p-4 text-center text-base font-medium active:bg-neutral-50">
+            Support
+          </a>
+        ) : null}
+        <a href="/phone" className="rounded-2xl border border-neutral-200 p-4 text-center text-base font-medium active:bg-neutral-50">
+          Change number
+        </a>
+      </nav>
 
       <section>
         <h2 className="mb-2 text-sm font-medium text-neutral-500">Recent payments</h2>

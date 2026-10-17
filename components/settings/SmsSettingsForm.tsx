@@ -229,7 +229,7 @@ function DevicePanel({
 
 export function SmsSettingsForm({
   settings, device, companyName, relayConfigured, reachableCount, totalCount,
-  deviceMinutesAgo,
+  deviceMinutesAgo, portalExtrasAvailable,
 }: {
   settings: SmsSettings
   device: SafeSmsDevice | null
@@ -239,6 +239,8 @@ export function SmsSettingsForm({
   totalCount: number
   /** Computed on the server — see the note on DevicePanel. */
   deviceMinutesAgo: number | null
+  /** Migration 0037 — shows the ticket-reply and outage SMS switches. */
+  portalExtrasAvailable: boolean
 }) {
   const [state, action, pending] = useActionState<SmsActionResult | null, FormData>(
     saveSmsSettings, null
@@ -253,6 +255,8 @@ export function SmsSettingsForm({
   const [templates, setTemplates] = useState(settings.smsTemplates)
   const [allowForeign, setAllowForeign] = useState(settings.allowForeign)
   const [throttle, setThrottle] = useState(String(settings.throttleSeconds))
+  const [ticketReply, setTicketReply] = useState(settings.ticketReplyNotify)
+  const [outage, setOutage] = useState(settings.outageNotify)
 
   const fieldError = (k: string) =>
     state?.ok === false ? state.fieldErrors?.[k] : undefined
@@ -288,6 +292,29 @@ export function SmsSettingsForm({
             </p>
           ) : null}
         </div>
+
+        {portalExtrasAvailable ? (
+          <div className="space-y-3 rounded-xl border border-gray-800 bg-gray-900 p-4">
+            <div>
+              <p className="text-sm font-semibold text-gray-200">Portal messages</p>
+              <p className="mt-1 text-xs text-gray-500">Off by default. These go straight out as SMS.</p>
+            </div>
+            <Toggle
+              name="notify_ticket_reply_enabled"
+              checked={ticketReply}
+              onChange={setTicketReply}
+              title="Text on ticket reply"
+              description="When staff reply to a support ticket, text the customer an update."
+            />
+            <Toggle
+              name="notify_outage_enabled"
+              checked={outage}
+              onChange={setOutage}
+              title="Text on outage"
+              description="When an outage is opened or restored, text the affected customers."
+            />
+          </div>
+        ) : null}
 
         <div className="space-y-3 rounded-xl border border-gray-800 bg-gray-900 p-4">
           <div>

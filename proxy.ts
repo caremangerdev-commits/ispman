@@ -55,7 +55,11 @@ export async function proxy(request: NextRequest) {
   const portalSlug = portalSlugFromHost(host)
   if (portalSlug) {
     const url = request.nextUrl.clone()
-    if (!url.pathname.startsWith('/portal')) {
+    // Portal PAGES live under /portal, so a tenant subdomain's '/account' is
+    // served by '/portal/account'. API routes (/api/portal/*) are NOT under
+    // /portal — they must pass through at their real path, just with the slug
+    // header attached, or the statement/photo endpoints 404.
+    if (!url.pathname.startsWith('/portal') && !url.pathname.startsWith('/api/')) {
       url.pathname = url.pathname === '/' ? '/portal' : '/portal' + url.pathname
     }
     const headers = new Headers(request.headers)
@@ -69,7 +73,7 @@ export async function proxy(request: NextRequest) {
   // client-sent slug header so the apex cannot be made to impersonate a tenant.
   if (isPortalHost(host)) {
     const url = request.nextUrl.clone()
-    if (!url.pathname.startsWith('/portal')) {
+    if (!url.pathname.startsWith('/portal') && !url.pathname.startsWith('/api/')) {
       url.pathname = url.pathname === '/' ? '/portal' : '/portal' + url.pathname
     }
     const headers = new Headers(request.headers)

@@ -117,6 +117,13 @@ export async function saveSmsSettings(
   patch[prefix + 'expiry_warning_enabled'] = bool(formData, 'sms_expiry_warning_enabled')
   patch[prefix + 'disconnection_enabled'] = bool(formData, 'sms_disconnection_enabled')
 
+  // 0037: ticket-reply and outage SMS. Off by default; these go straight out
+  // (no routed template), so the switch is all there is to save.
+  if (caps.portalTier2) {
+    patch.notify_ticket_reply_enabled = bool(formData, 'notify_ticket_reply_enabled')
+    patch.notify_outage_enabled = bool(formData, 'notify_outage_enabled')
+  }
+
   const db = tenantClient()
   const { error } = await db
     .from('settings')

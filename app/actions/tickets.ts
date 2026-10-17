@@ -4,9 +4,11 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
+import { addTicketMessage, getTicket } from '@/lib/data/tickets'
 import { hasGps, parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
-import { getSession } from '@/lib/session'
+import { displayName, getSession } from '@/lib/session'
+import { sendDirectSms } from '@/lib/sms/direct'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { toTicketPriority } from '@/lib/tickets'
 
@@ -513,4 +515,41 @@ export async function reopenTicket(formData: FormData) {
   if (existing.customer_id) revalidatePath('/dashboard/customers/' + existing.customer_id)
 
   toast('/dashboard/tickets/' + id, 'Ticket reopened.')
+}
+
+/**
+ * Posts a staff reply onto a ticket's thread and texts the customer.
+ *
+ * The SMS is off by default per company (settings.notify_ticket_reply_enabled)
+ * and respects the SMS master switch and the customer's opt-out — see
+ * lib/sms/direct.ts. It never blocks the reply.
+ */
+export async function replyTicket(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
+  const { company, profile } = await authorize('edit_ticket')
+
+  const ticketId = Number(formData.get('ticket_id'))
+  if (!Number.isInteger(ticketId)) return { ok: false, error: 'Unknown ticket.' }
+  const body = String(formData.get('body') ?? '').trim()
+  if (!body) return { ok: false, error: 'Write a reply first.' }
+
+  const ticket = await getTicket(company.id, ticketId)
+  if (!ticket) return { ok: false, error: 'That ticket no longer exists.' }
+
+  await addTicketMessage({
+    companyId: company.id, ticketId, author: 'staff',
+    authorUserId: profile.id, authorName: displayName(profile), body, photoPath: null,
+  })
+
+  if (ticket.customer_id) {
+    await sendDirectSms({
+      companyId: company.id,
+      customerId: ticket.customer_id,
+      text: company.name + ': an update on your support request — ' + body.slice(0, 300),
+      gateColumn: 'notify_ticket_reply_enabled',
+      idemKey: 'ticket-reply-' + ticketId + '-' + profile.id + '-' + body.length,
+    }).catch(() => false)
+  }
+
+  revalidatePath('/dashboard/tickets/' + ticketId)
+  return { ok: true }
 }

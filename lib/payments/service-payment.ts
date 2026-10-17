@@ -37,6 +37,7 @@ import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
 import { grantAnchor, latestGrant } from '@/lib/data/period-grants'
 import { canExtend } from '@/lib/status'
 import { getRadiusStatus as readNetworkRecord, radiusConfigured } from '@/lib/radius-db'
+import { reconnectCustomer } from '@/lib/radius/coa'
 import { applyRadiusWrite, radiusLogDetails } from '@/lib/radius/operations'
 import { type SchemaCapabilities } from '@/lib/schema'
 import { notifyPaymentReceipt, notifyServiceRestored } from '@/lib/sms/notify'
@@ -1105,19 +1106,23 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
     paidOn: paymentDate,
   })
 
-  // A payment that brought a cut-off customer back online gets the "you're back
-  // on" confirmation on top of the receipt — the two questions a reconnecting
-  // prepaid customer has are "did it land?" and "am I back on?". Only when they
-  // were actually disconnected AND this payment extended them; a routine renewal
-  // by an already-active customer gets the receipt alone.
+  // Bring a cut-off customer back online at once (lib/radius/coa.ts) instead of
+  // waiting for their session to renew, then tell them — but the "you're back
+  // on" SMS goes ONLY once the reconnection is confirmed (a Disconnect-ACK).
+  // A routine renewal by an already-active customer skips both. CoA being off
+  // or a router unreachable means no instant reconnect and no SMS; the payment
+  // and the receipt (which already states the new expiry) stand regardless.
   if (disconnectedNow && networkExtended) {
-    await notifyServiceRestored({
-      companyId: company.id,
-      companyName: company.name,
-      customerId: customer.id,
-      paymentId,
-      expiry: newExpiry,
-    })
+    const reconnected = await reconnectCustomer(identity).catch(() => ({ ok: false, reason: 'error' }))
+    if (reconnected.ok) {
+      await notifyServiceRestored({
+        companyId: company.id,
+        companyName: company.name,
+        customerId: customer.id,
+        paymentId,
+        expiry: newExpiry,
+      })
+    }
   }
 
   revalidatePath('/dashboard/customers/' + customer.id)

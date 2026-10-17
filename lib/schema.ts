@@ -170,6 +170,12 @@ export type SchemaCapabilities = {
    * the general settings form hides the field.
    */
   portalNote: boolean
+  /**
+   * Migration 0037: ticket_messages, incidents, support_tickets.source, and the
+   * two SMS switches. All of it lands in one file, so one probe decides it —
+   * absent, the portal's Support and the staff Incidents UI hide themselves.
+   */
+  portalTier2: boolean
 }
 
 /**
@@ -204,6 +210,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     billedThroughRes, skippedCoveredRes, paymentExpiryRes,
     connectionSettingRes, connectedOnRes,
     routerTunnelsRes, portalNoteRes,
+    ticketMessagesRes, incidentsRes, outageSwitchRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -289,6 +296,10 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('router_tunnels').select('id').limit(1),
     // 0036: the portal "how to pay" note.
     db.from('settings').select('portal_payment_note').limit(1),
+    // 0037: ticket threads, incidents, and the two SMS switches.
+    db.from('ticket_messages').select('id').limit(1),
+    db.from('incidents').select('id').limit(1),
+    db.from('settings').select('notify_outage_enabled').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -529,6 +540,25 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for portal_payment_note: ' + portalNoteRes.error.message)
   }
 
+  // 0037: two tables plus a settings column. Any missing piece disables the lot.
+  const missingTicketMessages =
+    ticketMessagesRes.error?.code === 'PGRST205' || ticketMessagesRes.error?.code === '42P01'
+  const missingIncidents =
+    incidentsRes.error?.code === 'PGRST205' || incidentsRes.error?.code === '42P01'
+  const missingOutageSwitch = outageSwitchRes.error?.code === '42703'
+  for (const [what, res] of [
+    ['ticket_messages', ticketMessagesRes],
+    ['incidents', incidentsRes],
+  ] as const) {
+    if (res.error && res.error.code !== 'PGRST205' && res.error.code !== '42P01') {
+      throw new Error('Schema probe failed for ' + what + ': ' + res.error.message)
+    }
+  }
+  if (outageSwitchRes.error && !missingOutageSwitch) {
+    throw new Error('Schema probe failed for notify_outage_enabled: ' + outageSwitchRes.error.message)
+  }
+  const missingPortalTier2 = missingTicketMessages || missingIncidents || missingOutageSwitch
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -561,6 +591,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     connectionMonth: !missingConnectionMonth,
     routerTunnels: !missingRouterTunnels,
     portalNote: !missingPortalNote,
+    portalTier2: !missingPortalTier2,
   }
 })
 

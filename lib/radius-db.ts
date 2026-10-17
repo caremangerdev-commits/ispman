@@ -605,6 +605,48 @@ export async function getRadiusIp(identity: string): Promise<string | null> {
   return address || null
 }
 
+export type ActiveSession = {
+  username: string
+  /** The NAS that holds the session — its tunnel IP, which is the nas.nasname. */
+  nasIp: string
+  acctSessionId: string
+  framedIp: string | null
+}
+
+/**
+ * The customer's CURRENTLY OPEN accounting session, or null.
+ *
+ * `acctstoptime IS NULL` is an open session. Used by the reconnection path
+ * (lib/radius/coa.ts) to find a live session to disconnect so the NAS re-auths
+ * immediately after a payment — which only exists for a customer who is on the
+ * network; a fully cut-off one has none and simply re-auths on its own.
+ */
+export async function getActiveSession(identity: string): Promise<ActiveSession | null> {
+  const username = normaliseUsername(identity)
+
+  const [rows] = await withRetry(() =>
+    radiusPool().execute(
+      `SELECT username, nasipaddress, acctsessionid, framedipaddress
+         FROM radacct
+        WHERE username = ? AND acctstoptime IS NULL AND nasipaddress <> ''
+        ORDER BY acctstarttime DESC
+        LIMIT 1`,
+      [username]
+    )
+  )
+
+  const r = (rows as {
+    username: string; nasipaddress: string; acctsessionid: string; framedipaddress: string
+  }[])[0]
+  if (!r || !r.nasipaddress) return null
+  return {
+    username: r.username,
+    nasIp: r.nasipaddress.trim(),
+    acctSessionId: (r.acctsessionid ?? '').trim(),
+    framedIp: (r.framedipaddress ?? '').trim() || null,
+  }
+}
+
 // ---------------------------------------------------------------------------
 // nas — FreeRADIUS's client list
 // ---------------------------------------------------------------------------

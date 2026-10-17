@@ -46,6 +46,10 @@ export type MessagingSettings = {
   expiryWarningDays: number
   throttleSeconds: number
   allowForeign: boolean
+  /** 0037 — text the customer when staff reply to a ticket. Off by default. */
+  ticketReplyNotify: boolean
+  /** 0037 — text affected customers on an outage open/restore. Off by default. */
+  outageNotify: boolean
   emailFromName: string | null
   emailReplyTo: string | null
   emailFromDomain: string | null
@@ -83,6 +87,8 @@ export const SMS_SETTINGS_OFF: MessagingSettings = {
   expiryWarningDays: 3,
   throttleSeconds: 6,
   allowForeign: false,
+  ticketReplyNotify: false,
+  outageNotify: false,
   emailFromName: null,
   emailReplyTo: null,
   emailFromDomain: null,
@@ -123,6 +129,8 @@ type SettingRow = {
   sms_expiry_warning_days: number | null
   sms_throttle_seconds: number | null
   sms_allow_foreign: boolean | null
+  notify_ticket_reply_enabled?: boolean | null
+  notify_outage_enabled?: boolean | null
   email_enabled?: boolean | null
   email_from_name?: string | null
   email_reply_to?: string | null
@@ -187,6 +195,8 @@ function toSettings(
     expiryWarningDays: Number(s?.sms_expiry_warning_days ?? 3),
     throttleSeconds: Number(s?.sms_throttle_seconds ?? 6),
     allowForeign: Boolean(s?.sms_allow_foreign),
+    ticketReplyNotify: Boolean(s?.notify_ticket_reply_enabled),
+    outageNotify: Boolean(s?.notify_outage_enabled),
     emailFromName: s?.email_from_name || null,
     emailReplyTo: s?.email_reply_to || null,
     emailFromDomain: s?.email_from_domain || null,
@@ -202,7 +212,8 @@ export async function getSmsSettings(companyId: number): Promise<MessagingSettin
   if (!caps.sms) return SMS_SETTINGS_OFF
 
   const cols = BASE_COLS + ', ' +
-    (caps.messaging ? SWITCH_COLS_0022 + ', ' + MESSAGING_COLS : SWITCH_COLS_0021)
+    (caps.messaging ? SWITCH_COLS_0022 + ', ' + MESSAGING_COLS : SWITCH_COLS_0021) +
+    (caps.portalTier2 ? ', notify_ticket_reply_enabled, notify_outage_enabled' : '')
 
   const db = tenantClient()
   const [{ data, error }, { data: co }] = await Promise.all([
