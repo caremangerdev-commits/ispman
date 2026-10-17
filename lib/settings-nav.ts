@@ -2,7 +2,7 @@ import { can, type Permission, type Role } from '@/lib/permissions'
 
 export type SettingsIcon =
   | 'building' | 'gauge' | 'package' | 'tags' | 'users' | 'userCog' | 'messageSquare' | 'receipt'
-  | 'network'
+  | 'network' | 'creditCard'
 
 export type SettingsSection = {
   key: string
@@ -17,6 +17,8 @@ export type SettingsSection = {
   needsSms?: boolean
   /** Needs migration 0033. */
   needsTunnels?: boolean
+  /** Needs migration 0034. */
+  needsGateways?: boolean
 }
 
 /**
@@ -75,6 +77,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: 'SMS and email: pair a phone, choose which messages send and by which channel, and edit their wording.',
     permission: 'manage_company_settings',
     needsSms: true,
+  },
+  {
+    key: 'payments',
+    label: 'Online Payments',
+    href: '/dashboard/settings/payments',
+    icon: 'creditCard',
+    description: 'The Fygaro gateway that takes card payments from the portal: credentials, the webhook URL, and the on/off switch.',
+    permission: 'manage_company_settings',
+    needsGateways: true,
   },
   {
     key: 'users',

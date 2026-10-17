@@ -68,10 +68,14 @@ const SECTIONS: NavSection[] = [
   },
   {
     heading: 'Support',
-    requireAny: ['view_support_tickets', 'create_ticket'],
+    requireAny: ['view_support_tickets', 'create_ticket', 'manage_company_settings'],
     items: [
       { label: 'Tickets', href: '/dashboard/tickets', icon: 'lifeBuoy', permission: 'view_support_tickets' },
       { label: 'New Ticket', href: '/dashboard/tickets/new', icon: 'messageSquare', permission: 'create_ticket' },
+      // Outage incidents: customers in scope see a portal banner. An admin act
+      // (declaring an outage is manage_company_settings), but it lives here
+      // beside tickets — both are the customer's experience of the service.
+      { label: 'Outages', href: '/dashboard/incidents', icon: 'alertTriangle', permission: 'manage_company_settings' },
     ],
   },
   {
@@ -111,6 +115,7 @@ const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/tickets\/new$/, title: 'New Ticket' },
   { match: /^\/dashboard\/tickets\/[^/]+$/, title: 'Ticket Details' },
   { match: /^\/dashboard\/tickets$/, title: 'Tickets' },
+  { match: /^\/dashboard\/incidents$/, title: 'Outages' },
   { match: /^\/dashboard\/checkoff/, title: 'Checkoff' },
   { match: /^\/dashboard\/billing-runs\/[^/]+$/, title: 'Billing Run' },
   { match: /^\/dashboard\/billing-runs$/, title: 'Billing Runs' },

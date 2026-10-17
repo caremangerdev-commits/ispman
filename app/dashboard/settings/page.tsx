@@ -1,7 +1,8 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import {
-  Building2, Gauge, MessageSquare, Network, Package, Receipt, Tags, UserCog, Users, type LucideIcon,
+  Building2, CreditCard, Gauge, MessageSquare, Network, Package, Receipt, Tags, UserCog, Users,
+  type LucideIcon,
 } from 'lucide-react'
 
 import { CATALOG_HINT, getSchemaCapabilities } from '@/lib/schema'
@@ -21,6 +22,7 @@ const ICONS: Record<SettingsIcon, LucideIcon> = {
   userCog: UserCog,
   messageSquare: MessageSquare,
   network: Network,
+  creditCard: CreditCard,
 }
 
 /**
@@ -88,11 +90,13 @@ export default async function SettingsPage() {
           const count = totals[s.key]
           const blocked =
             (s.needsCatalog && !caps.catalog) || (s.needsSms && !caps.sms) ||
-            (s.needsTunnels && !caps.routerTunnels)
+            (s.needsTunnels && !caps.routerTunnels) ||
+            (s.needsGateways && !caps.paymentGateways)
           const blockedBy =
             s.needsSms && !caps.sms ? '0021'
               : s.needsTunnels && !caps.routerTunnels ? '0033'
-                : '0005'
+                : s.needsGateways && !caps.paymentGateways ? '0034'
+                  : '0005'
 
           return (
             <Link

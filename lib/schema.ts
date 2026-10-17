@@ -176,6 +176,13 @@ export type SchemaCapabilities = {
    * absent, the portal's Support and the staff Incidents UI hide themselves.
    */
   portalTier2: boolean
+  /**
+   * Migration 0034: the `payment_gateways` and `gateway_payments` tables. Absent,
+   * the webhook answers 503, the portal shows no online-pay button, and the
+   * Online Payments settings page says it is not set up. Probing the credentials
+   * table is enough — the two tables land in one file.
+   */
+  paymentGateways: boolean
 }
 
 /**
@@ -211,6 +218,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     connectionSettingRes, connectedOnRes,
     routerTunnelsRes, portalNoteRes,
     ticketMessagesRes, incidentsRes, outageSwitchRes,
+    paymentGatewaysRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -300,6 +308,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('ticket_messages').select('id').limit(1),
     db.from('incidents').select('id').limit(1),
     db.from('settings').select('notify_outage_enabled').limit(1),
+    // 0034: the payment-gateway credentials table.
+    db.from('payment_gateways').select('company_id').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -559,6 +569,13 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   }
   const missingPortalTier2 = missingTicketMessages || missingIncidents || missingOutageSwitch
 
+  // 0034: one table decides it (the two tables land together).
+  const missingPaymentGateways =
+    paymentGatewaysRes.error?.code === 'PGRST205' || paymentGatewaysRes.error?.code === '42P01'
+  if (paymentGatewaysRes.error && !missingPaymentGateways) {
+    throw new Error('Schema probe failed for payment_gateways: ' + paymentGatewaysRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -592,6 +609,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     routerTunnels: !missingRouterTunnels,
     portalNote: !missingPortalNote,
     portalTier2: !missingPortalTier2,
+    paymentGateways: !missingPaymentGateways,
   }
 })
 

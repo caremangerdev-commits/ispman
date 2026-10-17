@@ -53,6 +53,98 @@ export async function getGatewayCredentials(
   return toCredentials(data as Parameters<typeof toCredentials>[0])
 }
 
+/** What the settings page may show about a saved gateway. The secret is NEVER
+ *  among these — only whether one is on record. */
+export type GatewaySettingsView = {
+  publicKey: string | null
+  checkoutUrl: string | null
+  enabled: boolean
+  /** True when a secret is stored. The value itself is never read out. */
+  secretSet: boolean
+}
+
+/** A gateway's non-secret settings for the UI, or null when none is saved. */
+export async function getGatewaySettings(
+  companyId: number,
+  provider: string
+): Promise<GatewaySettingsView | null> {
+  const creds = await getGatewayCredentials(companyId, provider)
+  if (!creds) return null
+  return {
+    publicKey: creds.publicKey,
+    checkoutUrl: creds.checkoutUrl,
+    enabled: creds.enabled,
+    secretSet: Boolean(creds.secretKey && creds.secretKey.trim()),
+  }
+}
+
+/**
+ * Writes a company's credentials for one gateway, upserting the single
+ * (company, provider) row.
+ *
+ * THE SECRET IS WRITE-ONLY. `secretKey` undefined means "leave the stored
+ * secret as it is" — the form posts a blank field when the operator is not
+ * replacing it, so a save that only flips `enabled` or edits the public key
+ * cannot wipe the secret. A non-empty value replaces it. The secret is never
+ * read back out to any page (see getGatewaySettings).
+ *
+ * A gateway cannot be enabled without a secret on record — the secret both
+ * signs the checkout link and verifies the webhook, so enabling without one
+ * would mint unverifiable links.
+ */
+export async function saveGatewayCredentials(input: {
+  companyId: number
+  provider: string
+  publicKey: string | null
+  checkoutUrl: string | null
+  /** undefined = keep the stored secret; a value = replace it. */
+  secretKey?: string
+  enabled: boolean
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const db = tenantClient()
+
+  const { data: existing, error: readError } = await db
+    .from('payment_gateways')
+    .select('secret_key')
+    .eq('company_id', input.companyId)
+    .eq('provider', input.provider)
+    .maybeSingle()
+  if (readError && !MISSING_TABLE.has(readError.code ?? '')) {
+    return { ok: false, error: 'Could not read the gateway: ' + readError.message }
+  }
+  if (readError) {
+    return { ok: false, error: 'Online payments are not set up on this system yet. Apply migration 0034.' }
+  }
+
+  const priorSecret = (existing as { secret_key: string | null } | null)?.secret_key ?? null
+  const nextSecret = input.secretKey && input.secretKey.trim() ? input.secretKey.trim() : priorSecret
+
+  if (input.enabled && !(nextSecret && nextSecret.trim())) {
+    return { ok: false, error: 'Add the Fygaro secret before turning online payments on.' }
+  }
+
+  const row = {
+    company_id: input.companyId,
+    provider: input.provider,
+    public_key: input.publicKey,
+    checkout_url: input.checkoutUrl,
+    secret_key: nextSecret,
+    enabled: input.enabled,
+    updated_at: new Date().toISOString(),
+  }
+
+  const { error } = existing
+    ? await db
+        .from('payment_gateways')
+        .update(row)
+        .eq('company_id', input.companyId)
+        .eq('provider', input.provider)
+    : await db.from('payment_gateways').insert(row)
+  if (error) return { ok: false, error: 'Could not save the gateway: ' + error.message }
+
+  return { ok: true }
+}
+
 /** The company's one enabled gateway, or null. First come, first served. */
 export async function getEnabledGateway(
   companyId: number
