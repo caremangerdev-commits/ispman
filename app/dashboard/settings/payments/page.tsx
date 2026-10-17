@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 
 import { PaymentGatewayCard } from '@/components/settings/PaymentGatewayCard'
 import { getGatewaySettings } from '@/lib/data/payment-gateways'
+import { portalUrlForCompany } from '@/lib/data/portal'
 import { externalHost } from '@/lib/portal/config'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
@@ -31,7 +32,13 @@ export default async function OnlinePaymentsPage() {
   const proto = h.get('x-forwarded-proto') ?? 'https'
   const webhookUrl = proto + '://' + host + '/api/payments/fygaro/' + company.id + '/webhook'
 
-  const settings = caps.paymentGateways ? await getGatewaySettings(company.id, 'fygaro') : null
+  const [settings, portalUrl] = await Promise.all([
+    caps.paymentGateways ? getGatewaySettings(company.id, 'fygaro') : Promise.resolve(null),
+    portalUrlForCompany(company.id),
+  ])
+  // Where Fygaro brings the customer back after paying — the portal's own
+  // confirmation page. Null when the portal domain or this company's slug is unset.
+  const returnUrl = portalUrl ? portalUrl + '/pay/complete' : null
 
   return (
     <div className="max-w-2xl space-y-4">
@@ -41,7 +48,12 @@ export default async function OnlinePaymentsPage() {
         Fygaro confirms it.
       </p>
 
-      <PaymentGatewayCard available={caps.paymentGateways} settings={settings} webhookUrl={webhookUrl} />
+      <PaymentGatewayCard
+        available={caps.paymentGateways}
+        settings={settings}
+        webhookUrl={webhookUrl}
+        returnUrl={returnUrl}
+      />
     </div>
   )
 }

@@ -145,6 +145,38 @@ export async function saveGatewayCredentials(input: {
   return { ok: true }
 }
 
+export type GatewayPaymentStatus = 'received' | 'recorded' | 'failed'
+
+/**
+ * The status of a webhook-recorded payment by its provider reference, or null
+ * when no webhook has landed for it yet.
+ *
+ * For the return-from-checkout page: Fygaro redirects the customer back the
+ * instant they pay, which is usually BEFORE the server-to-server webhook has
+ * been processed — so `null` here means "still confirming", not "failed".
+ */
+export async function getGatewayPaymentStatus(
+  companyId: number,
+  provider: string,
+  reference: string
+): Promise<GatewayPaymentStatus | null> {
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('gateway_payments')
+    .select('status')
+    .eq('company_id', companyId)
+    .eq('provider', provider)
+    .eq('reference', reference)
+    .maybeSingle()
+
+  if (error) {
+    if (MISSING_TABLE.has(error.code ?? '')) return null
+    throw new Error('Could not read gateway payment status: ' + error.message)
+  }
+  const row = data as { status: string } | null
+  return (row?.status as GatewayPaymentStatus) ?? null
+}
+
 /** The company's one enabled gateway, or null. First come, first served. */
 export async function getEnabledGateway(
   companyId: number

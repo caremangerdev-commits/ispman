@@ -26,6 +26,8 @@ export type PaymentGatewayCardProps = {
   } | null
   /** The absolute webhook URL to paste into Fygaro, e.g. https://host/api/payments/fygaro/12/webhook. */
   webhookUrl: string
+  /** The Return URL to set on the Fygaro button, or null when the portal domain is unset. */
+  returnUrl: string | null
 }
 
 function Notice({ state }: { state: GatewayFormResult | null }) {
@@ -84,7 +86,7 @@ function CopyField({ value }: { value: string }) {
   )
 }
 
-export function PaymentGatewayCard({ available, settings, webhookUrl }: PaymentGatewayCardProps) {
+export function PaymentGatewayCard({ available, settings, webhookUrl, returnUrl }: PaymentGatewayCardProps) {
   const [state, action] = useActionState<GatewayFormResult | null, FormData>(saveFygaroGateway, null)
   const secretSet = Boolean(settings?.secretSet)
 
@@ -190,6 +192,25 @@ export function PaymentGatewayCard({ available, settings, webhookUrl }: PaymentG
           Paste this into Fygaro&apos;s webhook settings. Fygaro POSTs here on every successful
           payment; the signature is checked against your secret above.
         </p>
+      </div>
+
+      <div className="mt-4 space-y-1.5">
+        <p className="text-xs font-medium text-gray-400">Return URL</p>
+        {returnUrl ? (
+          <>
+            <CopyField value={returnUrl} />
+            <p className="text-[11px] text-gray-600">
+              Set this as the Return URL on your Fygaro payment button. After paying, the customer
+              is brought back here to a confirmation on their account — Fygaro adds the reference to
+              it automatically.
+            </p>
+          </>
+        ) : (
+          <p className="text-[11px] text-gray-600">
+            Available once the customer portal domain is configured on this server. Until then,
+            customers stay on Fygaro&apos;s own confirmation after paying.
+          </p>
+        )}
       </div>
     </section>
   )

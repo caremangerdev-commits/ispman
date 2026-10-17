@@ -92,6 +92,12 @@ export const fygaro: PaymentGateway = {
       creds.secretKey,
       creds.publicKey
     )
+    // No return URL is set here: per Fygaro's docs it is a field on the payment
+    // BUTTON (set in their dashboard), not a JWT claim or a link parameter —
+    // Fygaro redirects to it on success and appends `reference` and
+    // `customReference`. The Online Payments settings page shows the exact URL
+    // to paste there (the portal's /pay/complete), which serves both the account
+    // and reconnection flows off the one button.
     const sep = creds.checkoutUrl.includes('?') ? '&' : '?'
     return creds.checkoutUrl + sep + 'jwt=' + token
   },
