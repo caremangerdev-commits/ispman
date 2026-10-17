@@ -1,19 +1,30 @@
 // Fygaro — the first payment-gateway implementation.
 //
+// TWO DIFFERENT JWTs, DO NOT CONFLATE THEM (verified against the live docs,
+// Jan 2026):
+//
+//   * The CHECKOUT ?jwt= link parameter — CURRENT and supported. It is the
+//     documented way to lock the amount on a Variable-Amount payment button so
+//     the customer cannot edit it, and to carry our own reference. NOT the
+//     deprecated field. (help.fygaro.com/en-us/article/h78p9y/)
+//
+//   * The WEBHOOK body `jwt` field — DEPRECATED, "present for backward
+//     compatibility only; future API versions will omit it". We never read it:
+//     parseWebhook reads `reference`, `amount`, `currency` and `customReference`
+//     from the body, none of which is `jwt`. (…/article/1wkui1k/)
+//
 // Checkout: a single persistent Variable-Amount payment button per company,
-// driven per payment by a signed JWT appended as ?jwt=. The JWT locks the
-// amount so the customer cannot edit it (the reason we use JWT and not URL
-// parameters), and carries our own reference so the webhook knows who paid.
+// signed per payment into a ?jwt= HS256 token whose payload uses Fygaro's claim
+// names — amount and currency as two-decimal STRINGS, and custom_reference
+// (snake_case) for our round-tripped reference.
 //
 // Webhook: Fygaro POSTs on a successful payment. We verify the Fygaro-Signature
-// header with the official @fygaro/webhook package — HMAC over t + "." + raw
-// body, 5-minute freshness window, a list of secrets for rotation — then read
-// `reference` (its immutable transaction id, our idempotency key) and the
-// `customReference` we round-tripped. The legacy `jwt` body field is ignored
-// (Fygaro is removing it).
-//
-// Docs: help.fygaro.com/en-us/article/h78p9y/ (checkout + JWT)
-//       help.fygaro.com/en-us/article/1wkui1k/ (webhook hook)
+// header with the official @fygaro/webhook package (NOT hand-rolled) — HMAC-
+// SHA-256 over t + "." + raw body, 5-minute freshness window, a list of secrets
+// for rotation, via the options-object constructor (the positional one is
+// deprecated). The verified body echoes our reference back as `customReference`
+// (camelCase — Fygaro's own spelling on the webhook side, distinct from the
+// snake_case claim we sent).
 
 import { createHmac } from 'node:crypto'
 
