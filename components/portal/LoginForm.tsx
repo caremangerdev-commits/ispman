@@ -3,6 +3,7 @@
 import { useActionState } from 'react'
 
 import { requestCode, verifyCode, type LoginState } from '@/app/actions/portal'
+import { BrandRule, PortalWordmark, primaryButtonClass, type PortalBrand } from '@/components/portal/Brand'
 
 /**
  * The phone-and-code sign-in, in two phases driven by the server actions'
@@ -10,8 +11,11 @@ import { requestCode, verifyCode, type LoginState } from '@/app/actions/portal'
  * 'code' asks for the code. Built thumb-first: one field and one full-width
  * button per screen, large tap targets, and the native keyboards and SMS
  * autofill a phone gives for a tel field and a one-time-code field.
+ *
+ * The company's logo (or its name as a wordmark) and brand rule head both
+ * phases, so the first screen a customer sees is already the tenant's brand.
  */
-export function LoginForm({ companyName }: { companyName: string }) {
+export function LoginForm({ companyName, brand }: { companyName: string; brand: PortalBrand }) {
   const [reqState, reqAction, reqPending] = useActionState<LoginState | null, FormData>(requestCode, null)
   const [verState, verAction, verPending] = useActionState<LoginState | null, FormData>(verifyCode, null)
 
@@ -21,10 +25,18 @@ export function LoginForm({ companyName }: { companyName: string }) {
     (reqState && 'phone' in reqState ? reqState.phone : undefined) ??
     ''
 
+  const header = (
+    <div className="flex flex-col gap-3">
+      <PortalWordmark brand={brand} />
+      <BrandRule brand={brand} />
+    </div>
+  )
+
   if (phase === 'code') {
     return (
       <>
         <form action={verAction} className="flex flex-col gap-5">
+          {header}
           <div>
             <h1 className="text-2xl font-semibold">Enter your code</h1>
             <p className="mt-1 text-base text-neutral-500">
@@ -47,7 +59,8 @@ export function LoginForm({ companyName }: { companyName: string }) {
           <button
             type="submit"
             disabled={verPending}
-            className="w-full rounded-xl bg-neutral-900 px-4 py-4 text-lg font-semibold text-white active:bg-neutral-700 disabled:opacity-50"
+            className={primaryButtonClass}
+            style={{ backgroundColor: brand.palette.accent, color: brand.palette.onAccent }}
           >
             {verPending ? 'Checking…' : 'Sign in'}
           </button>
@@ -70,10 +83,11 @@ export function LoginForm({ companyName }: { companyName: string }) {
 
   return (
     <form action={reqAction} className="flex flex-col gap-5">
+      {header}
       <div>
-        <h1 className="text-2xl font-semibold">{companyName}</h1>
+        <h1 className="text-2xl font-semibold">Sign in</h1>
         <p className="mt-1 text-base text-neutral-500">
-          Sign in with the mobile number on your account to see your balance and pay.
+          Sign in with the mobile number on your {companyName} account to see your balance and pay.
         </p>
       </div>
       <input
@@ -90,7 +104,8 @@ export function LoginForm({ companyName }: { companyName: string }) {
       <button
         type="submit"
         disabled={reqPending}
-        className="w-full rounded-xl bg-neutral-900 px-4 py-4 text-lg font-semibold text-white active:bg-neutral-700 disabled:opacity-50"
+        className={primaryButtonClass}
+        style={{ backgroundColor: brand.palette.accent, color: brand.palette.onAccent }}
       >
         {reqPending ? 'Sending…' : 'Text me a code'}
       </button>

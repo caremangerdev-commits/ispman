@@ -3,12 +3,14 @@
 import { useActionState } from 'react'
 
 import { confirmPhoneChange, requestPhoneChange, type PhoneChangeState } from '@/app/actions/portal'
+import { primaryButtonClass } from '@/components/portal/Brand'
+import type { BrandPalette } from '@/lib/brand'
 
 /**
  * Change-of-number: enter the new mobile, verify it by SMS, and only then is it
  * saved. Same two-phase shape as the sign-in. Thumb-first inputs.
  */
-export function PhoneChangeForm() {
+export function PhoneChangeForm({ palette }: { palette: BrandPalette }) {
   const [reqState, reqAction, reqPending] = useActionState<PhoneChangeState | null, FormData>(requestPhoneChange, null)
   const [verState, verAction, verPending] = useActionState<PhoneChangeState | null, FormData>(confirmPhoneChange, null)
 
@@ -54,7 +56,7 @@ export function PhoneChangeForm() {
           {verState?.phase === 'code' && verState.error ? (
             <p className="text-base text-red-600">{verState.error}</p>
           ) : null}
-          <button type="submit" disabled={verPending} className="w-full rounded-xl bg-neutral-900 px-4 py-4 text-lg font-semibold text-white active:bg-neutral-700 disabled:opacity-50">
+          <button type="submit" disabled={verPending} className={primaryButtonClass} style={{ backgroundColor: palette.accent, color: palette.onAccent }}>
             {verPending ? 'Saving…' : 'Save new number'}
           </button>
           <button type="submit" form="phone-resend" disabled={reqPending} className="w-full py-2 text-base text-neutral-500 underline">
@@ -87,7 +89,7 @@ export function PhoneChangeForm() {
       {reqState?.phase === 'enter' && reqState.error ? (
         <p className="text-base text-red-600">{reqState.error}</p>
       ) : null}
-      <button type="submit" disabled={reqPending} className="w-full rounded-xl bg-neutral-900 px-4 py-4 text-lg font-semibold text-white active:bg-neutral-700 disabled:opacity-50">
+      <button type="submit" disabled={reqPending} className={primaryButtonClass} style={{ backgroundColor: palette.accent, color: palette.onAccent }}>
         {reqPending ? 'Sending…' : 'Text me a code'}
       </button>
       {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- '/' is rewritten to /portal by proxy.ts; a full nav keeps that rewrite */}

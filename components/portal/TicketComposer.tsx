@@ -3,13 +3,17 @@
 import { useActionState } from 'react'
 
 import { openTicket, replyToTicket, type TicketActionState } from '@/app/actions/portal'
+import { primaryButtonClass } from '@/components/portal/Brand'
+import type { BrandPalette } from '@/lib/brand'
 
 /**
  * Opens a ticket or replies to one. A real form with a file input so a customer
  * can attach a photo straight from the camera; on success the action redirects
  * to the ticket, so only the error is rendered here.
  */
-export function TicketComposer(props: { mode: 'new' } | { mode: 'reply'; ticketId: number }) {
+export function TicketComposer(
+  props: ({ mode: 'new' } | { mode: 'reply'; ticketId: number }) & { palette: BrandPalette }
+) {
   const action = props.mode === 'new' ? openTicket : replyToTicket
   const [state, submit, pending] = useActionState<TicketActionState, FormData>(action, null)
 
@@ -54,7 +58,8 @@ export function TicketComposer(props: { mode: 'new' } | { mode: 'reply'; ticketI
       <button
         type="submit"
         disabled={pending}
-        className="w-full rounded-xl bg-neutral-900 px-4 py-4 text-lg font-semibold text-white active:bg-neutral-700 disabled:opacity-50"
+        className={primaryButtonClass}
+        style={{ backgroundColor: props.palette.accent, color: props.palette.onAccent }}
       >
         {pending ? 'Sending…' : props.mode === 'new' ? 'Open ticket' : 'Send reply'}
       </button>

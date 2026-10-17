@@ -1,9 +1,11 @@
 import { notFound } from 'next/navigation'
 
 import { reconnectCheckout } from '@/app/actions/portal'
+import { BrandRule, PortalWordmark, primaryButtonClass } from '@/components/portal/Brand'
 import { getEnabledGateway } from '@/lib/data/payment-gateways'
 import { findCustomerIdByMac, getPortalAccount } from '@/lib/data/portal'
 import { formatCurrency } from '@/lib/format'
+import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
 
 /**
@@ -26,17 +28,19 @@ export default async function ReconnectPage(props: {
   const error = typeof sp.e === 'string' ? sp.e : null
 
   const customerId = mac ? await findCustomerIdByMac(company.id, mac) : null
-  const [account, gateway] = await Promise.all([
+  const [account, gateway, brand] = await Promise.all([
     customerId ? getPortalAccount(company.id, customerId) : Promise.resolve(null),
     getEnabledGateway(company.id),
+    getPortalBrand(company.id, company.name),
   ])
 
   const owes = account ? account.balance > 0.005 : false
 
   return (
     <div className="flex flex-col gap-5">
-      <header>
-        <p className="text-sm text-neutral-500">{company.name}</p>
+      <header className="flex flex-col gap-3">
+        <PortalWordmark brand={brand} />
+        <BrandRule brand={brand} />
         <h1 className="text-2xl font-semibold">Reconnect your service</h1>
       </header>
 
@@ -80,7 +84,11 @@ export default async function ReconnectPage(props: {
                 className="w-full rounded-xl border border-neutral-300 px-4 py-4 text-xl tabular-nums outline-none focus:border-neutral-900"
               />
               {error ? <p className="text-base text-red-600">{error}</p> : null}
-              <button type="submit" className="w-full rounded-xl bg-neutral-900 px-4 py-4 text-lg font-semibold text-white active:bg-neutral-700">
+              <button
+                type="submit"
+                className={primaryButtonClass}
+                style={{ backgroundColor: brand.palette.accent, color: brand.palette.onAccent }}
+              >
                 Pay &amp; reconnect
               </button>
               <p className="text-xs text-neutral-400">You’ll come back online within moments of paying.</p>

@@ -1,7 +1,9 @@
 import { notFound, redirect } from 'next/navigation'
 
+import { BrandRule, PortalWordmark } from '@/components/portal/Brand'
 import { TicketComposer } from '@/components/portal/TicketComposer'
 import { listPortalTickets } from '@/lib/data/portal-tickets'
+import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPortalSession } from '@/lib/portal/session'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -19,7 +21,10 @@ function fmtDay(value: string): string {
 export default async function SupportPage() {
   const company = await getPortalCompany()
   if (!company) notFound()
-  const session = await getPortalSession(company.id)
+  const [brand, session] = await Promise.all([
+    getPortalBrand(company.id, company.name),
+    getPortalSession(company.id),
+  ])
   if (!session) redirect('/')
   if (!(await getSchemaCapabilities()).portalTier2) notFound()
 
@@ -27,10 +32,14 @@ export default async function SupportPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex items-center justify-between">
+      <header className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <PortalWordmark brand={brand} />
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- '/' is rewritten to /portal by proxy.ts; a full nav keeps that rewrite */}
+          <a href="/" className="shrink-0 text-sm text-neutral-500">← Account</a>
+        </div>
+        <BrandRule brand={brand} />
         <h1 className="text-xl font-semibold">Support</h1>
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- '/' is rewritten to /portal by proxy.ts; a full nav keeps that rewrite */}
-        <a href="/" className="text-sm text-neutral-500">← Account</a>
       </header>
 
       {tickets.length > 0 ? (
@@ -62,7 +71,7 @@ export default async function SupportPage() {
         <p className="mb-4 text-sm text-neutral-500">
           Tell us what’s wrong. A photo of your router’s lights or the cabling helps a lot.
         </p>
-        <TicketComposer mode="new" />
+        <TicketComposer mode="new" palette={brand.palette} />
       </section>
     </div>
   )

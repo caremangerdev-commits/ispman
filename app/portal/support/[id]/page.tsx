@@ -1,7 +1,9 @@
 import { notFound, redirect } from 'next/navigation'
 
+import { BrandRule, PortalWordmark } from '@/components/portal/Brand'
 import { TicketComposer } from '@/components/portal/TicketComposer'
 import { getPortalTicket } from '@/lib/data/portal-tickets'
+import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPortalSession } from '@/lib/portal/session'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -19,7 +21,10 @@ function fmtWhen(value: string): string {
 export default async function TicketThreadPage(props: { params: Promise<{ id: string }> }) {
   const company = await getPortalCompany()
   if (!company) notFound()
-  const session = await getPortalSession(company.id)
+  const [brand, session] = await Promise.all([
+    getPortalBrand(company.id, company.name),
+    getPortalSession(company.id),
+  ])
   if (!session) redirect('/')
   if (!(await getSchemaCapabilities()).portalTier2) notFound()
 
@@ -29,13 +34,18 @@ export default async function TicketThreadPage(props: { params: Promise<{ id: st
 
   return (
     <div className="flex flex-col gap-5">
-      <a href="/support" className="text-sm text-neutral-500">← All tickets</a>
-
-      <header>
-        <h1 className="text-xl font-semibold">{ticket.title}</h1>
-        <span className="mt-1 inline-block rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-600">
-          {STATUS[ticket.status] ?? ticket.status}
-        </span>
+      <header className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <PortalWordmark brand={brand} />
+          <a href="/support" className="shrink-0 text-sm text-neutral-500">← All tickets</a>
+        </div>
+        <BrandRule brand={brand} />
+        <div>
+          <h1 className="text-xl font-semibold">{ticket.title}</h1>
+          <span className="mt-1 inline-block rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-600">
+            {STATUS[ticket.status] ?? ticket.status}
+          </span>
+        </div>
       </header>
 
       <ol className="flex flex-col gap-3">
@@ -75,7 +85,7 @@ export default async function TicketThreadPage(props: { params: Promise<{ id: st
 
       <section className="rounded-2xl border border-neutral-200 p-5">
         <h2 className="mb-3 text-base font-semibold">Reply</h2>
-        <TicketComposer mode="reply" ticketId={ticket.id} />
+        <TicketComposer mode="reply" ticketId={ticket.id} palette={brand.palette} />
       </section>
     </div>
   )

@@ -1,12 +1,14 @@
 import { notFound } from 'next/navigation'
 
 import { logout, startCheckout } from '@/app/actions/portal'
+import { BrandRule, PortalWordmark, primaryButtonClass, type PortalBrand } from '@/components/portal/Brand'
 import { LoginForm } from '@/components/portal/LoginForm'
 import { getCustomerPayments, type CustomerPayment } from '@/lib/data/customers'
 import { activeIncidentForCustomer, type Incident } from '@/lib/data/incidents'
 import { getEnabledGateway } from '@/lib/data/payment-gateways'
 import { getPortalAccount, type PortalAccount } from '@/lib/data/portal'
 import { formatCurrency } from '@/lib/format'
+import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPortalSession } from '@/lib/portal/session'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -20,13 +22,16 @@ export default async function PortalHome(props: {
   const company = await getPortalCompany()
   if (!company) notFound()
 
-  const session = await getPortalSession(company.id)
-  if (!session) return <LoginForm companyName={company.name} />
+  const [brand, session] = await Promise.all([
+    getPortalBrand(company.id, company.name),
+    getPortalSession(company.id),
+  ])
+  if (!session) return <LoginForm companyName={company.name} brand={brand} />
 
   const account = await getPortalAccount(company.id, session.customerId)
   // The session points at an account that is no longer here. Don't clear the
   // cookie in a render (only actions may); just fall back to the sign-in.
-  if (!account) return <LoginForm companyName={company.name} />
+  if (!account) return <LoginForm companyName={company.name} brand={brand} />
 
   const [payments, gateway, incident, caps, sp] = await Promise.all([
     getCustomerPayments(company.id, session.customerId),
@@ -47,6 +52,7 @@ export default async function PortalHome(props: {
   return (
     <AccountView
       company={company.name}
+      brand={brand}
       account={account}
       payments={payments}
       canPay={gateway !== null}
@@ -81,6 +87,7 @@ function monthLabel(ym: string): string {
 
 function AccountView({
   company,
+  brand,
   account,
   payments,
   canPay,
@@ -90,6 +97,7 @@ function AccountView({
   error,
 }: {
   company: string
+  brand: PortalBrand
   account: PortalAccount
   payments: CustomerPayment[]
   canPay: boolean
@@ -105,7 +113,13 @@ function AccountView({
   const creditHeld = Math.max(account.credit, account.balance < 0 ? -account.balance : 0)
   const firstName = account.name.split(' ')[0] || 'there'
 
+  // The healthy hero is FILLED with the brand colour, its text in the
+  // contrast-picked onAccent — so the brand shows strongly here for any colour,
+  // pale ones included, where brand-coloured text on white would wash out.
+  // Expired/soon keep their red/amber tints: urgency outranks brand.
+  const healthy = days !== null && !expired && !soon
   const heroTone = expired ? 'bg-red-50' : soon ? 'bg-amber-50' : 'bg-neutral-100'
+  const heroStyle = healthy ? { backgroundColor: brand.palette.accent, color: brand.palette.onAccent } : undefined
 
   return (
     <div className="flex flex-col gap-5">
@@ -120,23 +134,24 @@ function AccountView({
         </section>
       ) : null}
 
-      <header className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm text-neutral-500">{company}</p>
-          <h1 className="truncate text-lg font-semibold">Hi, {firstName}</h1>
+      <header className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <PortalWordmark brand={brand} />
+          <form action={logout}>
+            <button
+              type="submit"
+              className="shrink-0 rounded-lg px-3 py-2 text-sm text-neutral-500 active:bg-neutral-100"
+            >
+              Log out
+            </button>
+          </form>
         </div>
-        <form action={logout}>
-          <button
-            type="submit"
-            className="shrink-0 rounded-lg px-3 py-2 text-sm text-neutral-500 active:bg-neutral-100"
-          >
-            Log out
-          </button>
-        </form>
+        <BrandRule brand={brand} />
+        <h1 className="truncate text-lg font-semibold">Hi, {firstName}</h1>
       </header>
 
       {/* Time first: the prepaid question is "how long do I have left?" */}
-      <section className={'rounded-2xl p-6 text-center ' + heroTone}>
+      <section className={'rounded-2xl p-6 text-center ' + (healthy ? '' : heroTone)} style={heroStyle}>
         {days === null ? (
           <p className="text-xl font-semibold">Service status unavailable</p>
         ) : expired ? (
@@ -150,7 +165,10 @@ function AccountView({
           </>
         ) : (
           <>
-            <p className="text-6xl font-bold tabular-nums leading-none">{days}</p>
+            {/* Healthy: inherits the hero's onAccent. Soon (amber tint): dark ink. */}
+            <p className="text-6xl font-bold tabular-nums leading-none" style={healthy ? undefined : { color: brand.palette.ink }}>
+              {days}
+            </p>
             <p className="mt-2 text-lg font-medium">
               {days === 0 ? 'last day' : days === 1 ? 'day left' : 'days left'}
             </p>
@@ -158,13 +176,13 @@ function AccountView({
         )}
 
         {account.expiry ? (
-          <p className="mt-3 text-sm text-neutral-600">
+          <p className={'mt-3 text-sm ' + (healthy ? 'opacity-90' : 'text-neutral-600')}>
             {expired ? 'Your internet went off on ' : 'Active until '}
             <span className="font-medium">{formatDay(account.expiry)}</span>.
           </p>
         ) : null}
         {days !== null ? (
-          <p className="mt-1 text-sm text-neutral-500">
+          <p className={'mt-1 text-sm ' + (healthy ? 'opacity-90' : 'text-neutral-500')}>
             {expired ? 'Pay below to come back online.' : 'When this runs out, your internet stops until you pay.'}
           </p>
         ) : null}
@@ -232,7 +250,8 @@ function AccountView({
             {error ? <p className="text-base text-red-600">{error}</p> : null}
             <button
               type="submit"
-              className="w-full rounded-xl bg-neutral-900 px-4 py-4 text-lg font-semibold text-white active:bg-neutral-700"
+              className={primaryButtonClass}
+              style={{ backgroundColor: brand.palette.accent, color: brand.palette.onAccent }}
             >
               Pay now
             </button>
