@@ -163,21 +163,97 @@ export function readPngHeader(bytes: Uint8Array): PngHeader | null {
 }
 
 /**
- * Whether a PNG is in the one shape this app stores: 8-bit, RGB or grey, no
- * alpha, not interlaced, inside the box.
+ * Whether a PNG can go into a PDF as it is: 8-bit, RGB or grey, no alpha, not
+ * interlaced. The size is the caller's business — the logo and the letterhead
+ * each have their own box.
  *
  * THE PDF WRITER DEPENDS ON THIS. It passes the PNG's compressed scanlines
  * straight into the PDF with a PNG predictor, which PDF can only do for an
- * image with no alpha and no interlacing. lib/logo.ts produces this shape; this
- * is what checks it did, at upload and again when the brand is loaded.
+ * image with no alpha and no interlacing.
  */
-export function isStoredLogoShape(h: PngHeader | null): h is PngHeader {
+export function isPassthroughPng(h: PngHeader | null): h is PngHeader {
   return Boolean(
     h &&
     h.bitDepth === 8 &&
     (h.colourType === 2 || h.colourType === 0) &&
     !h.interlaced &&
-    h.width > 0 && h.width <= LOGO_MAX_WIDTH &&
-    h.height > 0 && h.height <= LOGO_MAX_HEIGHT
+    h.width > 0 && h.height > 0
   )
 }
+
+/**
+ * Whether a PNG is in the one shape this app stores for a logo: passthrough,
+ * inside the box. lib/logo.ts produces this shape; this is what checks it did,
+ * at upload and again when the brand is loaded.
+ */
+export function isStoredLogoShape(h: PngHeader | null): h is PngHeader {
+  return isPassthroughPng(h) && h.width <= LOGO_MAX_WIDTH && h.height <= LOGO_MAX_HEIGHT
+}
+
+// ---------------------------------------------------------------------------
+// The letterhead
+// ---------------------------------------------------------------------------
+
+/**
+ * A company's own printed letterhead, uploaded as one image, drawn across the
+ * top of every bill INSTEAD of the generated name/logo/address block.
+ *
+ * THE ZONE IS THE DESIGN'S: the full width between the page margins (180 mm on
+ * A4) and about 26 mm deep. So the image is wide and shallow — 7:1 is the shape
+ * that fills it exactly. Anything outside 4:1 to 10:1 would either eat a third
+ * of the page or print as a thin strip, so it is refused rather than shrunk.
+ *
+ * SIZE IS PRINT RESOLUTION. 180 mm at 300 dpi is 2126 pixels; 2100 x 300 is
+ * the recommendation. Below 1200 pixels wide (about 170 dpi across the page)
+ * text in the letterhead prints visibly soft, so that is refused too. Larger
+ * uploads are scaled down to 2400 wide, which is past what a printer resolves.
+ */
+export const LETTERHEAD_RECOMMENDED = { width: 2100, height: 300 }
+export const LETTERHEAD_MIN_WIDTH = 1200
+export const LETTERHEAD_MIN_RATIO = 4
+export const LETTERHEAD_MAX_RATIO = 10
+/** The stored derivative fits inside this box. */
+export const LETTERHEAD_MAX_WIDTH = 2400
+export const LETTERHEAD_MAX_HEIGHT = 600
+/**
+ * The upload, before normalising. Under the 1 MB server-action body limit with
+ * room for the form's other fields; a 2100 x 300 letterhead is a few hundred KB
+ * as PNG and far less as JPEG.
+ */
+export const LETTERHEAD_UPLOAD_MAX_BYTES = 950 * 1024
+/** The stored PNG's ceiling: the bucket's limit (migration 0038). */
+export const LETTERHEAD_STORED_MAX_BYTES = 2 * 1024 * 1024
+
+/** Whether a stored PNG is a letterhead this app wrote. */
+export function isStoredLetterheadShape(h: PngHeader | null): h is PngHeader {
+  return isPassthroughPng(h) && h.width <= LETTERHEAD_MAX_WIDTH && h.height <= LETTERHEAD_MAX_HEIGHT
+}
+
+/**
+ * Why an image of this size would print badly, or null when it is fine.
+ * One check, used by the upload (server) and the file picker (client).
+ */
+export function letterheadSizeError(width: number, height: number): string | null {
+  if (!(width > 0) || !(height > 0)) return 'That file could not be read as an image.'
+  const ratio = width / height
+  const shape = width + ' x ' + height + ' px'
+  if (ratio < LETTERHEAD_MIN_RATIO) {
+    return 'That image is ' + shape + ', too tall for the letterhead zone: it would take over the top ' +
+      'of the page. Use a wide strip, ' + LETTERHEAD_RECOMMENDED.width + ' x ' +
+      LETTERHEAD_RECOMMENDED.height + ' px (7:1) is ideal; anything from 4:1 to 10:1 is accepted.'
+  }
+  if (ratio > LETTERHEAD_MAX_RATIO) {
+    return 'That image is ' + shape + ', too narrow a strip: it would print as a thin line. Use ' +
+      LETTERHEAD_RECOMMENDED.width + ' x ' + LETTERHEAD_RECOMMENDED.height +
+      ' px (7:1); anything from 4:1 to 10:1 is accepted.'
+  }
+  if (width < LETTERHEAD_MIN_WIDTH) {
+    return 'That image is ' + shape + ', too small to print sharply across the page. Export it at ' +
+      'least ' + LETTERHEAD_MIN_WIDTH + ' px wide; ' + LETTERHEAD_RECOMMENDED.width + ' x ' +
+      LETTERHEAD_RECOMMENDED.height + ' px is ideal.'
+  }
+  return null
+}
+
+/** The stored letterhead: the derivative's bytes and its pixel size. */
+export type BrandLetterhead = BrandLogo

@@ -210,11 +210,6 @@ export async function saveBillingSettings(
     return { ok: false, error: 'Grace period must be 0 to 30 days.' }
   }
 
-  const tax = numInRange(formData, 'tax_rate', 0, 100)
-  if (caps.generalSettings && Number.isNaN(tax)) {
-    return { ok: false, error: 'Tax rate must be between 0 and 100.' }
-  }
-
   const defaultRate = numInRange(formData, 'default_monthly_rate', 0, 1_000_000)
   if (caps.defaultMonthlyRate && Number.isNaN(defaultRate)) {
     return { ok: false, error: 'Default monthly rate must be zero or more.' }
@@ -248,10 +243,11 @@ export async function saveBillingSettings(
   }
 
   // Only write the 0007 columns once they exist; PostgREST rejects the whole
-  // update otherwise.
+  // update otherwise. NOT tax_rate: it moved to Settings > Bills on 2026-10-19
+  // (app/actions/bill-settings.ts), and writing it here from a form that no
+  // longer has the field would zero it on every billing save.
   if (caps.generalSettings) {
     patch.grace_period_days = grace ?? 0
-    patch.tax_rate = tax ?? 0
   }
 
   if (caps.defaultMonthlyRate) {

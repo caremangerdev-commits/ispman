@@ -2,7 +2,7 @@ import { can, type Permission, type Role } from '@/lib/permissions'
 
 export type SettingsIcon =
   | 'building' | 'gauge' | 'package' | 'tags' | 'users' | 'userCog' | 'messageSquare' | 'receipt'
-  | 'network' | 'creditCard'
+  | 'network' | 'creditCard' | 'fileText'
 
 export type SettingsSection = {
   key: string
@@ -39,7 +39,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: 'Billing',
     href: '/dashboard/settings/billing',
     icon: 'receipt',
-    description: 'Billing model and engine, bill and cut-off days, first period, tax, rates and thresholds.',
+    description: 'Billing model and engine, bill and cut-off days, first period, rates and thresholds.',
+    permission: 'manage_company_settings',
+  },
+  {
+    key: 'bills',
+    label: 'Bills',
+    href: '/dashboard/settings/bills',
+    icon: 'fileText',
+    description: 'The bill template (Statement, Ledger or Receipt), tax line and rate, tax and registration numbers, currency symbol and bank details.',
     permission: 'manage_company_settings',
   },
   {

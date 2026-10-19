@@ -4,12 +4,14 @@ import { useActionState, useMemo, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import {
-  removeCompanyLogo, saveBrandColor, uploadCompanyLogo, type BrandingResult,
+  removeCompanyLetterhead, removeCompanyLogo, saveBrandColor, uploadCompanyLetterhead, uploadCompanyLogo,
+  type BrandingResult,
 } from '@/app/actions/branding'
 import { settingsInput } from '@/components/settings/Modal'
 import {
-  brandColorNote, brandPalette, DEFAULT_BRAND_COLOR, LOGO_UPLOAD_MAX_BYTES, LOGO_UPLOAD_TYPES,
-  normaliseBrandColor, type Brand,
+  brandColorNote, brandPalette, DEFAULT_BRAND_COLOR, LETTERHEAD_MAX_RATIO, LETTERHEAD_MIN_RATIO,
+  LETTERHEAD_MIN_WIDTH, LETTERHEAD_RECOMMENDED, LETTERHEAD_UPLOAD_MAX_BYTES, letterheadSizeError,
+  LOGO_UPLOAD_MAX_BYTES, LOGO_UPLOAD_TYPES, normaliseBrandColor, type Brand,
 } from '@/lib/brand'
 import { blocksFromText, renderEmailHtml } from '@/lib/messaging/email-shell'
 
@@ -41,6 +43,10 @@ export type BrandingCardProps = {
   /** A message body to preview with, already filled in with sample values. */
   sampleSubject: string
   sampleBody: string
+  /** A preview of the stored letterhead and its stored size, or null. */
+  letterhead: { dataUri: string; width: number; height: number } | null
+  /** Migrations 0023 and 0038. */
+  letterheadAvailable: boolean
 }
 
 function Notice({ state }: { state: BrandingResult | null }) {
@@ -83,8 +89,127 @@ function Submit({ label, busy, tone = 'primary', disabled }: {
   )
 }
 
+/**
+ * The letterhead: a company's own printed stationery, uploaded as one wide
+ * image, drawn across the top of every bill in place of the generated name,
+ * logo and address. Bills only — emails keep the logo.
+ *
+ * THE SIZE IS CHECKED HERE AS WELL AS ON THE SERVER, with the same function
+ * (lib/brand.ts#letterheadSizeError): the browser reads the picked file's
+ * pixel size and says what is wrong before anything is sent.
+ */
+function LetterheadBlock({
+  available, letterhead, companyName,
+}: {
+  available: boolean
+  letterhead: BrandingCardProps['letterhead']
+  companyName: string
+}) {
+  const [uploadState, uploadAction] = useActionState<BrandingResult | null, FormData>(uploadCompanyLetterhead, null)
+  const [removeState, removeAction] = useActionState<BrandingResult | null, FormData>(removeCompanyLetterhead, null)
+  const [fileError, setFileError] = useState<string | null>(null)
+  const [hasFile, setHasFile] = useState(false)
+
+  function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const input = e.target
+    const file = input.files?.[0]
+    setFileError(null)
+    setHasFile(false)
+    if (!file) return
+    if (file.size > LETTERHEAD_UPLOAD_MAX_BYTES) {
+      setFileError(
+        'That image is ' + Math.ceil(file.size / 1024) + ' KB. The limit is ' +
+        Math.floor(LETTERHEAD_UPLOAD_MAX_BYTES / 1024) + ' KB; export it as a JPEG.'
+      )
+      input.value = ''
+      return
+    }
+    const url = URL.createObjectURL(file)
+    const img = new Image()
+    img.onload = () => {
+      const problem = letterheadSizeError(img.naturalWidth, img.naturalHeight)
+      URL.revokeObjectURL(url)
+      if (problem) {
+        setFileError(problem)
+        input.value = ''
+        return
+      }
+      setHasFile(true)
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      // Not every format previews in every browser; the server decides.
+      setHasFile(true)
+    }
+    img.src = url
+  }
+
+  return (
+    <div className="space-y-2 border-t border-gray-800 pt-5">
+      <p className="text-xs font-medium text-gray-400">Bill letterhead</p>
+      <div className="flex min-h-[4rem] items-center justify-center rounded-lg border border-gray-700 bg-white p-2">
+        {letterhead ? (
+          // eslint-disable-next-line @next/next/no-img-element -- a data URI from a private bucket; there is no URL for next/image to fetch
+          <img src={letterhead.dataUri} alt={companyName + ' letterhead'} className="w-full" />
+        ) : (
+          <span className="px-3 text-center text-[11px] text-gray-500">
+            None. Bills are headed with your name, logo and address, generated.
+          </span>
+        )}
+      </div>
+      <p className="text-[11px] text-gray-600">
+        {letterhead
+          ? 'Stored at ' + letterhead.width + ' x ' + letterhead.height + '. It replaces the generated company block at the top of every bill, across the full width between the margins.'
+          : 'Your own printed stationery as one image. It replaces the generated company block at the top of every bill.'}
+      </p>
+
+      <form action={uploadAction} className="space-y-2">
+        <input
+          type="file"
+          name="letterhead"
+          accept={LOGO_UPLOAD_TYPES.join(',')}
+          onChange={onFile}
+          disabled={!available}
+          className="block w-full text-xs text-gray-400 file:mr-3 file:rounded-lg file:border-0 file:bg-gray-800 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-gray-200 hover:file:bg-gray-700 disabled:opacity-50"
+        />
+        <p className="text-[11px] leading-relaxed text-gray-600">
+          Recommended {LETTERHEAD_RECOMMENDED.width} x {LETTERHEAD_RECOMMENDED.height} px, a 7:1 strip, as a PNG or
+          JPEG up to {Math.floor(LETTERHEAD_UPLOAD_MAX_BYTES / 1024)} KB. Accepted from {LETTERHEAD_MIN_RATIO}:1 to{' '}
+          {LETTERHEAD_MAX_RATIO}:1 and at least {LETTERHEAD_MIN_WIDTH} px wide; anything else would print blurred, too
+          tall or as a thin line, and is refused. Transparency is filled with white.
+        </p>
+        {!available ? (
+          <p className="text-[11px] text-amber-400/90">Needs migration 0038.</p>
+        ) : null}
+        {fileError ? <p className="text-xs text-red-300">{fileError}</p> : <Notice state={uploadState} />}
+        <Submit
+          label={letterhead ? 'Replace letterhead' : 'Upload letterhead'}
+          busy="Uploading…"
+          disabled={!available || !hasFile}
+        />
+      </form>
+
+      {letterhead ? (
+        <form action={removeAction} className="space-y-2">
+          <Notice state={removeState} />
+          <Submit label="Remove letterhead" busy="Removing…" tone="quiet" disabled={!available} />
+        </form>
+      ) : null}
+
+      <a
+        href="/api/company/bill-sample"
+        target="_blank"
+        rel="noreferrer"
+        className="inline-block text-xs font-medium text-blue-400 hover:text-blue-300"
+      >
+        Open a sample bill (PDF)
+      </a>
+    </div>
+  )
+}
+
 export function BrandingCard({
-  available, companyName, contact, logo, color, sampleSubject, sampleBody,
+  available, companyName, contact, logo, color, sampleSubject, sampleBody, letterhead, letterheadAvailable,
 }: BrandingCardProps) {
   const [uploadState, uploadAction] = useActionState<BrandingResult | null, FormData>(uploadCompanyLogo, null)
   const [removeState, removeAction] = useActionState<BrandingResult | null, FormData>(removeCompanyLogo, null)
@@ -187,6 +312,9 @@ export function BrandingCard({
               </form>
             ) : null}
           </div>
+
+          {/* ---- Letterhead (migration 0038) ---- */}
+          <LetterheadBlock available={letterheadAvailable} letterhead={letterhead} companyName={companyName} />
 
           {/* ---- Colour ---- */}
           <form action={colorAction} className="space-y-2">

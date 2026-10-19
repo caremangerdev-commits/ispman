@@ -3,8 +3,10 @@ import 'server-only'
 import sharp from 'sharp'
 
 import {
-  isStoredLogoShape, LOGO_MAX_HEIGHT, LOGO_MAX_WIDTH, LOGO_UPLOAD_MAX_BYTES, readPngHeader,
-  type BrandLogo,
+  isStoredLetterheadShape, isStoredLogoShape, LETTERHEAD_MAX_HEIGHT, LETTERHEAD_MAX_WIDTH,
+  LETTERHEAD_RECOMMENDED, LETTERHEAD_STORED_MAX_BYTES, LETTERHEAD_UPLOAD_MAX_BYTES,
+  letterheadSizeError, LOGO_MAX_HEIGHT, LOGO_MAX_WIDTH, LOGO_UPLOAD_MAX_BYTES, readPngHeader,
+  type BrandLetterhead, type BrandLogo,
 } from '@/lib/brand'
 
 /**
@@ -87,4 +89,93 @@ export async function normaliseLogo(
   }
 
   return { ok: true, logo: { png, width: header.width, height: header.height } }
+}
+
+/**
+ * A small JPEG of the stored letterhead for the settings page, as a data URI.
+ * The stored file is up to 2400 pixels wide and would weigh down every load of
+ * General Settings inlined whole; the page only needs to show what it is.
+ */
+export async function letterheadPreviewUri(png: Uint8Array): Promise<string | null> {
+  try {
+    const out = await sharp(png).resize({ width: 900, withoutEnlargement: true }).jpeg({ quality: 82 }).toBuffer()
+    return 'data:image/jpeg;base64,' + out.toString('base64')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The same treatment for a letterhead: one stored file, the shape the PDF
+ * writer passes straight through, refused when it would print badly.
+ *
+ * REFUSED, NOT FIXED. An image the wrong shape for the zone is not cropped or
+ * padded to fit: cropping cuts off somebody's address, and padding a square logo
+ * to 7:1 is what the generated block already does better. The person is told
+ * the size they uploaded and the size that works (lib/brand.ts#letterheadSizeError).
+ *
+ * Flattened onto white like the logo, and for the same reason: PDF image
+ * streams carry no alpha, and the zone it sits in is the white page.
+ */
+export async function normaliseLetterhead(
+  input: Uint8Array
+): Promise<{ ok: true; letterhead: BrandLetterhead } | { ok: false; error: string }> {
+  if (input.length === 0) return { ok: false, error: 'Choose an image to upload.' }
+  if (input.length > LETTERHEAD_UPLOAD_MAX_BYTES) {
+    return {
+      ok: false,
+      error: 'The image is larger than ' + Math.floor(LETTERHEAD_UPLOAD_MAX_BYTES / 1024) +
+        ' KB. Export it as a JPEG, or as a PNG without transparency, and try again.',
+    }
+  }
+
+  let meta: Awaited<ReturnType<ReturnType<typeof sharp>['metadata']>>
+  try {
+    meta = await sharp(input, { limitInputPixels: 40_000_000 }).metadata()
+  } catch {
+    return { ok: false, error: 'That file could not be read as an image.' }
+  }
+  if (!meta.format || !ACCEPTED.has(meta.format)) {
+    return { ok: false, error: 'Upload a PNG, JPEG or WebP image.' }
+  }
+
+  // EXIF orientations 5-8 are quarter turns: the image as it will be drawn is
+  // the stored one with its sides swapped. Checked as drawn, not as stored.
+  const turned = (meta.orientation ?? 1) >= 5
+  const width = (turned ? meta.height : meta.width) ?? 0
+  const height = (turned ? meta.width : meta.height) ?? 0
+  const sizeError = letterheadSizeError(width, height)
+  if (sizeError) return { ok: false, error: sizeError }
+
+  let png: Uint8Array
+  try {
+    const out = await sharp(input, { limitInputPixels: 40_000_000 })
+      .rotate()
+      .flatten({ background: '#ffffff' })
+      .resize({
+        width: LETTERHEAD_MAX_WIDTH, height: LETTERHEAD_MAX_HEIGHT,
+        fit: 'inside', withoutEnlargement: true,
+      })
+      .toColourspace('srgb')
+      .png({ compressionLevel: 9, palette: false, progressive: false })
+      .toBuffer()
+    png = new Uint8Array(out.buffer, out.byteOffset, out.byteLength)
+  } catch {
+    return { ok: false, error: 'That image could not be processed. Try exporting it again as a PNG or JPEG.' }
+  }
+
+  if (png.length > LETTERHEAD_STORED_MAX_BYTES) {
+    return {
+      ok: false,
+      error: 'That image is too detailed to store as a letterhead (a photograph across the whole strip ' +
+        'is the usual cause). Simplify the background, or export it at ' + LETTERHEAD_RECOMMENDED.width +
+        ' x ' + LETTERHEAD_RECOMMENDED.height + ' px.',
+    }
+  }
+
+  const header = readPngHeader(png)
+  if (!isStoredLetterheadShape(header)) {
+    return { ok: false, error: 'That image could not be converted to the stored format.' }
+  }
+  return { ok: true, letterhead: { png, width: header.width, height: header.height } }
 }

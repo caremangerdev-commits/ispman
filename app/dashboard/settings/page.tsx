@@ -1,8 +1,8 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import {
-  Building2, CreditCard, Gauge, MessageSquare, Network, Package, Receipt, Tags, UserCog, Users,
-  type LucideIcon,
+  Building2, CreditCard, FileText, Gauge, MessageSquare, Network, Package, Receipt, Tags, UserCog,
+  Users, type LucideIcon,
 } from 'lucide-react'
 
 import { CATALOG_HINT, getSchemaCapabilities } from '@/lib/schema'
@@ -23,6 +23,7 @@ const ICONS: Record<SettingsIcon, LucideIcon> = {
   messageSquare: MessageSquare,
   network: Network,
   creditCard: CreditCard,
+  fileText: FileText,
 }
 
 /**

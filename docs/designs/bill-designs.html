@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bill Designs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --brand:#ff8000;
+  --brand-ink:#1a2027;
+  --ink:#191f26;
+  --muted:#636e7b;
+  --line:#d9dfe5;
+  --hair:#eceff2;
+  --paper:#ffffff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:#8b93a0;
+  color:var(--ink);
+  font-family:'Public Sans',system-ui,sans-serif;
+  font-size:15px;line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ---------- controls (screen only) ---------- */
+.bar{background:#11161c;color:#9fb0c0;padding:11px 16px;display:flex;gap:9px;align-items:center;flex-wrap:wrap;font-size:13px;position:sticky;top:0;z-index:5}
+.bar span{margin-right:3px}
+.bar button{font:inherit;font-weight:500;background:#1e262f;color:#cfdae4;border:1px solid #2e3944;padding:6px 13px;border-radius:999px;cursor:pointer}
+.bar button[aria-pressed="true"]{background:#cfdae4;color:#11161c;border-color:#cfdae4}
+.bar button:focus-visible{outline:2px solid #7fb3ff;outline-offset:2px}
+.sep{width:1px;height:20px;background:#2e3944;margin:0 4px}
+
+.stage{padding:28px 16px 60px;display:flex;justify-content:center}
+
+/* ---------- the sheet ---------- */
+.sheet{
+  width:210mm;min-height:297mm;background:var(--paper);
+  padding:16mm 15mm 14mm;
+  box-shadow:0 10px 40px rgba(0,0,0,.3);
+  position:relative;
+}
+.sheet[hidden]{display:none}
+
+/* letterhead reservation marker (screen only) */
+.lh-hint{position:absolute;left:15mm;right:15mm;top:16mm;height:26mm;border:1px dashed #b9c3cd;border-radius:3px;pointer-events:none;display:none}
+.lh-hint::after{content:'letterhead zone — logo or printed stationery';position:absolute;right:6px;bottom:4px;font-size:10px;color:#9aa6b2;letter-spacing:.02em}
+body.show-lh .lh-hint{display:block}
+
+/* ---------- shared pieces ---------- */
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:20mm;min-height:26mm}
+.co-logo{width:13mm;height:13mm;border-radius:3mm;background:var(--brand);color:var(--brand-ink);display:grid;place-items:center;font-weight:700;font-size:20px;margin-bottom:4mm}
+.co-name{font-weight:700;font-size:19px;letter-spacing:-.01em;line-height:1.2}
+.co-meta{color:var(--muted);font-size:12.5px;line-height:1.65;margin-top:2mm}
+.doc-type{text-align:right}
+.doc-kind{font-size:22px;font-weight:700;letter-spacing:-.015em}
+.doc-fields{margin-top:3mm;font-size:12.5px;line-height:1.7}
+.doc-fields div{display:flex;justify-content:flex-end;gap:10px}
+.doc-fields dt{color:var(--muted)}
+.doc-fields dd{margin:0;font-weight:600;font-variant-numeric:tabular-nums;min-width:30mm;text-align:right}
+
+.billto{margin-top:9mm;display:flex;gap:14mm}
+.billto > div{flex:1}
+.lab{font-size:11px;color:var(--muted);font-weight:600;margin:0 0 2mm}
+.billto p{margin:0;line-height:1.6;font-size:13.5px}
+.billto b{font-weight:600;font-size:15px}
+
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th{font-size:11.5px;font-weight:600;color:var(--muted);text-align:left;padding:0 0 2.5mm}
+th.r,td.r{text-align:right}
+td{padding:3mm 0;font-size:13.5px;border-top:1px solid var(--hair);vertical-align:top}
+td .sub{display:block;color:var(--muted);font-size:12px;margin-top:.8mm}
+
+.totals{margin-top:6mm;margin-left:auto;width:78mm;font-variant-numeric:tabular-nums}
+.totals div{display:flex;justify-content:space-between;padding:2.2mm 0;font-size:13.5px}
+.totals div span:first-child{color:var(--muted)}
+.totals .due{border-top:2px solid var(--ink);margin-top:2mm;padding-top:3mm;font-size:17px;font-weight:700}
+.totals .due span:first-child{color:var(--ink)}
+
+.pay{margin-top:10mm;padding-top:5mm;border-top:1px solid var(--line)}
+.pay h3{font-size:12.5px;font-weight:600;margin:0 0 3mm}
+.pay-cols{display:flex;gap:10mm;font-size:12.5px;line-height:1.7;color:var(--muted)}
+.pay-cols b{color:var(--ink);font-weight:600;display:block}
+
+.legal{position:absolute;left:15mm;right:15mm;bottom:9mm;font-size:10.5px;color:var(--muted);line-height:1.6;border-top:1px solid var(--hair);padding-top:3mm}
+
+.gct-off .gct-row{display:none}
+
+/* ---------- A: Statement ---------- */
+#a .co-name,#a .doc-kind{font-family:'Source Serif 4',Georgia,serif}
+#a .doc-kind{font-weight:600}
+#a .summary{margin-top:8mm;border:1px solid var(--line);border-radius:3px;overflow:hidden}
+#a .summary-head{background:var(--brand);color:var(--brand-ink);padding:3mm 5mm;font-size:12.5px;font-weight:600}
+#a .summary-body{display:flex}
+#a .sm{flex:1;padding:5mm;border-right:1px solid var(--hair)}
+#a .sm:last-child{border-right:0;background:#fafbfc}
+#a .sm dt{font-size:11.5px;color:var(--muted);margin:0 0 1.5mm}
+#a .sm dd{margin:0;font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+#a .sm:last-child dd{font-size:21px;font-weight:700}
+#a .items{margin-top:9mm}
+#a .items h3{font-size:12.5px;font-weight:600;margin:0 0 3mm}
+#a .stub{margin-top:11mm;border-top:1.5px dashed var(--line);padding-top:5mm;display:flex;justify-content:space-between;align-items:flex-end;gap:12mm}
+#a .stub-note{font-size:11px;color:var(--muted);max-width:90mm;line-height:1.6}
+#a .stub-amt{text-align:right;font-variant-numeric:tabular-nums}
+#a .stub-amt span{display:block;font-size:11px;color:var(--muted)}
+#a .stub-amt strong{font-size:19px}
+
+/* ---------- B: Ledger ---------- */
+#b{padding-top:18mm}
+#b .co-name{font-size:16px;letter-spacing:.06em;font-weight:600;text-transform:none}
+#b .doc-kind{font-size:15px;font-weight:600;letter-spacing:.06em}
+#b .rule{height:3px;background:var(--brand);margin:6mm 0 0}
+#b .period{margin-top:7mm;font-size:13.5px;color:var(--muted)}
+#b .period b{color:var(--ink);font-weight:600}
+#b table{margin-top:5mm}
+#b th{border-bottom:1.5px solid var(--ink);padding-bottom:2mm}
+#b td{border-top:0;border-bottom:1px solid var(--hair);padding:3.2mm 0}
+#b tr:last-child td{border-bottom:1.5px solid var(--ink)}
+#b .bal{font-weight:600}
+#b .closing{margin-top:5mm;display:flex;justify-content:flex-end;align-items:baseline;gap:8mm;font-variant-numeric:tabular-nums}
+#b .closing span{color:var(--muted);font-size:13px}
+#b .closing strong{font-size:21px;font-weight:700}
+#b .tag{display:inline-block;background:var(--brand);color:var(--brand-ink);font-size:11px;font-weight:600;padding:1mm 2.5mm;border-radius:2px}
+
+/* ---------- C: Service period ---------- */
+#c .band{background:var(--brand);color:var(--brand-ink);margin:-16mm -15mm 0;padding:11mm 15mm 9mm}
+#c .band .co-name{font-size:17px}
+#c .band .co-meta{color:inherit;opacity:.8}
+#c .hdr{min-height:0}
+#c .periodbox{margin-top:9mm;display:flex;gap:6mm;align-items:stretch}
+#c .pb{flex:1;border:1px solid var(--line);border-radius:4px;padding:5mm}
+#c .pb dt{font-size:11.5px;color:var(--muted);margin:0 0 2mm}
+#c .pb dd{margin:0;font-size:16px;font-weight:600}
+#c .pb--big{flex:1.1;background:#fafbfc}
+#c .pb--big dd{font-size:24px;font-weight:700;letter-spacing:-.02em}
+#c .what{margin-top:9mm}
+#c .what h3{font-size:12.5px;font-weight:600;margin:0 0 3mm}
+#c .paid{margin-top:7mm;background:#eef7f1;border:1px solid #c6e2d2;border-radius:4px;padding:4mm 5mm;display:flex;justify-content:space-between;align-items:center;font-size:14px}
+#c .paid b{font-weight:600}
+#c .paid strong{font-size:18px;font-variant-numeric:tabular-nums}
+
+/* ---------- print ---------- */
+@media print{
+  body{background:#fff}
+  .bar,.lh-hint{display:none!important}
+  .stage{padding:0}
+  .sheet{width:auto;min-height:0;box-shadow:none;padding:14mm 13mm}
+  @page{size:A4;margin:0}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <span>Design:</span>
+  <button type="button" data-sheet="a" aria-pressed="true">A · Statement</button>
+  <button type="button" data-sheet="b" aria-pressed="false">B · Ledger</button>
+  <button type="button" data-sheet="c" aria-pressed="false">C · Service period</button>
+  <div class="sep"></div>
+  <span>Brand:</span>
+  <button type="button" data-brand="#ff8000" aria-pressed="true">Orange</button>
+  <button type="button" data-brand="#1d4ed8" aria-pressed="false">Blue</button>
+  <button type="button" data-brand="#0f766e" aria-pressed="false">Teal</button>
+  <div class="sep"></div>
+  <button type="button" id="gct" aria-pressed="true">Tax line shown</button>
+  <button type="button" id="lh" aria-pressed="false">Letterhead zone</button>
+</div>
+
+<div class="stage">
+
+<!-- ===================== A · STATEMENT ===================== -->
+<section class="sheet" id="a">
+  <div class="lh-hint"></div>
+
+  <div class="hdr">
+    <div>
+      <div class="co-logo">W</div>
+      <div class="co-name">West Central Networks</div>
+      <div class="co-meta">
+        Malvern, St Elizabeth<br>
+        876 555 5555 · billing@westcentral.com<br>
+        Tax ID 123-456-789 · Tax reg. 0001234
+      </div>
+    </div>
+    <div class="doc-type">
+      <div class="doc-kind">Invoice</div>
+      <dl class="doc-fields">
+        <div><dt>Invoice</dt><dd>WCN-004821</dd></div>
+        <div><dt>Issued</dt><dd>5 Oct 2026</dd></div>
+        <div><dt>Due</dt><dd>5 Nov 2026</dd></div>
+      </dl>
+    </div>
+  </div>
+
+  <div class="billto">
+    <div>
+      <p class="lab">Billed to</p>
+      <p><b>Shelley Mitchell</b><br>
+      Barnstaple District<br>
+      St Elizabeth<br>
+      876 555 5555</p>
+    </div>
+    <div>
+      <p class="lab">Account</p>
+      <p><b>10140</b><br>
+      Service: MAX P<br>
+      Installed at Barnstaple<br>
+      Quote this number when you pay</p>
+    </div>
+  </div>
+
+  <div class="summary">
+    <div class="summary-head">Account summary</div>
+    <div class="summary-body">
+      <dl class="sm"><dt>Previous balance</dt><dd>J$3,500</dd></dl>
+      <dl class="sm"><dt>Payments received</dt><dd>−J$3,500</dd></dl>
+      <dl class="sm"><dt>Charges this period</dt><dd>J$3,500</dd></dl>
+      <dl class="sm"><dt>Total due</dt><dd>J$3,500</dd></dl>
+    </div>
+  </div>
+
+  <div class="items">
+    <h3>Charges</h3>
+    <table>
+      <thead><tr><th>Description</th><th>Period</th><th class="r">Amount</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>MAX P internet service<span class="sub">Unlimited · 10 / 10 Mbps</span></td>
+          <td>5 Oct – 5 Nov 2026</td>
+          <td class="r">J$3,043.48</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="totals">
+      <div><span>Subtotal</span><span>J$3,043.48</span></div>
+      <div class="gct-row"><span>Tax 15%</span><span>J$456.52</span></div>
+      <div class="due"><span>Total due</span><span>J$3,500.00</span></div>
+    </div>
+  </div>
+
+  <div class="pay">
+    <h3>How to pay</h3>
+    <div class="pay-cols">
+      <div><b>At the office</b>Malvern, Mon–Fri 9am–4pm<br>Cash accepted</div>
+      <div><b>Bank transfer</b>NCB 351-000-000<br>Use account 10140 as reference</div>
+      <div><b>Card, online</b>wcnet.pay.ispman.online<br>Sign in with your phone number</div>
+    </div>
+  </div>
+
+  <div class="stub">
+    <div class="stub-note">Detach and return this portion with a cash or cheque payment. Service continues to 5 November 2026. After that date service is interrupted until payment is received.</div>
+    <div class="stub-amt"><span>Account 10140 · Invoice WCN-004821</span><strong>J$3,500.00</strong></div>
+  </div>
+
+  <div class="legal">West Central Networks · Tax ID 123-456-789 · Tax invoice — retain for your records.</div>
+</section>
+
+<!-- ===================== B · LEDGER ===================== -->
+<section class="sheet" id="b" hidden>
+  <div class="lh-hint"></div>
+
+  <div class="hdr">
+    <div>
+      <div class="co-name">West Central Networks</div>
+      <div class="co-meta">Malvern, St Elizabeth · 876 555 5555 · Tax ID 123-456-789</div>
+    </div>
+    <div class="doc-type">
+      <div class="doc-kind">Statement of account</div>
+      <dl class="doc-fields">
+        <div><dt>Account</dt><dd>10140</dd></div>
+        <div><dt>Issued</dt><dd>19 Oct 2026</dd></div>
+      </dl>
+    </div>
+  </div>
+  <div class="rule"></div>
+
+  <div class="period">
+    <b>Shelley Mitchell</b> · Barnstaple District, St Elizabeth<br>
+    Transactions from <b>1 August</b> to <b>19 October 2026</b> · <span class="tag">MAX P</span>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Date</th><th>Detail</th><th class="r">Charges</th><th class="r">Payments</th><th class="r">Balance</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1 Aug</td><td>Balance brought forward</td><td class="r">—</td><td class="r">—</td><td class="r bal">J$3,500</td></tr>
+      <tr><td>11 Aug</td><td>Payment received · cash, Malvern office</td><td class="r">—</td><td class="r">J$3,500</td><td class="r bal">J$0</td></tr>
+      <tr><td>5 Sep</td><td>MAX P service · 5 Sep – 5 Oct</td><td class="r">J$3,500</td><td class="r">—</td><td class="r bal">J$3,500</td></tr>
+      <tr><td>14 Sep</td><td>Payment received · cash, Malvern office</td><td class="r">—</td><td class="r">J$3,500</td><td class="r bal">J$0</td></tr>
+      <tr><td>5 Oct</td><td>MAX P service · 5 Oct – 5 Nov</td><td class="r">J$3,500</td><td class="r">—</td><td class="r bal">J$3,500</td></tr>
+      <tr><td>17 Oct</td><td>Payment received · card, online</td><td class="r">—</td><td class="r">J$3,500</td><td class="r bal">J$0</td></tr>
+    </tbody>
+  </table>
+
+  <div class="closing">
+    <span>Balance at 19 October 2026</span><strong>J$0.00</strong>
+  </div>
+
+  <div class="totals gct-row" style="margin-top:8mm">
+    <div><span>Charges in period</span><span>J$6,086.96</span></div>
+    <div><span>Tax 15%</span><span>J$913.04</span></div>
+    <div class="due"><span>Total charged</span><span>J$7,000.00</span></div>
+  </div>
+
+  <div class="pay">
+    <h3>How to pay</h3>
+    <div class="pay-cols">
+      <div><b>At the office</b>Malvern, Mon–Fri 9am–4pm</div>
+      <div><b>Bank transfer</b>NCB 351-000-000 · ref 10140</div>
+      <div><b>Card, online</b>wcnet.pay.ispman.online</div>
+    </div>
+  </div>
+
+  <div class="legal">Queries about this statement should be raised within 30 days. West Central Networks · Tax ID 123-456-789 · Tax reg. 0001234</div>
+</section>
+
+<!-- ===================== C · SERVICE PERIOD ===================== -->
+<section class="sheet" id="c" hidden>
+  <div class="lh-hint"></div>
+
+  <div class="band">
+    <div class="hdr">
+      <div>
+        <div class="co-name">West Central Networks</div>
+        <div class="co-meta">Malvern, St Elizabeth · 876 555 5555 · Tax ID 123-456-789</div>
+      </div>
+      <div class="doc-type">
+        <div class="doc-kind">Receipt</div>
+        <dl class="doc-fields"><div><dt>No.</dt><dd>WCN-R-17420</dd></div></dl>
+      </div>
+    </div>
+  </div>
+
+  <div class="billto">
+    <div>
+      <p class="lab">Customer</p>
+      <p><b>Shelley Mitchell</b><br>Barnstaple District, St Elizabeth<br>876 555 5555</p>
+    </div>
+    <div>
+      <p class="lab">Account</p>
+      <p><b>10140</b><br>Quote this number when you pay</p>
+    </div>
+  </div>
+
+  <div class="periodbox">
+    <dl class="pb"><dt>Paid on</dt><dd>17 October 2026</dd></dl>
+    <dl class="pb"><dt>Paid by</dt><dd>Card, online</dd></dl>
+    <dl class="pb pb--big"><dt>Your service runs to</dt><dd>5 Nov 2026</dd></dl>
+  </div>
+
+  <div class="what">
+    <h3>What you paid for</h3>
+    <table>
+      <thead><tr><th>Service</th><th>Covers</th><th class="r">Amount</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>MAX P internet<span class="sub">Unlimited · 10 / 10 Mbps</span></td>
+          <td>5 Oct – 5 Nov 2026</td>
+          <td class="r">J$3,043.48</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="totals">
+      <div class="gct-row"><span>Tax 15%</span><span>J$456.52</span></div>
+      <div class="due"><span>Paid</span><span>J$3,500.00</span></div>
+    </div>
+  </div>
+
+  <div class="paid">
+    <span><b>Paid in full.</b> Nothing is outstanding on this account.</span>
+    <strong>J$0.00 due</strong>
+  </div>
+
+  <div class="pay">
+    <h3>Next payment</h3>
+    <div class="pay-cols">
+      <div><b>Due by 5 November 2026</b>Pay at the Malvern office, by bank transfer to NCB 351-000-000, or by card at wcnet.pay.ispman.online</div>
+    </div>
+  </div>
+
+  <div class="legal">West Central Networks · Tax ID 123-456-789 · Tax reg. 0001234 · Tax invoice — retain for your records.</div>
+</section>
+
+</div>
+
+<script>
+(function(){
+  function press(sel,el){document.querySelectorAll(sel).forEach(function(o){o.setAttribute('aria-pressed','false')});el.setAttribute('aria-pressed','true')}
+  function lum(h){var r=parseInt(h.substr(1,2),16)/255,g=parseInt(h.substr(3,2),16)/255,b=parseInt(h.substr(5,2),16)/255;
+    function f(c){return c<=.03928?c/12.92:Math.pow((c+.055)/1.055,2.4)}
+    return .2126*f(r)+.7152*f(g)+.0722*f(b)}
+
+  document.querySelectorAll('[data-sheet]').forEach(function(b){
+    b.addEventListener('click',function(){
+      press('[data-sheet]',b);
+      ['a','b','c'].forEach(function(id){document.getElementById(id).hidden = (id!==b.dataset.sheet)});
+    });
+  });
+  document.querySelectorAll('[data-brand]').forEach(function(b){
+    b.addEventListener('click',function(){
+      press('[data-brand]',b);
+      var c=b.dataset.brand;
+      document.documentElement.style.setProperty('--brand',c);
+      document.documentElement.style.setProperty('--brand-ink',lum(c)>0.45?'#1a2027':'#ffffff');
+    });
+  });
+  var g=document.getElementById('gct');
+  g.addEventListener('click',function(){
+    var on=g.getAttribute('aria-pressed')==='true';
+    g.setAttribute('aria-pressed',String(!on));
+    g.textContent=!on?'Tax line shown':'Tax line hidden';
+    document.body.classList.toggle('gct-off',on);
+  });
+  var l=document.getElementById('lh');
+  l.addEventListener('click',function(){
+    var on=l.getAttribute('aria-pressed')==='true';
+    l.setAttribute('aria-pressed',String(!on));
+    document.body.classList.toggle('show-lh',!on);
+  });
+})();
+</script>
+</body>
+</html>

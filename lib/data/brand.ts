@@ -1,8 +1,8 @@
 import 'server-only'
 
 import {
-  brandPalette, isStoredLogoShape, normaliseBrandColor, readPngHeader,
-  type Brand, type BrandLogo,
+  brandPalette, isStoredLetterheadShape, isStoredLogoShape, normaliseBrandColor, readPngHeader,
+  type Brand, type BrandLetterhead, type BrandLogo,
 } from '@/lib/brand'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -176,6 +176,118 @@ export async function storeLogo(
     if (error) console.error('[brand] could not delete the replaced logo %s: %s', oldPath, error.message)
   }
   return { ok: true }
+}
+
+// ---------------------------------------------------------------------------
+// The letterhead (migration 0038)
+// ---------------------------------------------------------------------------
+
+/**
+ * The stored letterhead, or null. NEVER THROWS: no migration, no upload, an
+ * object that will not download or is not the stored shape — each is "no
+ * letterhead", and the bill draws the generated company block, as it always
+ * has. A bill must not fail to print because a PNG could not be fetched.
+ */
+export async function loadLetterhead(companyId: number): Promise<BrandLetterhead | null> {
+  if (!(await getSchemaCapabilities()).billDocuments) return null
+  const { data, error } = await tenantClient()
+    .from('settings').select('letterhead_path').eq('company_id', companyId).maybeSingle()
+  if (error) {
+    console.error('[brand] letterhead read failed for company %d: %s', companyId, error.message)
+    return null
+  }
+  const path = (data as { letterhead_path?: string | null } | null)?.letterhead_path ?? null
+  if (!path) return null
+  if (!ownsPath(companyId, path)) {
+    console.error('[brand] company %d has a letterhead_path outside its own folder: %s', companyId, path)
+    return null
+  }
+
+  const { data: blob, error: downloadError } = await tenantClient().storage.from(BRAND_BUCKET).download(path)
+  if (downloadError || !blob) {
+    console.error('[brand] could not download %s: %s', path, downloadError?.message ?? 'no data')
+    return null
+  }
+  const png = new Uint8Array(await blob.arrayBuffer())
+  const header = readPngHeader(png)
+  if (!isStoredLetterheadShape(header)) {
+    console.error('[brand] %s is not in the stored letterhead format; using the generated block', path)
+    return null
+  }
+  return { png, width: header.width, height: header.height }
+}
+
+/**
+ * Stores a normalised letterhead and points the company at it. The logo's
+ * order exactly (storeLogo above): new object, then the pointer, then delete
+ * the old one, so the pointer never names an object that does not exist.
+ */
+export async function storeLetterhead(
+  companyId: number,
+  letterhead: BrandLetterhead
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const db = tenantClient()
+  const storage = db.storage.from(BRAND_BUCKET)
+
+  const { data: before } = await db
+    .from('settings').select('letterhead_path').eq('company_id', companyId).maybeSingle()
+  const oldPath = (before as { letterhead_path?: string | null } | null)?.letterhead_path ?? null
+
+  const path = companyId + '/letterhead-' + Date.now() + '.png'
+  const { error: uploadError } = await storage.upload(path, letterhead.png, {
+    contentType: 'image/png',
+    upsert: false,
+  })
+  if (uploadError) {
+    const missing = /bucket not found/i.test(uploadError.message)
+    const tooBig = /maximum allowed size|payload too large|exceeded/i.test(uploadError.message)
+    return {
+      ok: false,
+      error: missing
+        ? 'Image storage is not set up on this system yet. Ask your administrator to apply migration 0023.'
+        : tooBig
+          ? 'The stored letterhead is over the storage limit. Ask your administrator to apply migration 0038, which raises it.'
+          : 'Could not store the letterhead: ' + uploadError.message,
+    }
+  }
+
+  const { data: updated, error: updateError } = await db
+    .from('settings').update({ letterhead_path: path }).eq('company_id', companyId).select('id')
+  if (updateError || !updated || updated.length === 0) {
+    await storage.remove([path])
+    return {
+      ok: false,
+      error: updateError
+        ? 'Could not save the letterhead: ' + updateError.message
+        : 'Save your company settings once before adding a letterhead.',
+    }
+  }
+
+  if (oldPath && oldPath !== path && ownsPath(companyId, oldPath)) {
+    const { error } = await storage.remove([oldPath])
+    if (error) console.error('[brand] could not delete the replaced letterhead %s: %s', oldPath, error.message)
+  }
+  return { ok: true }
+}
+
+/** Removes the letterhead. The pointer first, as clearLogo does. */
+export async function clearLetterhead(
+  companyId: number
+): Promise<{ ok: true; removed: boolean } | { ok: false; error: string }> {
+  const db = tenantClient()
+  const { data: before } = await db
+    .from('settings').select('letterhead_path').eq('company_id', companyId).maybeSingle()
+  const oldPath = (before as { letterhead_path?: string | null } | null)?.letterhead_path ?? null
+  if (!oldPath) return { ok: true, removed: false }
+
+  const { error } = await db.from('settings').update({ letterhead_path: null }).eq('company_id', companyId)
+  if (error) return { ok: false, error: 'Could not remove the letterhead: ' + error.message }
+
+  if (ownsPath(companyId, oldPath)) {
+    const { error: removeError } = await db.storage.from(BRAND_BUCKET).remove([oldPath])
+    if (removeError) console.error('[brand] could not delete %s: %s', oldPath, removeError.message)
+  }
+  return { ok: true, removed: true }
 }
 
 /** Removes the logo. The pointer first: a company must never name a deleted object. */

@@ -315,25 +315,14 @@ export function BillingSettingsForm({
           </p>
         </Card>
 
-        {/* ---- 4. Rates and tax ---- */}
-        <Card title="Rates &amp; Tax">
-          <Field
-            label="Tax Rate %"
-            htmlFor="tax_rate"
-            hint={lockedHint ?? 'e.g. 15 for 15% GCT/VAT, 0 for no tax'}
-          >
-            <input
-              id="tax_rate"
-              name="tax_rate"
-              type="number"
-              min="0"
-              max="100"
-              step="0.01"
-              defaultValue={settings.taxRate}
-              disabled={!generalAvailable}
-              className={settingsInput + (generalAvailable ? '' : ' cursor-not-allowed opacity-50')}
-            />
-          </Field>
+        {/* ---- 4. Rates. The tax rate moved to Settings > Bills on
+            2026-10-19: rates are tax-inclusive, so the rate only ever prints,
+            and it sits beside the switch that says whether it does. ---- */}
+        <Card title="Rates">
+          <p className="text-[11px] text-gray-600">
+            Tax rate and the tax line are under{' '}
+            <a href="/dashboard/settings/bills" className="text-blue-400 hover:text-blue-300">Bills</a>.
+          </p>
 
           <Field
             label="Default Monthly Rate"

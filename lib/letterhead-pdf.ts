@@ -1,4 +1,4 @@
-import { hexToRgb, isStoredLogoShape, readPngHeader, type Brand } from '@/lib/brand'
+import { hexToRgb, isStoredLetterheadShape, isStoredLogoShape, readPngHeader, type Brand } from '@/lib/brand'
 import { pdfString } from '@/lib/receipt-pdf'
 
 /**
@@ -69,22 +69,79 @@ const HELVETICA_BOLD = [
   611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584,
 ]
 
-export function textWidth(text: string, size: number, bold = false): number {
-  const table = bold ? HELVETICA_BOLD : HELVETICA
+/**
+ * Times-Bold, the same way: ASCII 32-126 from the Adobe AFM. Used only for the
+ * Statement bill's company name and document title, which the design sets in
+ * a serif (lib/bill/pdf.ts).
+ */
+const TIMES_BOLD = [
+  250, 333, 555, 500, 500, 1000, 833, 278, 333, 333, 500, 570, 250, 333, 250, 278,
+  500, 500, 500, 500, 500, 500, 500, 500, 500, 500, 333, 333, 570, 570, 570, 500,
+  930, 722, 667, 722, 722, 667, 611, 778, 778, 389, 500, 778, 667, 944, 722, 778,
+  611, 778, 722, 556, 667, 722, 722, 1000, 722, 722, 667, 333, 278, 333, 581, 500,
+  333, 500, 556, 444, 556, 444, 333, 500, 556, 278, 333, 556, 278, 833, 556, 500,
+  556, 556, 444, 389, 333, 556, 500, 722, 500, 500, 444, 394, 220, 394, 520,
+]
+
+/** F1 Helvetica, F2 Helvetica-Bold, F3 Times-Bold. */
+export type PdfFont = 'F1' | 'F2' | 'F3'
+
+/**
+ * The typographic characters a bill uses that WinAnsi has but Latin-1 does not,
+ * with their WinAnsi byte and their widths in Helvetica / Helvetica-Bold /
+ * Times-Bold. The en dash is the one that matters: "5 Oct – 5 Nov".
+ */
+const WIN_ANSI_EXTRA: Record<string, { byte: number; w: [number, number, number] }> = {
+  '–': { byte: 0x96, w: [556, 556, 500] }, // en dash
+  '—': { byte: 0x97, w: [1000, 1000, 1000] }, // em dash
+  '‘': { byte: 0x91, w: [222, 278, 333] },
+  '’': { byte: 0x92, w: [222, 278, 333] },
+  '“': { byte: 0x93, w: [333, 500, 500] },
+  '”': { byte: 0x94, w: [333, 500, 500] },
+  '•': { byte: 0x95, w: [350, 350, 350] }, // bullet
+  '…': { byte: 0x85, w: [1000, 1000, 1000] }, // ellipsis
+  '€': { byte: 0x80, w: [556, 556, 500] }, // euro
+}
+
+/** Characters with no WinAnsi byte that have a fair stand-in. */
+const WIN_ANSI_STAND_IN: Record<string, string> = {
+  '−': '-', // minus sign
+  ' ': ' ', // thin space
+  ' ': ' ', // narrow no-break space
+  '›': '>', // single right angle quote
+}
+
+export function textWidth(text: string, size: number, bold: boolean | PdfFont = false): number {
+  const font: PdfFont = bold === true ? 'F2' : bold === false ? 'F1' : bold
+  const table = font === 'F3' ? TIMES_BOLD : font === 'F2' ? HELVETICA_BOLD : HELVETICA
+  const col = font === 'F3' ? 2 : font === 'F2' ? 1 : 0
   let units = 0
-  for (const ch of text) {
+  for (const raw of text) {
+    const ch = WIN_ANSI_STAND_IN[raw] ?? raw
     const code = ch.charCodeAt(0)
+    const extra = WIN_ANSI_EXTRA[ch]
     // Outside ASCII there is no table here; a digit's width is a fair guess
     // for an accented letter and errs wide, which keeps text inside the margin.
-    units += code >= 32 && code <= 126 ? table[code - 32] : (bold ? 611 : 556)
+    units += extra
+      ? extra.w[col]
+      : code >= 32 && code <= 126 ? table[code - 32] : (font === 'F1' ? 556 : font === 'F2' ? 611 : 500)
   }
   return (units / 1000) * size
 }
 
-/** Characters WinAnsi cannot encode become '?', before they reach pdfString. */
+/**
+ * Text as WinAnsi bytes (one char per byte), before it reaches pdfString.
+ * Latin-1 passes through; the dashes and quotes above become their WinAnsi
+ * bytes; anything else becomes '?'.
+ */
 function winAnsi(text: string): string {
   let out = ''
-  for (const ch of text) out += ch.charCodeAt(0) <= 255 && ch.length === 1 ? ch : '?'
+  for (const raw of text) {
+    const ch = WIN_ANSI_STAND_IN[raw] ?? raw
+    const extra = WIN_ANSI_EXTRA[ch]
+    if (extra) out += String.fromCharCode(extra.byte)
+    else out += ch.length === 1 && ch.charCodeAt(0) <= 255 ? ch : '?'
+  }
   return out
 }
 
@@ -92,13 +149,14 @@ const num = (n: number) => n.toFixed(2)
 const fill = ([r, g, b]: [number, number, number]) =>
   (r / 255).toFixed(3) + ' ' + (g / 255).toFixed(3) + ' ' + (b / 255).toFixed(3) + ' rg'
 
-/** One run of text. `font` is F1 (Helvetica) or F2 (Helvetica-Bold). */
+/** One run of text: F1 (Helvetica), F2 (Helvetica-Bold), or `font` F3 (Times-Bold). */
 export function textOp(
   text: string, x: number, y: number, size: number,
-  opts: { bold?: boolean; colour?: [number, number, number] } = {}
+  opts: { bold?: boolean; font?: PdfFont; colour?: [number, number, number] } = {}
 ): string {
+  const font = opts.font ?? (opts.bold ? 'F2' : 'F1')
   return (
-    'BT /' + (opts.bold ? 'F2' : 'F1') + ' ' + num(size) + ' Tf ' + fill(opts.colour ?? TEXT) +
+    'BT /' + font + ' ' + num(size) + ' Tf ' + fill(opts.colour ?? TEXT) +
     ' 1 0 0 1 ' + num(x) + ' ' + num(y) + ' Tm (' + pdfString(winAnsi(text)) + ') Tj ET'
   )
 }
@@ -160,12 +218,15 @@ export type PdfImage = {
 }
 
 /**
- * A stored logo as a PDF image, or null if these bytes cannot be passed
- * through. Walks the chunks (length, type, data, crc) and joins every IDAT.
+ * A stored logo or letterhead as a PDF image, or null if these bytes cannot be
+ * passed through. Walks the chunks (length, type, data, crc) and joins every
+ * IDAT. The shape is checked here as well as on upload and on load: anything
+ * that is not 8-bit, opaque and non-interlaced inside the larger (letterhead)
+ * box draws the generated block rather than a corrupt page.
  */
 export function pngToPdfImage(png: Uint8Array): PdfImage | null {
   const header = readPngHeader(png)
-  if (!isStoredLogoShape(header)) return null
+  if (!isStoredLogoShape(header) && !isStoredLetterheadShape(header)) return null
 
   const parts: Uint8Array[] = []
   let total = 0
@@ -287,30 +348,56 @@ export function buildPdf(opts: {
   content: string
   image: PdfImage | null
 }): Uint8Array {
+  return buildPdfDocument({
+    width: opts.width,
+    height: opts.height,
+    pages: [opts.content],
+    images: opts.image ? [opts.image] : [],
+  })
+}
+
+/**
+ * Assembles a PDF of one or more pages, all the same size. Fonts F1
+ * (Helvetica), F2 (Helvetica-Bold) and F3 (Times-Bold) are always available;
+ * `images[i]` is /Im{i+1} on every page. Bills use this: a ledger can run to a
+ * second page, and a statement may carry a logo or a letterhead.
+ */
+export function buildPdfDocument(opts: {
+  width: number
+  height: number
+  pages: string[]
+  images: PdfImage[]
+}): Uint8Array {
   const latin1 = (s: string) => {
     const b = new Uint8Array(s.length)
     for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff
     return b
   }
 
-  const content = latin1(opts.content + '\n')
-  const resources =
-    '/Font << /F1 5 0 R /F2 6 0 R >>' + (opts.image ? ' /XObject << /Im1 7 0 R >>' : '')
+  const pages = opts.pages.length > 0 ? opts.pages : ['']
+  // 1 catalog, 2 pages, 3-5 fonts, then the images, then a page and its
+  // content stream for each page.
+  const firstImage = 6
+  const firstPage = firstImage + opts.images.length
+  const pageObj = (i: number) => firstPage + i * 2
+  const contentObj = (i: number) => firstPage + i * 2 + 1
+
+  const xobjects = opts.images.length
+    ? ' /XObject << ' + opts.images.map((_, i) => '/Im' + (i + 1) + ' ' + (firstImage + i) + ' 0 R').join(' ') + ' >>'
+    : ''
+  const resources = '/Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R >>' + xobjects
 
   const objects: Uint8Array[][] = [
     [latin1('<< /Type /Catalog /Pages 2 0 R >>')],
-    [latin1('<< /Type /Pages /Kids [3 0 R] /Count 1 >>')],
     [latin1(
-      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + num(opts.width) + ' ' + num(opts.height) + '] ' +
-      '/Resources << ' + resources + ' >> /Contents 4 0 R >>'
+      '<< /Type /Pages /Kids [' + pages.map((_, i) => pageObj(i) + ' 0 R').join(' ') + '] /Count ' + pages.length + ' >>'
     )],
-    [latin1('<< /Length ' + content.length + ' >>\nstream\n'), content, latin1('endstream')],
     [latin1('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>')],
     [latin1('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>')],
+    [latin1('<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>')],
   ]
 
-  if (opts.image) {
-    const im = opts.image
+  for (const im of opts.images) {
     objects.push([
       latin1(
         '<< /Type /XObject /Subtype /Image /Width ' + im.width + ' /Height ' + im.height +
@@ -323,6 +410,15 @@ export function buildPdf(opts: {
       latin1('\nendstream'),
     ])
   }
+
+  pages.forEach((page, i) => {
+    const content = latin1(page + '\n')
+    objects.push([latin1(
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + num(opts.width) + ' ' + num(opts.height) + '] ' +
+      '/Resources << ' + resources + ' >> /Contents ' + contentObj(i) + ' 0 R >>'
+    )])
+    objects.push([latin1('<< /Length ' + content.length + ' >>\nstream\n'), content, latin1('endstream')])
+  })
 
   const chunks: Uint8Array[] = []
   let size = 0

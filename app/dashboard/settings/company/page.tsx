@@ -3,7 +3,8 @@ import { redirect } from 'next/navigation'
 
 import { BrandingCard } from '@/components/settings/BrandingCard'
 import { GeneralSettingsForm } from '@/components/settings/GeneralSettingsForm'
-import { brandFor, getBrandColor } from '@/lib/data/brand'
+import { brandFor, getBrandColor, loadLetterhead } from '@/lib/data/brand'
+import { letterheadPreviewUri } from '@/lib/logo'
 import {
   CURRENCIES, DATE_FORMATS, getGeneralSettings, TIMEZONES,
 } from '@/lib/data/company'
@@ -41,13 +42,15 @@ const SAMPLE_VALUES = {
 
 export default async function GeneralSettingsPage() {
   const { company } = await guard()
-  const [settings, caps, brand, color, messaging] = await Promise.all([
+  const [settings, caps, brand, color, messaging, letterhead] = await Promise.all([
     getGeneralSettings(company.id),
     getSchemaCapabilities(),
     brandFor(company.id),
     getBrandColor(company.id),
     getMessagingSettings(company.id),
+    loadLetterhead(company.id),
   ])
+  const letterheadPreview = letterhead ? await letterheadPreviewUri(letterhead.png) : null
 
   // The preview uses the company's OWN expiry warning wording, so a template
   // they have edited is what they see dressed in the shell.
@@ -95,6 +98,11 @@ export default async function GeneralSettingsPage() {
             }
           : null}
         color={color}
+        letterheadAvailable={caps.branding && caps.billDocuments}
+        // A small preview, not the stored file: see lib/logo.ts#letterheadPreviewUri.
+        letterhead={letterhead && letterheadPreview
+          ? { dataUri: letterheadPreview, width: letterhead.width, height: letterhead.height }
+          : null}
         sampleSubject={renderTemplate(sample.subject, sampleValues)}
         sampleBody={renderTemplate(sample.body, sampleValues)}
       />

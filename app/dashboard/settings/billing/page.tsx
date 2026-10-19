@@ -43,7 +43,7 @@ export default async function BillingSettingsPage() {
         <div className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-4 py-3">
           <p className="text-sm font-semibold text-amber-300">Migration 0007 not applied</p>
           <p className="mt-1 text-xs leading-relaxed text-amber-300/80">
-            Grace period and tax rate are disabled until their columns exist.{' '}
+            Grace period is disabled until its column exists.{' '}
             {GENERAL_SETTINGS_HINT}
           </p>
         </div>
