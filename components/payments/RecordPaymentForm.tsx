@@ -18,7 +18,7 @@ import {
   amountDue as computeAmountDue, amountDueForMonths, billingPeriod, billingPeriodLabel,
   calendarMonthSettled, effectiveBillDay, isPartialPayment, monthsCovered, outstandingBalance, parseYmd,
   periodAlreadyGranted, periodCompletion, prepaymentCredit, PREPAY_MONTH_OPTIONS,
-  proportionalDate, serviceExpiry, ymd, type AccessDecision,
+  proportionalDate, renewalExpiry, ymd, type AccessDecision, type ExpiryRule,
 } from '@/lib/billing'
 import {
   calendarExpiry, forwardLines, laterYmd, round100, tillBreakdown,
@@ -669,6 +669,14 @@ export function RecordPaymentForm({
   // expiry does not move — the same test, on the same row data, that the
   // server runs before it writes. Never for a first payment, whose period no
   // earlier payment can have granted.
+  // THE EXPIRY RULE IN EFFECT, decided as the server decides it
+  // (lib/payments/service-payment.ts): anniversary only for a customer set to it
+  // whose company the prepaid calendar model does not apply to. `calendar` is
+  // non-null exactly when the model applies (loadPaymentContext).
+  const expiryRule: ExpiryRule =
+    selected?.expiry_rule === 'anniversary' && calendar === null ? 'anniversary' : 'company'
+  const anniversaryDay = selected?.anniversary_day ?? null
+
   const periodGranted =
     selected !== null && !calendarCounted &&
     periodAlreadyGranted({
@@ -692,6 +700,8 @@ export function RecordPaymentForm({
           anchorThen: parseYmd(priorGrant.anchorThen),
           registryExpiry: currentExpiry,
           cutOffDay: selected.cut_off_date,
+          rule: expiryRule,
+          anniversaryDay,
         })
       : null
 
@@ -733,11 +743,14 @@ export function RecordPaymentForm({
   const fullPeriodExpiry = selected
     ? monthsBought === 0
       ? walkFrom
-      : calendarExpiryDate ?? serviceExpiry({
-        // cut_off_date, not bill_date — the bill day raises the charge, the
-        // cut-off day ends access. Anchored on the registry expiry so paying
-        // rolls the customer past the cut-off the bill was due at.
+      : calendarExpiryDate ?? renewalExpiry({
+        // The company rule: cut_off_date, not bill_date — the bill day raises
+        // the charge, the cut-off day ends access. Anchored on the registry
+        // expiry so paying rolls the customer past the cut-off the bill was due
+        // at. The anniversary rule anchors the same way (lib/billing.ts).
+          rule: expiryRule,
           cutOffDay: selected.cut_off_date,
+          anniversaryDay,
           currentExpiry: walkFrom,
           from: today,
           months: monthsBought,
@@ -1669,6 +1682,23 @@ export function RecordPaymentForm({
                 {dateChosen ? 'Access granted until: ' : 'New expiry will be: '}
                 {fmtDate(newExpiry)}
               </p>
+              {/* The rule that landed it, in words the cashier can say to the
+                  customer. Not for a picked date or a completion, which no
+                  rule chose. */}
+              {!dateChosen && !(completion && monthsBought === 0) ? (
+                <p className="mt-0.5 text-xs text-gray-400">
+                  {calendarCounted
+                    ? 'Calendar month: runs to the cut-off day after the last month paid'
+                    : expiryRule === 'anniversary'
+                      ? 'Anniversary: same day next month as the payment' +
+                        (currentExpiry && ymd(currentExpiry) > ymd(today)
+                          ? ', counted from the current expiry'
+                          : '')
+                      : selected?.cut_off_date
+                        ? 'Cut-off day ' + selected.cut_off_date
+                        : 'One month on'}
+                </p>
+              ) : null}
 
               {completion && monthsBought === 0 ? (
                 <p className="mt-0.5 text-xs text-gray-400">

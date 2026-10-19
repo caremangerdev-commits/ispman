@@ -731,6 +731,136 @@ export function serviceExpiry(opts: {
 }
 
 // ---------------------------------------------------------------------------
+// The expiry rule (migration 0039)
+// ---------------------------------------------------------------------------
+
+/**
+ * How a customer's expiry is landed — `customers.expiry_rule` (migration 0039).
+ *
+ *   company      what the company does: the walk to the cut-off day
+ *                (serviceExpiry), or the calendar-month landing when the
+ *                prepaid model counts the payment. Every customer's default.
+ *   anniversary  the same day of the following month as the payment
+ *                (anniversaryExpiry).
+ *
+ * NOT `customers.expiry_mode` (0004, "From Expiry / From Payment"), which is a
+ * different and older column.
+ */
+export type ExpiryRule = 'company' | 'anniversary'
+
+export const EXPIRY_RULES: ExpiryRule[] = ['company', 'anniversary']
+
+export const EXPIRY_RULE_LABELS: Record<ExpiryRule, string> = {
+  company: 'Company rule',
+  anniversary: 'Anniversary',
+}
+
+/** Anything unknown or absent is the company rule: the safe default. */
+export function toExpiryRule(value: string | null | undefined): ExpiryRule {
+  return value === 'anniversary' ? 'anniversary' : 'company'
+}
+
+/** 1-31, or null for anything else. `customers.anniversary_day`. */
+export function toAnniversaryDay(value: number | string | null | undefined): number | null {
+  const n = Number(value)
+  return Number.isInteger(n) && n >= 1 && n <= 31 ? n : null
+}
+
+function lastDayOfMonth(year: number, month: number): number {
+  return new Date(year, month + 1, 0).getDate()
+}
+
+/**
+ * THE ANNIVERSARY RULE: the same day of the following month as the payment.
+ * Pay on the 17th, run to the 17th next month. The one definition — the till's
+ * preview, the server's write and the customer record's explanation all call it.
+ *
+ *   STILL ACTIVE (the held expiry is after the payment's day): extend from the
+ *   EXISTING EXPIRY, never from the payment date, so paying early loses
+ *   nothing. Holds 17 Nov, pays 10 Nov -> 17 Dec.
+ *
+ *   CUT OFF, or never connected: extend from the PAYMENT DATE, which becomes
+ *   the new anniversary. Cut off 5 Nov, pays 11 Nov -> 11 Dec.
+ *
+ *   MONTH END: a day the target month does not have is clamped to its last
+ *   day — paid 31 Jan -> 28 Feb (29 in a leap year). The intended day (31) is
+ *   returned as `day` for the caller to store in customers.anniversary_day, and
+ *   an expiry that sits on the last day of its month renews on that stored day
+ *   when it is later in the month: 28 Feb -> 31 Mar, not 28 Mar for good.
+ *   An expiry that is NOT the last day of its month always renews on its own
+ *   day, so a manual correction to the 5th makes the 5th the anniversary.
+ *
+ *   SEVERAL MONTHS move the whole distance in one step from the anchor, not
+ *   hop by hop: 3 months from 31 Oct is 31 Jan.
+ *
+ * Like serviceExpiry, never returns a date that has already passed: the anchor
+ * is never behind the payment's day and the result is at least a month on.
+ */
+export function anniversaryExpiry(opts: {
+  /** Expiry held in the network registry. Null when unprovisioned. */
+  currentExpiry: Date | null
+  from: Date
+  months?: number
+  /** customers.anniversary_day as stored, or null. */
+  anniversaryDay: number | null
+}): { expiry: Date; day: number } {
+  const { currentExpiry, from, months = 1 } = opts
+  const count = Math.max(1, Math.floor(safe(months)))
+  const today = startOfDay(from)
+
+  const active = currentExpiry !== null && startOfDay(currentExpiry).getTime() > today.getTime()
+  const anchor = active ? startOfDay(currentExpiry as Date) : today
+
+  let day = anchor.getDate()
+  if (active) {
+    const stored = toAnniversaryDay(opts.anniversaryDay)
+    const atMonthEnd = day === lastDayOfMonth(anchor.getFullYear(), anchor.getMonth())
+    if (atMonthEnd && stored !== null && stored > day) day = stored
+  }
+
+  const target = new Date(anchor.getFullYear(), anchor.getMonth() + count, 1)
+  const last = lastDayOfMonth(target.getFullYear(), target.getMonth())
+  return {
+    expiry: new Date(target.getFullYear(), target.getMonth(), Math.min(day, last)),
+    day,
+  }
+}
+
+/**
+ * Where a renewal lands, by the rule in effect. THE DISPATCHER: every place
+ * that lands an expiry for a payment goes through here, so the company rule and
+ * the anniversary rule cannot be chosen differently in two places.
+ *
+ * The company rule is serviceExpiry exactly — same arguments, same result.
+ * Callers decide the rule IN EFFECT before calling: the anniversary rule is
+ * inert where the prepaid calendar model counts the payment (see
+ * lib/payments/service-payment.ts), and those paths do not come here.
+ */
+export function renewalExpiry(opts: {
+  rule: ExpiryRule
+  cutOffDay: number | null
+  anniversaryDay: number | null
+  currentExpiry: Date | null
+  from: Date
+  months?: number
+}): Date {
+  if (opts.rule === 'anniversary') {
+    return anniversaryExpiry({
+      currentExpiry: opts.currentExpiry,
+      from: opts.from,
+      months: opts.months,
+      anniversaryDay: opts.anniversaryDay,
+    }).expiry
+  }
+  return serviceExpiry({
+    cutOffDay: opts.cutOffDay,
+    currentExpiry: opts.currentExpiry,
+    from: opts.from,
+    months: opts.months,
+  })
+}
+
+// ---------------------------------------------------------------------------
 // One month per period
 //
 // A month of access can be granted ONCE per bill period per customer. The
@@ -848,6 +978,12 @@ export function periodCompletion(opts: {
   /** Registry expiry NOW. */
   registryExpiry: Date | null
   cutOffDay: number | null
+  /**
+   * The rule in effect (migration 0039), so the "full" date is the one that
+   * payment would have reached under it. Omitted means the company rule.
+   */
+  rule?: ExpiryRule
+  anniversaryDay?: number | null
 }): Date | null {
   const { grant, anchorThen, registryExpiry, cutOffDay } = opts
 
@@ -859,8 +995,10 @@ export function periodCompletion(opts: {
   const granted = parseYmd(grant.grantedUntil)
   if (!paidOn || !granted) return null
 
-  const full = serviceExpiry({
+  const full = renewalExpiry({
+    rule: opts.rule ?? 'company',
     cutOffDay,
+    anniversaryDay: opts.anniversaryDay ?? null,
     currentExpiry: anchorThen,
     from: paidOn,
     months: 1,

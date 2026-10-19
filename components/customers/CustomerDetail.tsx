@@ -15,6 +15,7 @@ import Link from 'next/link'
 
 import { AdjustBalanceModal } from '@/components/customers/AdjustBalanceModal'
 import { CorrectExpiryModal } from '@/components/customers/CorrectExpiryModal'
+import { ExpiryRuleRow } from '@/components/customers/ExpiryRuleRow'
 import { ExtendAccessModal } from '@/components/customers/ExtendAccessModal'
 import { MacHolderLinks } from '@/components/customers/MacHolderLinks'
 import { ProvisionModal } from '@/components/customers/ProvisionModal'
@@ -42,6 +43,7 @@ import {
   canDisconnect, canExtendAccess, canProvision, canReconnect,
 } from '@/lib/status'
 import { monthLabel } from '@/lib/prepaid-calendar'
+import type { ExpiryRule } from '@/lib/billing'
 
 export type DetailCustomer = {
   id: number
@@ -90,6 +92,17 @@ export type DetailCustomer = {
   /** migration 0004 */
   expiryMode: ExpiryMode
   expiryModeEditable: boolean
+  /**
+   * Migration 0039: the expiry rule, the stored anniversary day, and whether
+   * the columns exist. `calendarModel`: the prepaid calendar model applies to
+   * the company, which makes the rule inert. `todayYmd`: today in the
+   * company's zone, from the server, for the explanation's dates.
+   */
+  expiryRule: ExpiryRule
+  anniversaryDay: number | null
+  expiryRuleAvailable: boolean
+  calendarModel: boolean
+  todayYmd: string
   /** migration 0005 */
   catalogAvailable: boolean
   connectionType: ConnectionType | null
@@ -328,6 +341,7 @@ export function CustomerDetail({
   const [mac, setMac] = useState(c.mac_address ?? '')
   const [showPassword, setShowPassword] = useState(false)
   const [expiryMode, setExpiryMode] = useState<ExpiryMode>(c.expiryMode)
+  const [expiryRule, setExpiryRule] = useState<ExpiryRule>(c.expiryRule)
   const [planId, setPlanId] = useState(c.servicePlanId ? String(c.servicePlanId) : '')
   const [rate, setRate] = useState(String(Number(c.monthly_rate ?? 0)))
   const [addons, setAddons] = useState<number[]>(selectedAddonIds)
@@ -348,6 +362,7 @@ export function CustomerDetail({
     setAuthType(c.customerType ?? 'dhcp')
     setMac(c.mac_address ?? '')
     setExpiryMode(c.expiryMode)
+    setExpiryRule(c.expiryRule)
     setPlanId(c.servicePlanId ? String(c.servicePlanId) : '')
     setRate(String(Number(c.monthly_rate ?? 0)))
     setAddons(selectedAddonIds)
@@ -875,6 +890,23 @@ export function CustomerDetail({
               {EXPIRY_MODE_HELP[editing ? expiryMode : c.expiryMode]}
             </p>
           </div>
+
+          {/* Migration 0039. Beside Expiry Mode but a different column: this
+              is the one the payment path lands the expiry with. */}
+          {c.expiryRuleAvailable ? (
+            <ExpiryRuleRow
+              rule={c.expiryRule}
+              chosen={expiryRule}
+              onChoose={setExpiryRule}
+              editing={editing}
+              editable={mayNetwork}
+              modelApplies={c.calendarModel}
+              cutOffDay={c.cut_off_date}
+              anniversaryDay={c.anniversaryDay}
+              expiryDate={radius.expiryDate}
+              todayYmd={c.todayYmd}
+            />
+          ) : null}
         </Card>
 
         {/* ---------------- RADIUS / Authentication ---------------- */}

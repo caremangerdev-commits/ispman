@@ -1,3 +1,4 @@
+import { toAnniversaryDay, toExpiryRule, type ExpiryRule } from '@/lib/billing'
 import { withExpiry } from '@/lib/domain'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { fetchAllRows } from '@/lib/supabase/paging'
@@ -40,6 +41,8 @@ async function selectWithExtras(join = false) {
   let sel = SELECT
   if (caps.connectionTypes) sel += ', customer_type, pppoe_username, access_point'
   if (caps.expiryMode) sel += ', expiry_mode'
+  // Migration 0039, for the customer record only (the detail read joins).
+  if (join && caps.anniversaryExpiry) sel += ', expiry_rule, anniversary_day'
   if (caps.taxId) sel += ', tax_id'
   if (caps.accountNumbers) sel += ', account_number'
   if (caps.sms) sel += ', sms_opted_out'
@@ -342,6 +345,14 @@ export type CustomerDetail = CustomerWithExpiry & {
   /** Effective renewal anchor; 'from_expiry' until migration 0004 is applied. */
   expiryMode: ExpiryMode
   expiryModeEditable: boolean
+  /**
+   * Migration 0039: how this customer's expiry is landed on payment, and the
+   * stored anniversary day. 'company' and null before 0039 is applied, which is
+   * how every customer renews until then.
+   */
+  expiryRule: ExpiryRule
+  anniversaryDay: number | null
+  expiryRuleAvailable: boolean
   /** Migration 0005 fields; null/false when the catalogue is absent. */
   catalogAvailable: boolean
   connectionType: ConnectionType | null
@@ -383,6 +394,8 @@ export async function getCustomer(
     pppoe_username?: string | null
     access_point?: string | null
     expiry_mode?: string | null
+    expiry_rule?: string | null
+    anniversary_day?: number | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
     bill_date?: number | null
@@ -425,6 +438,9 @@ export async function getCustomer(
     accessPoint: row.access_point ?? null,
     expiryMode: toExpiryMode(caps.expiryMode ? row.expiry_mode : 'from_expiry'),
     expiryModeEditable: caps.expiryMode,
+    expiryRule: toExpiryRule(caps.anniversaryExpiry ? row.expiry_rule : null),
+    anniversaryDay: caps.anniversaryExpiry ? toAnniversaryDay(row.anniversary_day) : null,
+    expiryRuleAvailable: caps.anniversaryExpiry,
     catalogAvailable: caps.catalog,
     connectionType: caps.catalog ? toConnectionType(row.connection_type) : null,
     customerCategory: caps.catalog ? toCustomerCategory(row.customer_category) : null,

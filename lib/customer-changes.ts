@@ -51,6 +51,7 @@ export const FIELD_LABELS: Record<string, string> = {
   misc_category_id: 'Segment',
   service_plan_id: 'Service plan',
   expiry_mode: 'Expiry mode',
+  expiry_rule: 'Expiry rule',
   // Labelled generically because the column is generic; the company's own word
   // for it lives in settings and is resolved by lib/tax-id.ts. A log row is
   // read long after the fact, possibly by somebody in another market.

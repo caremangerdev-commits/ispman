@@ -16,7 +16,7 @@ import {
 import { formatCurrencyExact } from '@/lib/format'
 import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
-import { parseYmd } from '@/lib/billing'
+import { parseYmd, toExpiryRule } from '@/lib/billing'
 import { getExpiryClock } from '@/lib/data/company'
 import { describeMacHolders, findMacHolders, type MacHolder } from '@/lib/data/mac-holders'
 import { FIRST_MONTH_EVENTS, provisionPlan, type ProvisionPlan } from '@/lib/data/provision'
@@ -438,6 +438,16 @@ export async function updateCustomer(
   if (caps.expiryMode && can(profile.role, 'extend_disconnect_customer')) {
     const mode = str(formData, 'expiry_mode')
     if (mode) patch.expiry_mode = toExpiryMode(mode)
+  }
+
+  // The expiry rule (migration 0039): same right, same reason. Writes the rule
+  // and NOTHING ELSE — not an expiry, not radcheck, not anniversary_day — so
+  // changing it can never move anyone's current expiry. The next payment is the
+  // first it applies to (lib/payments/service-payment.ts). Only present in the
+  // form when the record offered the choice.
+  if (caps.anniversaryExpiry && can(profile.role, 'extend_disconnect_customer')) {
+    const rule = str(formData, 'expiry_rule')
+    if (rule) patch.expiry_rule = toExpiryRule(rule)
   }
 
   const db = tenantClient()

@@ -1,3 +1,4 @@
+import { BILL_TEMPLATE_LABELS } from '@/lib/bill/settings'
 import { getGeneralSettings } from '@/lib/data/company'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { taxIdLabel } from '@/lib/tax-id'
@@ -25,7 +26,8 @@ import {
 import {
   getCustomer, getCustomerPayments, getCustomerTickets,
 } from '@/lib/data/customers'
-import { formatCurrency, fullName, timeAgo } from '@/lib/format'
+import { formatCurrency, fullName, instantToDateOnly, timeAgo } from '@/lib/format'
+import { prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
 import { can } from '@/lib/permissions'
 import { getRadiusStatus } from '@/lib/radius/client'
 import { radiusIdentity } from '@/lib/radius/format'
@@ -47,6 +49,7 @@ export default async function CustomerDetailPage({
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
     balanceAdjustment, changeHistory, settings, caps, lastCharge, charges, paymentCategories,
+    calendar,
   ] = await Promise.all([
       getCustomerPayments(company.id, customerId),
       getCustomerTickets(company.id, customerId),
@@ -81,6 +84,9 @@ export default async function CustomerDetailPage({
       // under. Both empty until 0025 is applied, and the card then hides.
       listCustomerCharges(company.id, customerId),
       listPaymentCategories(company.id),
+      // Whether the prepaid calendar model applies, which makes the expiry
+      // rule (0039) inert — the same test the payment path makes.
+      prepaidCalendarFor(company.id),
     ])
 
   const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
@@ -139,6 +145,11 @@ export default async function CustomerDetailPage({
           accessPoint: customer.accessPoint,
           expiryMode: customer.expiryMode,
           expiryModeEditable: customer.expiryModeEditable,
+          expiryRule: customer.expiryRule,
+          anniversaryDay: customer.anniversaryDay,
+          expiryRuleAvailable: customer.expiryRuleAvailable,
+          calendarModel: calendar.enabled,
+          todayYmd: instantToDateOnly(new Date(), settings.timezone),
           catalogAvailable: customer.catalogAvailable,
           connectionType: customer.connectionType,
           customerCategory: customer.customerCategory,
@@ -184,9 +195,38 @@ export default async function CustomerDetailPage({
       <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
         <header className="flex items-baseline justify-between gap-3 border-b border-gray-800 px-5 py-3">
           <h2 className="text-sm font-semibold text-white">Payment History</h2>
-          <p className="text-xs text-gray-500">
-            {payments.length} {payments.length === 1 ? 'payment' : 'payments'}
-          </p>
+          <div className="flex flex-wrap items-baseline justify-end gap-x-3 gap-y-1">
+            {/* The same PDF the customer downloads from the portal, from the
+                same loader (lib/data/bill.ts). The company's template is
+                "Bill"; the other two are there to print on request. */}
+            <span className="text-xs text-gray-500">
+              <a
+                href={'/api/customers/' + customer.id + '/bill'}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-blue-400 hover:text-blue-300"
+              >
+                Bill (PDF)
+              </a>
+              {' · '}
+              {(['statement', 'ledger', 'receipt'] as const).map((t, i) => (
+                <span key={t}>
+                  {i > 0 ? ' · ' : ''}
+                  <a
+                    href={'/api/customers/' + customer.id + '/bill?template=' + t}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hover:text-gray-300"
+                  >
+                    {BILL_TEMPLATE_LABELS[t]}
+                  </a>
+                </span>
+              ))}
+            </span>
+            <p className="text-xs text-gray-500">
+              {payments.length} {payments.length === 1 ? 'payment' : 'payments'}
+            </p>
+          </div>
         </header>
 
         {payments.length === 0 ? (

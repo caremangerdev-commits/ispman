@@ -8,6 +8,7 @@ import type { SearchHit } from '@/app/api/search/route'
 import { EMPTY_COLLECTION, getAgentCollections } from '@/lib/data/checkoff'
 import { getGeneralSettings } from '@/lib/data/company'
 import { listPaymentCategories } from '@/lib/data/payment-categories'
+import { toAnniversaryDay, toExpiryRule } from '@/lib/billing'
 import { expiryOf } from '@/lib/domain'
 import { localDateOnly } from '@/lib/format'
 import { lastNetworkEvent } from '@/lib/data/network-events'
@@ -33,6 +34,7 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
     (caps.accountNumbers ? ', account_number' : '') +
     (caps.connectionTypes ? ', customer_type' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
+    (caps.anniversaryExpiry ? ', expiry_rule, anniversary_day' : '') +
     (caps.billing
       ? ', carried_balance, account_credit, bill_date, last_billed_date'
       : '') +
@@ -62,6 +64,8 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
     cut_off_date: number | null
     customer_type?: string | null
     expiry_mode?: string | null
+    expiry_rule?: string | null
+    anniversary_day?: number | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
     bill_date?: number | null
@@ -122,6 +126,8 @@ async function preload(companyId: number, id: number): Promise<SearchHit | null>
     expires_at: expiry ? expiry.toISOString() : null,
     expiry_mode: toExpiryMode(caps.expiryMode ? r.expiry_mode : 'from_expiry'),
     cut_off_date: r.cut_off_date ?? null,
+    expiry_rule: toExpiryRule(caps.anniversaryExpiry ? r.expiry_rule : null),
+    anniversary_day: caps.anniversaryExpiry ? toAnniversaryDay(r.anniversary_day) : null,
     service_plan: r.service_plans
       ? {
           name: r.service_plans.name ?? 'Plan',

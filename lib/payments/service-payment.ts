@@ -17,9 +17,10 @@
 import { revalidatePath } from 'next/cache'
 
 import {
-  billingPeriod, calendarMonthSettled, carriedBalanceAfter, effectiveBillDay, isPartialPayment,
-  monthsCovered, parseYmd, periodAlreadyGranted, periodCompletion, prepaymentCredit,
-  proportionalDate, serviceExpiry, ymd, type AccessDecision,
+  anniversaryExpiry, billingPeriod, calendarMonthSettled, carriedBalanceAfter, effectiveBillDay,
+  isPartialPayment, monthsCovered, parseYmd, periodAlreadyGranted, periodCompletion,
+  prepaymentCredit, proportionalDate, renewalExpiry, toAnniversaryDay, toExpiryRule, ymd,
+  type AccessDecision, type ExpiryRule,
 } from '@/lib/billing'
 import { legacyPaymentType, type PaymentMethod } from '@/lib/data/checkoff'
 import { formatCurrencyExact, paymentInstant } from '@/lib/format'
@@ -253,6 +254,7 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
     (caps.catalog ? ', misc_category_id' : '') +
     (caps.connectionTypes ? ', customer_type, pppoe_username' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
+    (caps.anniversaryExpiry ? ', expiry_rule, anniversary_day' : '') +
     (caps.billing
       ? ', carried_balance, account_credit, bill_date, last_billed_date'
       : '')
@@ -278,6 +280,8 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
     customer_type?: string | null
     pppoe_username?: string | null
     expiry_mode?: string | null
+    expiry_rule?: string | null
+    anniversary_day?: number | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
     bill_date?: number | null
@@ -378,6 +382,19 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
   // provisioning", which decides where the model lands the expiry below.
   const firstAnchor = calendar.enabled ? await firstPeriodAnchor(company.id, customer.id) : null
   const model = calendar.enabled
+
+  // THE EXPIRY RULE IN EFFECT (migration 0039, lib/billing.ts#anniversaryExpiry).
+  //
+  // Anniversary only where the customer is set to it AND the prepaid calendar
+  // model does not apply. Under the model the engine charges calendar months
+  // and a returning customer's month is recomputed by the day above; landing
+  // that money on an anniversary would hand out days nobody paid for, so the
+  // model keeps both the money and the expiry and the setting is inert. Every
+  // other customer is 'company', and for them nothing below differs from
+  // before 0039: renewalExpiry is serviceExpiry for the company rule.
+  const expiryRule: ExpiryRule =
+    caps.anniversaryExpiry && !model ? toExpiryRule(customer.expiry_rule) : 'company'
+  const anniversaryDay = caps.anniversaryExpiry ? toAnniversaryDay(customer.anniversary_day) : null
 
   // Service has ended: the registry knows the customer and their access is
   // not on. Decides the reconnection fee for every company, and the month's
@@ -546,6 +563,8 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
           anchorThen: await grantAnchor(company.id, customer.id, grant),
           registryExpiry,
           cutOffDay: customer.cut_off_date ?? null,
+          rule: expiryRule,
+          anniversaryDay,
         })
       : null
 
@@ -622,12 +641,16 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
   const fullPeriodExpiry: Date | null =
     monthsPaid === 0
       ? walkFrom
-      : calendarDate ?? serviceExpiry({
-          // cut_off_date, not bill_date: the bill day says when the charge is
-          // raised, the cut-off day says when access ends. Anchored on the
-          // registry expiry so settling the bill rolls the customer PAST the
-          // cut-off that bill was due at rather than up to it.
+      : calendarDate ?? renewalExpiry({
+          // The company rule is serviceExpiry: cut_off_date, not bill_date —
+          // the bill day says when the charge is raised, the cut-off day says
+          // when access ends. Anchored on the registry expiry so settling the
+          // bill rolls the customer PAST the cut-off that bill was due at
+          // rather than up to it. The anniversary rule anchors the same way:
+          // the held expiry while active, the payment date once cut off.
+          rule: expiryRule,
           cutOffDay: customer.cut_off_date ?? null,
+          anniversaryDay,
           currentExpiry: walkFrom,
           from: paymentDate,
           // A prepayment moves the expiry the WHOLE distance now, not one month
@@ -635,6 +658,20 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
           // them today.
           months: monthsPaid,
         })
+
+  // The anniversary this landing used, to keep on the customer once the write
+  // lands (see the customer patch below). Only for a full-period anniversary
+  // landing: a picked date or a completion is not an anniversary, and a
+  // payment that bought nothing moves nothing.
+  const anniversaryDayUsed =
+    expiryRule === 'anniversary' && monthsPaid > 0 && calendarDate === null
+      ? anniversaryExpiry({
+          currentExpiry: walkFrom,
+          from: paymentDate,
+          months: monthsPaid,
+          anniversaryDay,
+        }).day
+      : null
 
   const newExpiry: Date | null =
     decision === 'date_selected' && chosenDate ? chosenDate : fullPeriodExpiry
@@ -1077,6 +1114,18 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
   // balance exactly leaves the column untouched rather than rewriting it to
   // the same number.
   if (caps.billing && creditAdded > 0) patch.account_credit = creditAfter
+
+  // The anniversary day (migration 0039), kept so a month-end clamp is undone
+  // the month after: paid on the 31st, 28 Feb, then back to 31 Mar. Written
+  // ONLY when this payment's full-period anniversary landing reached the
+  // network — never for a picked date, a completion, a payment that moved
+  // nothing, or a customer on the company rule — and only when it changed.
+  if (
+    anniversaryDayUsed !== null && networkExtended && decision !== 'date_selected' &&
+    anniversaryDayUsed !== anniversaryDay
+  ) {
+    patch.anniversary_day = anniversaryDayUsed
+  }
 
   const { error: updateError } = await db
     .from('customers')

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
+import { toAnniversaryDay, toExpiryRule, type ExpiryRule } from '@/lib/billing'
 import { expiryOf } from '@/lib/domain'
 import { localDateOnly } from '@/lib/format'
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
@@ -48,6 +49,13 @@ export type SearchHit = {
   /** Day of month the customer is cut off. Drives the from_expiry preview,
    *  which walks to the next cut-off day rather than adding whole months. */
   cut_off_date: number | null
+  /**
+   * Migration 0039: the expiry rule and the stored anniversary day, so the
+   * preview lands the expiry where the server will. 'company' and null before
+   * 0039, which is exactly how every customer renews until then.
+   */
+  expiry_rule: ExpiryRule
+  anniversary_day: number | null
   /** Service plan and add-ons, so the confirmation card can show the real
    *  monthly total rather than the bare rate. Empty when migration 0005 is
    *  absent. */
@@ -101,6 +109,7 @@ export async function GET(request: NextRequest) {
     (caps.accountNumbers ? ', account_number' : '') +
     (caps.connectionTypes ? ', customer_type' : '') +
     (caps.expiryMode ? ', expiry_mode' : '') +
+    (caps.anniversaryExpiry ? ', expiry_rule, anniversary_day' : '') +
     (caps.billing
       ? ', carried_balance, account_credit, bill_date, last_billed_date'
       : '') +
@@ -153,6 +162,8 @@ export async function GET(request: NextRequest) {
     cut_off_date: number | null
     customer_type?: string | null
     expiry_mode?: string | null
+    expiry_rule?: string | null
+    anniversary_day?: number | null
     carried_balance?: number | string | null
     account_credit?: number | string | null
     bill_date?: number | null
@@ -256,6 +267,8 @@ export async function GET(request: NextRequest) {
       expires_at: expiry ? expiry.toISOString() : null,
       expiry_mode: toExpiryMode(caps.expiryMode ? r.expiry_mode : 'from_expiry'),
       cut_off_date: r.cut_off_date ?? null,
+      expiry_rule: toExpiryRule(caps.anniversaryExpiry ? r.expiry_rule : null),
+      anniversary_day: caps.anniversaryExpiry ? toAnniversaryDay(r.anniversary_day) : null,
       carried_balance: Number(r.carried_balance ?? 0),
       account_credit: Number(r.account_credit ?? 0),
       bill_date: r.bill_date ?? null,
