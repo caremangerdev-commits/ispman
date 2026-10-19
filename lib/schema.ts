@@ -183,6 +183,19 @@ export type SchemaCapabilities = {
    * table is enough — the two tables land in one file.
    */
   paymentGateways: boolean
+  /**
+   * Migration 0038: the bill template, the company's tax and payment details,
+   * and the letterhead path, all on `settings`. Absent, every bill is the
+   * Statement with no tax line, the currency symbol comes from the currency
+   * code, and Settings > Bills and the letterhead upload say so.
+   */
+  billDocuments: boolean
+  /**
+   * Migration 0039: `customers.expiry_rule` and `anniversary_day`. Absent,
+   * every customer renews by the company rule and the customer record offers
+   * no choice.
+   */
+  anniversaryExpiry: boolean
 }
 
 /**
@@ -219,6 +232,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     routerTunnelsRes, portalNoteRes,
     ticketMessagesRes, incidentsRes, outageSwitchRes,
     paymentGatewaysRes,
+    billDocumentsRes, anniversaryRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -310,6 +324,13 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('settings').select('notify_outage_enabled').limit(1),
     // 0034: the payment-gateway credentials table.
     db.from('payment_gateways').select('company_id').limit(1),
+    // 0038: bill templates, tax and payment details, the letterhead. One ALTER.
+    db
+      .from('settings')
+      .select('bill_template, tax_registered, currency_symbol, bank_details, letterhead_path')
+      .limit(1),
+    // 0039: the per-customer expiry rule. One ALTER.
+    db.from('customers').select('expiry_rule, anniversary_day').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -576,6 +597,16 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for payment_gateways: ' + paymentGatewaysRes.error.message)
   }
 
+  // 0038 and 0039: one ALTER each.
+  const missingBillDocuments = billDocumentsRes.error?.code === '42703'
+  if (billDocumentsRes.error && !missingBillDocuments) {
+    throw new Error('Schema probe failed for settings bill columns: ' + billDocumentsRes.error.message)
+  }
+  const missingAnniversary = anniversaryRes.error?.code === '42703'
+  if (anniversaryRes.error && !missingAnniversary) {
+    throw new Error('Schema probe failed for customers.expiry_rule: ' + anniversaryRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -610,6 +641,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     portalNote: !missingPortalNote,
     portalTier2: !missingPortalTier2,
     paymentGateways: !missingPaymentGateways,
+    billDocuments: !missingBillDocuments,
+    anniversaryExpiry: !missingAnniversary,
   }
 })
 

@@ -64,6 +64,29 @@ export function formatCurrencyExact(value: number | string | null | undefined): 
   return (safe < 0 ? '-' : '') + SYMBOL + digits
 }
 
+/**
+ * Money in a COMPANY'S OWN symbol, for what a customer reads: the portal and
+ * the bill. formatCurrency above is the staff screens' fixed J$; this takes the
+ * symbol from lib/data/bill-settings.ts#getBillSettings, so a US$ or TT$
+ * company is never shown J$ by the documents it hands its customers.
+ *
+ * `cents`: "J$3,043.48" for a bill's lines and totals, where the tax split
+ * needs them; whole units otherwise, as the portal shows.
+ */
+export function formatMoney(
+  value: number | string | null | undefined,
+  symbol: string,
+  opts: { cents?: boolean } = {}
+): string {
+  const n = Number(value ?? 0)
+  const safe = Number.isFinite(n) ? n : 0
+  const digits = new Intl.NumberFormat(LOCALE, opts.cents
+    ? { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+    : { maximumFractionDigits: 0 }
+  ).format(Math.abs(safe))
+  return (safe < 0 ? '-' : '') + symbol + digits
+}
+
 /** Compact form for chart axes: "J$120k". */
 export function formatCompactCurrency(value: number): string {
   if (Math.abs(value) >= 1000) return SYMBOL + Math.round(value / 1000) + 'k'
