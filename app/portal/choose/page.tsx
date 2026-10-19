@@ -1,7 +1,10 @@
 import { notFound, redirect } from 'next/navigation'
 
 import { pickCustomer } from '@/app/actions/portal'
+import styles from '@/components/portal/portal.module.css'
+import { footerLine, PortalShell } from '@/components/portal/PortalShell'
 import { matchCustomersByPhone } from '@/lib/data/portal'
+import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPendingPick } from '@/lib/portal/session'
 
@@ -20,32 +23,30 @@ export default async function ChoosePage() {
   const pending = await getPendingPick(company.id)
   if (!pending) redirect('/')
 
-  const matches = await matchCustomersByPhone(company.id, pending.phone)
+  const [matches, brand] = await Promise.all([
+    matchCustomersByPhone(company.id, pending.phone),
+    getPortalBrand(company.id, company.name),
+  ])
   if (matches.length === 0) redirect('/')
 
   return (
-    <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-semibold">Which account?</h1>
-        <p className="mt-1 text-base text-black/60">
-          This number is on more than one account. Choose yours.
-        </p>
-      </div>
-      <ul className="flex flex-col gap-3">
-        {matches.map((m) => (
-          <li key={m.id}>
-            <form action={pickCustomer}>
-              <input type="hidden" name="customer_id" value={m.id} />
-              <button
-                type="submit"
-                className="w-full rounded-xl border border-black/15 px-4 py-4 text-left text-lg font-medium active:bg-black/5"
-              >
-                {m.name}
-              </button>
-            </form>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <PortalShell brand={brand} footer={footerLine(company.name, company.phone)}>
+      <section className={styles.card}>
+        <h1 className={styles.title}>Which account?</h1>
+        <p className={styles.lede}>This number is on more than one account. Choose yours.</p>
+        <ul className={styles.plainList + ' ' + styles.stack + ' ' + styles.span}>
+          {matches.map((m) => (
+            <li key={m.id}>
+              <form action={pickCustomer}>
+                <input type="hidden" name="customer_id" value={m.id} />
+                <button type="submit" className={styles.btn + ' ' + styles.btnGhost + ' ' + styles.flush}>
+                  {m.name}
+                </button>
+              </form>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </PortalShell>
   )
 }

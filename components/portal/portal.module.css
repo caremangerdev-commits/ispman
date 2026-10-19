@@ -1,0 +1,600 @@
+/*
+ * The customer portal's look, from docs/designs/portal-design.html.
+ *
+ * ONE PER-TENANT VALUE. --brand and --brand-ink are set on the shell from the
+ * company's palette (lib/brand.ts#brandPalette: --brand-ink is the readable
+ * text on the brand, dark or light, chosen by contrast). Everything else here
+ * is the system and is the same for every tenant.
+ *
+ * THE BRAND HAS EXACTLY THREE JOBS: the header band, the primary button, and
+ * link hover. Service state is SEMANTIC (green / amber / red) and never the
+ * brand. Grep for var(--brand) — it should appear only in those three places.
+ */
+
+.root {
+  --paper: #f4f6f8;
+  --card: #ffffff;
+  --ink: #1a2027;
+  --muted: #5a6775;
+  --line: #e2e7ec;
+  --field: #cfd6dd;
+
+  --ok: #1a7f4b;
+  --warn: #b26a00;
+  --bad: #b32b2b;
+  --ok-soft: #e6f3ec;
+  --warn-soft: #fdf1df;
+  --bad-soft: #fbeaea;
+
+  --r: 14px;
+  --pad: 22px;
+
+  /* Forced light: a phone in dark mode must not turn this text invisible. */
+  color-scheme: light;
+  min-height: 100dvh;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- brand band --------------------------------------------------------- */
+.band {
+  background: var(--brand);
+  color: var(--brand-ink);
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.bandIn {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.mark {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+.markBadge {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--brand-ink);
+  color: var(--brand);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 14px;
+  flex: none;
+}
+/* The stored logo is flattened onto white, so it sits on its own white chip. */
+.markLogo {
+  background: #ffffff;
+  border-radius: 7px;
+  padding: 3px 7px;
+  display: flex;
+  align-items: center;
+  flex: none;
+  max-width: 60vw;
+}
+.markLogo img {
+  display: block;
+  height: 28px;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+}
+.markName {
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.who {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 14.5px;
+  flex: none;
+}
+.whoLink {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  border-radius: 0;
+  padding: 0 0 1px;
+  cursor: pointer;
+  opacity: 0.75;
+  text-decoration: none;
+  line-height: 1.3;
+}
+.whoLink:hover {
+  opacity: 1;
+}
+.whoLink:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+  opacity: 1;
+}
+
+/* ---- shell -------------------------------------------------------------- */
+.wrap {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 24px 20px calc(56px + env(safe-area-inset-bottom, 0px));
+}
+.narrow {
+  max-width: 28rem;
+  margin: 0 auto;
+  padding: 24px 20px calc(56px + env(safe-area-inset-bottom, 0px));
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+.grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
+}
+.col {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  min-width: 0;
+}
+@media (min-width: 900px) {
+  .grid {
+    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--pad);
+  min-width: 0;
+}
+.cardQuiet {
+  background: transparent;
+  border-style: solid;
+}
+.h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 16px;
+  color: var(--muted);
+  letter-spacing: 0.01em;
+}
+
+/* ---- the service span: the one bold element ----------------------------- */
+.status {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.days {
+  font-size: clamp(44px, 9vw, 60px);
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: -0.035em;
+  font-variant-numeric: tabular-nums;
+}
+.daysUnit {
+  font-size: 19px;
+  font-weight: 500;
+  color: var(--muted);
+}
+/* "Last day" said on its own, at the figure's size. */
+.daysWord {
+  font-size: clamp(34px, 7vw, 44px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  max-width: 52ch;
+}
+.unknown {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+
+.span {
+  margin-top: 22px;
+}
+.track {
+  height: 12px;
+  border-radius: 999px;
+  background: #eef1f4;
+  position: relative;
+  overflow: hidden;
+}
+.fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--ok);
+}
+.ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 9px;
+  font-size: 13.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stateOk .fill { background: var(--ok); }
+.stateWarn .fill { background: var(--warn); }
+.stateBad .fill { background: var(--bad); }
+
+.flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  margin-top: 20px;
+}
+.stateOk .flag { background: var(--ok-soft); color: var(--ok); }
+.stateWarn .flag { background: var(--warn-soft); color: var(--warn); }
+.stateBad .flag { background: var(--bad-soft); color: var(--bad); }
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.owed {
+  margin-top: 18px;
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.owedSmall {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  letter-spacing: 0;
+  margin-top: 2px;
+}
+.credit {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* ---- buttons ------------------------------------------------------------ */
+.btn {
+  display: block;
+  width: 100%;
+  margin-top: 18px;
+  background: var(--brand);
+  color: var(--brand-ink);
+  font: inherit;
+  font-weight: 600;
+  font-size: 17px;
+  line-height: 1.3;
+  border: 0;
+  border-radius: 11px;
+  padding: 15px 20px;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+}
+.btn:hover { filter: brightness(0.94); }
+.btn:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+.btn:disabled { opacity: 0.55; cursor: default; filter: none; }
+.btnGhost {
+  background: transparent;
+  color: var(--ink);
+  border: 1.5px solid var(--line);
+  font-size: 16px;
+}
+.btnGhost:hover { background: #f6f8fa; filter: none; }
+.flush { margin-top: 0; }
+
+/* The second way to pay: a different amount, tucked away. */
+.more {
+  margin-top: 12px;
+}
+.more > summary {
+  cursor: pointer;
+  list-style: none;
+  text-align: center;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 500;
+  padding: 8px 0;
+}
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary:hover { color: var(--brand); }
+.more > summary:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; border-radius: 4px; }
+.moreBody {
+  margin-top: 8px;
+}
+
+/* ---- forms -------------------------------------------------------------- */
+.label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0 0 6px;
+}
+.input {
+  display: block;
+  width: 100%;
+  font: inherit;
+  font-size: 18px;
+  color: var(--ink);
+  background: #ffffff;
+  border: 1.5px solid var(--field);
+  border-radius: 11px;
+  padding: 14px 16px;
+  outline: none;
+  font-variant-numeric: tabular-nums;
+}
+.input:focus { border-color: var(--ink); }
+.input::placeholder { color: #9aa5b1; }
+textarea.input { font-size: 16px; resize: vertical; }
+.inputCode {
+  text-align: center;
+  font-size: 30px;
+  letter-spacing: 0.4em;
+}
+.error {
+  color: var(--bad);
+  font-size: 15px;
+  margin: 12px 0 0;
+}
+.stack {
+  display: grid;
+  gap: 14px;
+}
+.title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  margin: 0;
+}
+.lede {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 16px;
+}
+.textButton {
+  display: block;
+  width: 100%;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 16px;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  padding: 10px 0;
+  text-align: center;
+}
+.textButton:hover { color: var(--brand); }
+.textButton:disabled { opacity: 0.55; cursor: default; }
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 500;
+  justify-self: start;
+}
+.back:hover { color: var(--brand); }
+.back:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 4px; }
+.file {
+  font: inherit;
+  font-size: 15px;
+  color: var(--muted);
+}
+.file::file-selector-button {
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  background: #eef1f4;
+  border: 0;
+  border-radius: 9px;
+  padding: 9px 14px;
+  margin-right: 12px;
+  cursor: pointer;
+}
+
+/* ---- account block ------------------------------------------------------ */
+.acctNo {
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.acctHelp {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 5px 0 0;
+}
+.rows {
+  margin: 20px 0 0;
+  border-top: 1px solid var(--line);
+}
+.rowsAlone {
+  margin-top: 0;
+}
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+}
+.row dt { color: var(--muted); margin: 0; }
+.row dd { margin: 0; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+
+.paynote {
+  font-size: 15px;
+  color: var(--ink);
+  margin: 0;
+  white-space: pre-line;
+}
+.paynote + .paynote { margin-top: 10px; }
+.paynote b { font-weight: 600; }
+
+/* ---- payments ----------------------------------------------------------- */
+.payList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.payList li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line);
+}
+.payList li:last-child { border-bottom: 0; padding-bottom: 0; }
+.payDate { color: var(--muted); font-size: 15px; }
+.payAmt { font-weight: 600; font-variant-numeric: tabular-nums; font-size: 16px; }
+.empty { color: var(--muted); font-size: 15px; margin: 0; }
+
+/* ---- links list --------------------------------------------------------- */
+.links {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.links li + li { border-top: 1px solid var(--line); }
+.links a {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  color: var(--ink);
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 16px;
+}
+.links a:hover { color: var(--brand); }
+.links a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 4px; }
+.linkText { min-width: 0; }
+.linkSub { display: block; color: var(--muted); font-size: 14px; font-weight: 400; }
+.chev { color: var(--muted); flex: none; }
+.pill {
+  flex: none;
+  border-radius: 999px;
+  background: #eef1f4;
+  color: var(--muted);
+  padding: 3px 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ---- notices ------------------------------------------------------------ */
+.outage {
+  background: #fdf1df;
+  border: 1px solid #f0d49e;
+  border-radius: var(--r);
+  padding: 16px 18px;
+  margin-bottom: 18px;
+}
+.outage p { margin: 0; font-size: 15px; }
+.outage p + p { margin-top: 6px; color: var(--muted); font-size: 13.5px; }
+.outage b { font-weight: 600; }
+
+.notice {
+  border-radius: 11px;
+  padding: 14px 16px;
+  font-size: 15px;
+  margin: 0;
+}
+.noticeOk { background: var(--ok-soft); color: var(--ok); }
+.noticeQuiet { background: #eef1f4; color: var(--muted); }
+
+/* ---- ticket thread ------------------------------------------------------ */
+.thread {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.msg {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.msgMine { background: #f6f8fa; }
+.msgHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+.msgWho { font-weight: 600; }
+.msgWhen { color: var(--muted); font-size: 13px; }
+.msgBody { margin: 0; white-space: pre-line; font-size: 16px; }
+.msgPhoto {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 15px;
+}
+.msgPhoto:hover { color: var(--brand); }
+
+.plainList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.center { text-align: center; }
+.mt0 { margin-top: 0; }
+
+.foot {
+  margin-top: 28px;
+  color: var(--muted);
+  font-size: 13.5px;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root * { transition: none !important; animation: none !important; }
+}

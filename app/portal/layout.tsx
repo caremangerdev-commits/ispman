@@ -1,11 +1,19 @@
 import type { Metadata, Viewport } from 'next'
+import { Archivo } from 'next/font/google'
 import type { ReactNode } from 'react'
 
+import styles from '@/components/portal/portal.module.css'
+
 /**
- * The portal shell. Phone-first: a single narrow column that fills a small
- * screen, generous padding, room under the home indicator, and a FORCED LIGHT
- * theme so a phone set to dark mode cannot turn the text invisible. The staff
- * chrome is deliberately absent — a customer sees only their own account.
+ * The portal root: the paper background, the system's tokens, Archivo, and a
+ * FORCED LIGHT theme so a phone set to dark mode cannot turn the text
+ * invisible. The staff chrome is deliberately absent — a customer sees only
+ * their own account.
+ *
+ * NO COLUMN HERE. Each page frames itself with components/portal/PortalShell:
+ * the brand band, then either the wide two-column account page or the narrow
+ * phone-sized column the other pages use. A width set here would cap the
+ * account page at a phone's.
  */
 export const metadata: Metadata = {
   title: 'My account',
@@ -19,14 +27,15 @@ export const viewport: Viewport = {
   // Extends under the phone's home indicator so the safe-area padding works.
   viewportFit: 'cover',
   themeColor: '#ffffff',
+  colorScheme: 'light',
 }
 
+const archivo = Archivo({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  display: 'swap',
+})
+
 export default function PortalLayout({ children }: { children: ReactNode }) {
-  return (
-    <div className="min-h-dvh bg-white text-neutral-900">
-      <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col px-5 pb-[calc(2rem+env(safe-area-inset-bottom))] pt-7">
-        {children}
-      </main>
-    </div>
-  )
+  return <div className={archivo.className + ' ' + styles.root}>{children}</div>
 }

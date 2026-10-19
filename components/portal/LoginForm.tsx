@@ -3,7 +3,7 @@
 import { useActionState } from 'react'
 
 import { requestCode, verifyCode, type LoginState } from '@/app/actions/portal'
-import { BrandRule, PortalWordmark, primaryButtonClass, type PortalBrand } from '@/components/portal/Brand'
+import styles from '@/components/portal/portal.module.css'
 
 /**
  * The phone-and-code sign-in, in two phases driven by the server actions'
@@ -12,10 +12,10 @@ import { BrandRule, PortalWordmark, primaryButtonClass, type PortalBrand } from 
  * button per screen, large tap targets, and the native keyboards and SMS
  * autofill a phone gives for a tel field and a one-time-code field.
  *
- * The company's logo (or its name as a wordmark) and brand rule head both
- * phases, so the first screen a customer sees is already the tenant's brand.
+ * Rendered inside components/portal/PortalShell, so the company's band heads
+ * both phases and the first screen a customer sees is already the tenant's.
  */
-export function LoginForm({ companyName, brand }: { companyName: string; brand: PortalBrand }) {
+export function LoginForm({ companyName }: { companyName: string }) {
   const [reqState, reqAction, reqPending] = useActionState<LoginState | null, FormData>(requestCode, null)
   const [verState, verAction, verPending] = useActionState<LoginState | null, FormData>(verifyCode, null)
 
@@ -25,23 +25,13 @@ export function LoginForm({ companyName, brand }: { companyName: string; brand: 
     (reqState && 'phone' in reqState ? reqState.phone : undefined) ??
     ''
 
-  const header = (
-    <div className="flex flex-col gap-3">
-      <PortalWordmark brand={brand} />
-      <BrandRule brand={brand} />
-    </div>
-  )
-
   if (phase === 'code') {
     return (
-      <>
-        <form action={verAction} className="flex flex-col gap-5">
-          {header}
+      <section className={styles.card}>
+        <form action={verAction} className={styles.stack}>
           <div>
-            <h1 className="text-2xl font-semibold">Enter your code</h1>
-            <p className="mt-1 text-base text-neutral-500">
-              We sent a 6-digit code by text. It expires in 10 minutes.
-            </p>
+            <h1 className={styles.title}>Enter your code</h1>
+            <p className={styles.lede}>We sent a 6-digit code by text. It expires in 10 minutes.</p>
           </div>
           <input type="hidden" name="phone" value={phone} />
           <input
@@ -53,62 +43,51 @@ export function LoginForm({ companyName, brand }: { companyName: string; brand: 
             autoFocus
             placeholder="______"
             aria-label="6-digit code"
-            className="w-full rounded-xl border border-neutral-300 px-4 py-4 text-center text-3xl tracking-[0.4em] tabular-nums outline-none focus:border-neutral-900"
+            className={styles.input + ' ' + styles.inputCode}
           />
-          {verState?.error ? <p className="text-base text-red-600">{verState.error}</p> : null}
-          <button
-            type="submit"
-            disabled={verPending}
-            className={primaryButtonClass}
-            style={{ backgroundColor: brand.palette.accent, color: brand.palette.onAccent }}
-          >
+          {verState?.error ? <p className={styles.error + ' ' + styles.mt0} role="alert">{verState.error}</p> : null}
+          <button type="submit" disabled={verPending} className={styles.btn + ' ' + styles.flush}>
             {verPending ? 'Checking…' : 'Sign in'}
           </button>
           {/* Submits the sibling resend form (a button's form= can target any form). */}
-          <button
-            type="submit"
-            form="portal-resend"
-            disabled={reqPending}
-            className="w-full py-2 text-base text-neutral-500 underline"
-          >
+          <button type="submit" form="portal-resend" disabled={reqPending} className={styles.textButton}>
             Send a new code
           </button>
         </form>
-        <form id="portal-resend" action={reqAction} className="hidden">
+        <form id="portal-resend" action={reqAction} hidden>
           <input type="hidden" name="phone" value={phone} />
         </form>
-      </>
+      </section>
     )
   }
 
   return (
-    <form action={reqAction} className="flex flex-col gap-5">
-      {header}
-      <div>
-        <h1 className="text-2xl font-semibold">Sign in</h1>
-        <p className="mt-1 text-base text-neutral-500">
-          Sign in with the mobile number on your {companyName} account to see your balance and pay.
-        </p>
-      </div>
-      <input
-        name="phone"
-        type="tel"
-        inputMode="tel"
-        autoComplete="tel"
-        autoFocus
-        placeholder="876 000 0000"
-        aria-label="Mobile number"
-        className="w-full rounded-xl border border-neutral-300 px-4 py-4 text-xl outline-none focus:border-neutral-900"
-      />
-      {reqState?.error ? <p className="text-base text-red-600">{reqState.error}</p> : null}
-      <button
-        type="submit"
-        disabled={reqPending}
-        className={primaryButtonClass}
-        style={{ backgroundColor: brand.palette.accent, color: brand.palette.onAccent }}
-      >
-        {reqPending ? 'Sending…' : 'Text me a code'}
-      </button>
-    </form>
+    <section className={styles.card}>
+      <form action={reqAction} className={styles.stack}>
+        <div>
+          <h1 className={styles.title}>Sign in</h1>
+          <p className={styles.lede}>
+            Sign in with the mobile number on your {companyName} account to see your balance and pay.
+          </p>
+        </div>
+        <div>
+          <label htmlFor="portal-phone" className={styles.label}>Mobile number</label>
+          <input
+            id="portal-phone"
+            name="phone"
+            type="tel"
+            inputMode="tel"
+            autoComplete="tel"
+            autoFocus
+            placeholder="876 000 0000"
+            className={styles.input}
+          />
+        </div>
+        {reqState?.error ? <p className={styles.error + ' ' + styles.mt0} role="alert">{reqState.error}</p> : null}
+        <button type="submit" disabled={reqPending} className={styles.btn + ' ' + styles.flush}>
+          {reqPending ? 'Sending…' : 'Text me a code'}
+        </button>
+      </form>
+    </section>
   )
 }

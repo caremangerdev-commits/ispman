@@ -1,7 +1,9 @@
 import { notFound, redirect } from 'next/navigation'
 
-import { BrandRule, PortalWordmark } from '@/components/portal/Brand'
+import styles from '@/components/portal/portal.module.css'
+import { BackLink, footerLine, PortalShell } from '@/components/portal/PortalShell'
 import { TicketComposer } from '@/components/portal/TicketComposer'
+import { portalFirstName } from '@/lib/data/portal'
 import { getPortalTicket } from '@/lib/data/portal-tickets'
 import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
@@ -29,64 +31,56 @@ export default async function TicketThreadPage(props: { params: Promise<{ id: st
   if (!(await getSchemaCapabilities()).portalTier2) notFound()
 
   const { id } = await props.params
-  const ticket = await getPortalTicket(company.id, session.customerId, Number(id))
+  const [ticket, firstName] = await Promise.all([
+    getPortalTicket(company.id, session.customerId, Number(id)),
+    portalFirstName(company.id, session.customerId),
+  ])
   if (!ticket) notFound()
 
   return (
-    <div className="flex flex-col gap-5">
-      <header className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <PortalWordmark brand={brand} />
-          <a href="/support" className="shrink-0 text-sm text-neutral-500">← All tickets</a>
-        </div>
-        <BrandRule brand={brand} />
-        <div>
-          <h1 className="text-xl font-semibold">{ticket.title}</h1>
-          <span className="mt-1 inline-block rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-600">
-            {STATUS[ticket.status] ?? ticket.status}
-          </span>
-        </div>
-      </header>
+    <PortalShell brand={brand} signedIn firstName={firstName} footer={footerLine(company.name, company.phone)}>
+      <BackLink href="/support">All tickets</BackLink>
 
-      <ol className="flex flex-col gap-3">
-        {ticket.messages.map((m) => {
-          const mine = m.author === 'customer'
-          return (
-            <li
-              key={m.id}
-              className={
-                'rounded-2xl border p-4 ' +
-                (mine ? 'border-neutral-200 bg-neutral-50' : 'border-neutral-900/10 bg-white')
-              }
-            >
-              <div className="mb-1 flex items-center justify-between">
-                <span className="text-sm font-medium">{mine ? 'You' : m.authorName || company.name}</span>
-                <span className="text-xs text-neutral-400">{fmtWhen(m.createdAt)}</span>
-              </div>
-              {m.body ? <p className="whitespace-pre-line text-base">{m.body}</p> : null}
-              {m.photoPath ? (
-                <a
-                  href={'/api/portal/ticket-photo?path=' + encodeURIComponent(m.photoPath)}
-                  className="mt-2 inline-block text-sm text-neutral-600 underline"
-                >
-                  View photo
-                </a>
-              ) : null}
-            </li>
-          )
-        })}
-      </ol>
+      <section className={styles.card}>
+        <div className={styles.msgHead}>
+          <h1 className={styles.title}>{ticket.title}</h1>
+          <span className={styles.pill}>{STATUS[ticket.status] ?? ticket.status}</span>
+        </div>
+
+        <ol className={styles.thread + ' ' + styles.span}>
+          {ticket.messages.map((m) => {
+            const mine = m.author === 'customer'
+            return (
+              <li key={m.id} className={styles.msg + (mine ? ' ' + styles.msgMine : '')}>
+                <div className={styles.msgHead}>
+                  <span className={styles.msgWho}>{mine ? 'You' : m.authorName || company.name}</span>
+                  <span className={styles.msgWhen}>{fmtWhen(m.createdAt)}</span>
+                </div>
+                {m.body ? <p className={styles.msgBody}>{m.body}</p> : null}
+                {m.photoPath ? (
+                  <a
+                    href={'/api/portal/ticket-photo?path=' + encodeURIComponent(m.photoPath)}
+                    className={styles.msgPhoto}
+                  >
+                    View photo
+                  </a>
+                ) : null}
+              </li>
+            )
+          })}
+        </ol>
+      </section>
 
       {ticket.status === 'resolved' ? (
-        <p className="rounded-xl bg-neutral-100 px-4 py-3 text-sm text-neutral-600">
+        <p className={styles.notice + ' ' + styles.noticeQuiet}>
           This ticket is resolved. Reply to reopen the conversation.
         </p>
       ) : null}
 
-      <section className="rounded-2xl border border-neutral-200 p-5">
-        <h2 className="mb-3 text-base font-semibold">Reply</h2>
-        <TicketComposer mode="reply" ticketId={ticket.id} palette={brand.palette} />
+      <section className={styles.card}>
+        <h2 className={styles.h2}>Reply</h2>
+        <TicketComposer mode="reply" ticketId={ticket.id} />
       </section>
-    </div>
+    </PortalShell>
   )
 }

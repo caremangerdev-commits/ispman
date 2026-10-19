@@ -1,7 +1,8 @@
 import { notFound, redirect } from 'next/navigation'
 
-import { BrandRule, PortalWordmark } from '@/components/portal/Brand'
 import { PhoneChangeForm } from '@/components/portal/PhoneChangeForm'
+import { BackLink, footerLine, PortalShell } from '@/components/portal/PortalShell'
+import { portalFirstName } from '@/lib/data/portal'
 import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPortalSession } from '@/lib/portal/session'
@@ -16,18 +17,12 @@ export default async function PhonePage() {
     getPortalSession(company.id),
   ])
   if (!session) redirect('/')
+  const firstName = await portalFirstName(company.id, session.customerId)
 
   return (
-    <div className="flex flex-col gap-5">
-      <header className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <PortalWordmark brand={brand} />
-          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- '/' is rewritten to /portal by proxy.ts; a full nav keeps that rewrite */}
-          <a href="/" className="shrink-0 text-sm text-neutral-500">← Back</a>
-        </div>
-        <BrandRule brand={brand} />
-      </header>
-      <PhoneChangeForm palette={brand.palette} />
-    </div>
+    <PortalShell brand={brand} signedIn firstName={firstName} footer={footerLine(company.name, company.phone)}>
+      <BackLink href="/">Back to my account</BackLink>
+      <PhoneChangeForm />
+    </PortalShell>
   )
 }

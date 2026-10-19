@@ -18,14 +18,20 @@ import { tenantClient } from '@/lib/supabase/tenant'
 /** PostgREST codes for a missing table or column. */
 const MISSING = new Set(['PGRST205', '42P01', '42703'])
 
-export type PortalCompany = { id: number; name: string; slug: string }
+export type PortalCompany = {
+  id: number
+  name: string
+  slug: string
+  /** companies.phone, for the portal's footer line; null when unset. */
+  phone: string | null
+}
 
 /** The company that owns a subdomain slug, or null. */
 export async function companyBySlug(slug: string): Promise<PortalCompany | null> {
   const db = tenantClient()
   const { data, error } = await db
     .from('companies')
-    .select('id, name, slug')
+    .select('id, name, slug, phone')
     .eq('slug', slug)
     .maybeSingle()
 
@@ -34,8 +40,36 @@ export async function companyBySlug(slug: string): Promise<PortalCompany | null>
     throw new Error('Portal company lookup failed: ' + error.message)
   }
   if (!data) return null
-  const row = data as { id: number; name: string | null; slug: string | null }
-  return { id: row.id, name: row.name ?? '', slug: row.slug ?? slug }
+  const row = data as { id: number; name: string | null; slug: string | null; phone: string | null }
+  return {
+    id: row.id,
+    name: row.name ?? '',
+    slug: row.slug ?? slug,
+    phone: (row.phone ?? '').trim() || null,
+  }
+}
+
+/**
+ * The signed-in customer's first name, for the band's "Hi, …" on the pages
+ * that do not load the whole account (phone, support). One indexed read; no
+ * network lookup. Null when the account is gone.
+ */
+export async function portalFirstName(companyId: number, customerId: number): Promise<string | null> {
+  const { data, error } = await tenantClient()
+    .from('customers')
+    .select('first_name, last_name')
+    .eq('company_id', companyId)
+    .eq('id', customerId)
+    .maybeSingle()
+  if (error || !data) return null
+  const row = data as { first_name: string | null; last_name: string | null }
+  return firstNameOf([row.first_name, row.last_name].filter(Boolean).join(' '))
+}
+
+/** "Shelley" from "Shelley Mitchell"; null when there is nothing to greet. */
+export function firstNameOf(name: string | null | undefined): string | null {
+  const first = (name ?? '').trim().split(/\s+/)[0]
+  return first || null
 }
 
 export type PortalMatch = { id: number; name: string }
@@ -103,6 +137,22 @@ export type PortalAccount = {
   plan: { name: string; downMbps: number; upMbps: number } | null
   /** The AP/sector the customer is on, for outage scoping; null if unset/absent. */
   accessPoint: string | null
+  /** The customer's phone as stored; null when unset. */
+  phone: string | null
+  /**
+   * One month's charge: monthly_rate plus every linked add-on, exactly as
+   * lib/payments/service-payment.ts prices it. What the pay button offers when
+   * nothing is owed. 0 when unknown (0011 or 0005 not applied, or no rate).
+   */
+  monthlyCharge: number
+  /**
+   * YYYY-MM-DD the customer last paid for service, when that is BEFORE the
+   * expiry — where the portal's service span starts. Null when there is no
+   * such payment; the page then starts the span a calendar month before expiry.
+   */
+  paidOn: string | null
+  /** YYYY-MM-DD that daysUntilExpiry was counted from (the server's today). */
+  today: string
 }
 
 /** Everything the account page shows for one customer. */
@@ -113,7 +163,7 @@ export async function getPortalAccount(
   const caps = await getSchemaCapabilities()
   const db = tenantClient()
 
-  let cols = 'id, first_name, last_name, last_bill_date, mac_address'
+  let cols = 'id, first_name, last_name, last_bill_date, mac_address, phone, monthly_rate'
   if (caps.connectionTypes) cols += ', customer_type, pppoe_username, access_point'
   if (caps.billing) cols += ', carried_balance, account_credit'
   if (caps.accountNumbers) cols += ', account_number'
@@ -121,9 +171,11 @@ export async function getPortalAccount(
     cols += ', service_plans!customers_service_plan_id_fkey(name, speed_down_mbps, speed_up_mbps)'
   }
 
-  const [{ data, error }, note] = await Promise.all([
+  const [{ data, error }, note, addonTotal, servicePayments] = await Promise.all([
     db.from('customers').select(cols).eq('company_id', companyId).eq('id', customerId).maybeSingle(),
     readPaymentNote(companyId, caps.portalNote),
+    caps.billing && caps.catalog ? readAddonTotal(customerId) : Promise.resolve(0),
+    readServicePaymentDays(companyId, customerId, caps.otherPayments),
   ])
 
   if (error) throw new Error('Portal account load failed: ' + error.message)
@@ -135,6 +187,8 @@ export async function getPortalAccount(
     last_name: string | null
     last_bill_date: string | null
     mac_address: string | null
+    phone: string | null
+    monthly_rate: number | string | null
     customer_type?: string | null
     pppoe_username?: string | null
     access_point?: string | null
@@ -181,6 +235,15 @@ export async function getPortalAccount(
     }
   }
 
+  // The span starts on the last day they paid for service, if that day is
+  // before the date it runs to. A payment on or after the expiry bought nothing
+  // that is running now (or the network has not caught up), so it is no start.
+  const paidOn = expiry ? (servicePayments.find((d) => d < expiry) ?? null) : null
+  const rate = Number(row.monthly_rate ?? 0)
+  const monthlyCharge = caps.billing && caps.catalog
+    ? Math.round(((Number.isFinite(rate) ? rate : 0) + addonTotal) * 100) / 100
+    : 0
+
   return {
     id: row.id,
     name: [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Account #' + row.id,
@@ -194,7 +257,70 @@ export async function getPortalAccount(
     paymentNote: note,
     plan,
     accessPoint: caps.connectionTypes ? (row.access_point ?? null) : null,
+    phone: (row.phone ?? '').trim() || null,
+    monthlyCharge,
+    paidOn,
+    // The same clock daysUntil() counted from, read here so the page stays a
+    // pure render.
+    today: ymd(new Date()),
   }
+}
+
+/**
+ * The sum of every add-on linked to the customer — the figure
+ * lib/payments/service-payment.ts adds to monthly_rate. 0 on any failure: it
+ * only shapes the amount a button offers, never what is owed.
+ */
+async function readAddonTotal(customerId: number): Promise<number> {
+  const { data, error } = await tenantClient()
+    .from('customer_additional_services')
+    .select('additional_services(monthly_price)')
+    .eq('customer_id', customerId)
+  if (error) return 0
+  return ((data ?? []) as unknown as {
+    additional_services: { monthly_price: number | string | null } | null
+  }[]).reduce((sum, l) => {
+    const n = Number(l.additional_services?.monthly_price ?? 0)
+    return sum + (Number.isFinite(n) ? n : 0)
+  }, 0)
+}
+
+/**
+ * The days of the customer's recent SERVICE payments with money in them, newest
+ * first, as YYYY-MM-DD. The business date (paid_on, 0013) when it exists, else
+ * payment_date's local day. "Other" payments (a router, a fee) never start a
+ * service span, so they are left out once 0013 can tell them apart.
+ */
+async function readServicePaymentDays(
+  companyId: number,
+  customerId: number,
+  kinds: boolean
+): Promise<string[]> {
+  const { data, error } = await tenantClient()
+    .from('payments')
+    .select(kinds ? 'payment_date, amount, paid_on, payment_kind' : 'payment_date, amount')
+    .eq('company_id', companyId)
+    .eq('customer_id', customerId)
+    .order('payment_date', { ascending: false })
+    .limit(24)
+  if (error) return []
+
+  const days: string[] = []
+  for (const p of (data ?? []) as unknown as {
+    payment_date: string | null
+    amount: number | string | null
+    paid_on?: string | null
+    payment_kind?: string | null
+  }[]) {
+    if (kinds && p.payment_kind === 'other') continue
+    if (!(Number(p.amount ?? 0) > 0)) continue
+    const day = p.paid_on && /^\d{4}-\d{2}-\d{2}$/.test(p.paid_on)
+      ? p.paid_on
+      : p.payment_date ? ymd(new Date(p.payment_date)) : null
+    if (day) days.push(day)
+  }
+  // paid_on can disagree with payment_date's order on a back-dated payment.
+  return days.sort().reverse()
 }
 
 /**

@@ -1,10 +1,12 @@
 import { notFound } from 'next/navigation'
 
 import { AutoRefresh } from '@/components/portal/AutoRefresh'
-import { BrandRule, primaryButtonClass, PortalWordmark } from '@/components/portal/Brand'
+import styles from '@/components/portal/portal.module.css'
+import { footerLine, PortalShell } from '@/components/portal/PortalShell'
+import { ServiceCard } from '@/components/portal/ServiceCard'
+import { getBillSettings } from '@/lib/data/bill-settings'
 import { getGatewayPaymentStatus } from '@/lib/data/payment-gateways'
-import { getPortalAccount } from '@/lib/data/portal'
-import { formatCurrency } from '@/lib/format'
+import { firstNameOf, getPortalAccount } from '@/lib/data/portal'
 import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPortalSession } from '@/lib/portal/session'
@@ -52,34 +54,27 @@ export default async function PayCompletePage(props: {
   // Fygaro's docs spell it camelCase on the return URL; accept snake_case too.
   const customRef = (str(sp.customReference) || str(sp.custom_reference)).trim()
   const tries = Math.max(0, Math.floor(Number(str(sp.t)) || 0))
+  const footer = footerLine(company.name, company.phone)
 
-  const header = (
-    <header className="flex flex-col gap-3">
-      <PortalWordmark brand={brand} />
-      <BrandRule brand={brand} />
-    </header>
+  const backHome = (primary: boolean) => (
+    // eslint-disable-next-line @next/next/no-html-link-for-pages -- '/' is rewritten to /portal by proxy.ts
+    <a href="/" className={styles.btn + ' ' + styles.flush + (primary ? '' : ' ' + styles.btnGhost)}>
+      Back to my account
+    </a>
   )
 
   // No reference → they came back without paying (cancelled or closed Fygaro).
   if (!reference) {
     return (
-      <div className="flex flex-col gap-5">
-        {header}
-        <section className="rounded-2xl border border-neutral-200 p-6 text-center">
-          <p className="text-xl font-semibold">Payment not completed</p>
-          <p className="mt-2 text-sm text-neutral-600">
+      <PortalShell brand={brand} footer={footer}>
+        <section className={styles.card}>
+          <h1 className={styles.title}>Payment not completed</h1>
+          <p className={styles.lede}>
             It looks like you came back before the payment went through. Nothing has been charged.
           </p>
         </section>
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- '/' is rewritten to /portal by proxy.ts */}
-        <a
-          href="/"
-          className={primaryButtonClass + ' text-center'}
-          style={{ backgroundColor: brand.palette.accent, color: brand.palette.onAccent }}
-        >
-          Back to my account
-        </a>
-      </div>
+        {backHome(true)}
+      </PortalShell>
     )
   }
 
@@ -93,54 +88,51 @@ export default async function PayCompletePage(props: {
 
   const status = await getGatewayPaymentStatus(company.id, PROVIDER, reference)
   const settled = status === 'recorded'
-  const account = settled && mine && session ? await getPortalAccount(company.id, session.customerId) : null
+  const [account, bill] = await Promise.all([
+    settled && mine && session ? getPortalAccount(company.id, session.customerId) : Promise.resolve(null),
+    getBillSettings(company.id),
+  ])
 
   // --- Confirmed: the webhook has recorded it. -----------------------------
   if (settled) {
-    const owes = account ? account.balance > 0.005 : false
-    const days = account?.daysUntilExpiry ?? null
     return (
-      <div className="flex flex-col gap-5">
-        {header}
-        <section
-          className="rounded-2xl p-6 text-center"
-          style={{ backgroundColor: brand.palette.accent, color: brand.palette.onAccent }}
-        >
-          <p className="text-2xl font-bold">Payment received</p>
-          <p className="mt-1 text-sm opacity-90">Thank you — your payment is confirmed.</p>
+      <PortalShell
+        brand={brand}
+        signedIn={Boolean(session)}
+        firstName={account ? firstNameOf(account.name) : null}
+        footer={footer}
+      >
+        <section className={styles.card + ' ' + styles.stateOk}>
+          <h1 className={styles.title}>Payment received</h1>
+          <p className={styles.lede}>Thank you — your payment is confirmed.</p>
+          <div className={styles.flag}>
+            <span className={styles.dot} aria-hidden="true" />
+            <span>Confirmed</span>
+          </div>
         </section>
 
         {account ? (
-          <section className="rounded-2xl border border-neutral-200 p-5 text-center">
-            {days !== null && days >= 0 ? (
-              <>
-                <p className="text-sm text-neutral-500">Your service is active</p>
-                <p className="mt-1 text-lg font-semibold">
-                  {days === 0 ? 'through today' : days + (days === 1 ? ' more day' : ' more days')}
-                </p>
-              </>
-            ) : null}
-            <p className="mt-2 text-sm text-neutral-600">
-              {owes ? 'Balance: ' + formatCurrency(account.balance) : "You're all paid up."}
-            </p>
-          </section>
+          <ServiceCard
+            expiry={account.expiry}
+            days={account.daysUntilExpiry}
+            paidOn={account.paidOn}
+            today={account.today}
+            balance={account.balance}
+            credit={account.credit}
+            symbol={bill.currencySymbol}
+            companyName={company.name}
+            canPay
+          />
         ) : (
-          <section className="rounded-2xl border border-neutral-200 p-5 text-center">
-            <p className="text-sm text-neutral-600">
+          <section className={styles.card}>
+            <p className={styles.paynote}>
               Your service is being brought back online — this can take a moment.
             </p>
           </section>
         )}
 
-        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- '/' is rewritten to /portal by proxy.ts */}
-        <a
-          href="/"
-          className={primaryButtonClass + ' text-center'}
-          style={{ backgroundColor: brand.palette.accent, color: brand.palette.onAccent }}
-        >
-          Back to my account
-        </a>
-      </div>
+        {backHome(true)}
+      </PortalShell>
     )
   }
 
@@ -154,33 +146,26 @@ export default async function PayCompletePage(props: {
     '&t=' + (tries + 1)
 
   return (
-    <div className="flex flex-col gap-5">
-      {header}
-      <section className="rounded-2xl border border-neutral-200 bg-neutral-50 p-6 text-center">
-        <p className="text-2xl font-bold">Payment received</p>
+    <PortalShell brand={brand} signedIn={Boolean(session)} footer={footer}>
+      <section className={styles.card}>
+        <h1 className={styles.title}>Payment received</h1>
         {keepTrying ? (
           <>
-            <p className="mt-2 text-sm text-neutral-600">
+            <p className={styles.lede}>
               We’re confirming it with your account now. This usually takes a few seconds…
             </p>
-            <p className="mt-3 text-xs text-neutral-400">This page updates on its own.</p>
+            <p className={styles.credit}>This page updates on its own.</p>
             <AutoRefresh to={refreshTo} seconds={4} />
           </>
         ) : (
-          <p className="mt-2 text-sm text-neutral-600">
+          <p className={styles.lede}>
             Your payment went through and is safe. It’s taking a little longer than usual to show on
             your account. Check back shortly — if it hasn’t updated, contact {company.name}.
           </p>
         )}
       </section>
 
-      {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- '/' is rewritten to /portal by proxy.ts */}
-      <a
-        href="/"
-        className="rounded-xl border border-neutral-300 px-4 py-4 text-center text-lg font-medium active:bg-neutral-50"
-      >
-        Back to my account
-      </a>
-    </div>
+      {backHome(false)}
+    </PortalShell>
   )
 }

@@ -1,7 +1,9 @@
 import { notFound, redirect } from 'next/navigation'
 
-import { BrandRule, PortalWordmark } from '@/components/portal/Brand'
+import styles from '@/components/portal/portal.module.css'
+import { BackLink, footerLine, PortalShell } from '@/components/portal/PortalShell'
 import { TicketComposer } from '@/components/portal/TicketComposer'
+import { portalFirstName } from '@/lib/data/portal'
 import { listPortalTickets } from '@/lib/data/portal-tickets'
 import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
@@ -28,37 +30,27 @@ export default async function SupportPage() {
   if (!session) redirect('/')
   if (!(await getSchemaCapabilities()).portalTier2) notFound()
 
-  const tickets = await listPortalTickets(company.id, session.customerId)
+  const [tickets, firstName] = await Promise.all([
+    listPortalTickets(company.id, session.customerId),
+    portalFirstName(company.id, session.customerId),
+  ])
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <PortalWordmark brand={brand} />
-          {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- '/' is rewritten to /portal by proxy.ts; a full nav keeps that rewrite */}
-          <a href="/" className="shrink-0 text-sm text-neutral-500">← Account</a>
-        </div>
-        <BrandRule brand={brand} />
-        <h1 className="text-xl font-semibold">Support</h1>
-      </header>
+    <PortalShell brand={brand} signedIn firstName={firstName} footer={footerLine(company.name, company.phone)}>
+      <BackLink href="/">Back to my account</BackLink>
 
       {tickets.length > 0 ? (
-        <section>
-          <h2 className="mb-2 text-sm font-medium text-neutral-500">Your tickets</h2>
-          <ul className="flex flex-col gap-2">
+        <section className={styles.card}>
+          <h2 className={styles.h2}>Your tickets</h2>
+          <ul className={styles.links}>
             {tickets.map((t) => (
               <li key={t.id}>
-                <a
-                  href={'/support/' + t.id}
-                  className="flex items-center justify-between gap-3 rounded-xl border border-neutral-200 px-4 py-3 active:bg-neutral-50"
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate text-base font-medium">{t.title}</span>
-                    <span className="text-sm text-neutral-500">{fmtDay(t.createdAt)}</span>
+                <a href={'/support/' + t.id}>
+                  <span className={styles.linkText}>
+                    {t.title}
+                    <span className={styles.linkSub}>{fmtDay(t.createdAt)}</span>
                   </span>
-                  <span className="shrink-0 rounded-full bg-neutral-100 px-3 py-1 text-xs font-medium text-neutral-600">
-                    {STATUS[t.status] ?? t.status}
-                  </span>
+                  <span className={styles.pill}>{STATUS[t.status] ?? t.status}</span>
                 </a>
               </li>
             ))}
@@ -66,13 +58,15 @@ export default async function SupportPage() {
         </section>
       ) : null}
 
-      <section className="rounded-2xl border border-neutral-200 p-5">
-        <h2 className="mb-3 text-base font-semibold">Open a ticket</h2>
-        <p className="mb-4 text-sm text-neutral-500">
+      <section className={styles.card}>
+        <h1 className={styles.title}>Report a problem</h1>
+        <p className={styles.lede}>
           Tell us what’s wrong. A photo of your router’s lights or the cabling helps a lot.
         </p>
-        <TicketComposer mode="new" palette={brand.palette} />
+        <div className={styles.span}>
+          <TicketComposer mode="new" />
+        </div>
       </section>
-    </div>
+    </PortalShell>
   )
 }
