@@ -4,148 +4,14 @@ import { CollectionStats, CollectionsList } from '@/components/payments/MyCollec
 import { PaymentWorkspace } from '@/components/payments/PaymentWorkspace'
 import { AccessDenied } from '@/components/ui/AccessDenied'
 import { ROLE_LABELS } from '@/lib/permissions'
-import type { SearchHit } from '@/app/api/search/route'
 import { EMPTY_COLLECTION, getAgentCollections } from '@/lib/data/checkoff'
 import { getGeneralSettings } from '@/lib/data/company'
+import { getSearchHit } from '@/lib/data/customer-search'
 import { listPaymentCategories } from '@/lib/data/payment-categories'
-import { toAnniversaryDay, toExpiryRule } from '@/lib/billing'
-import { expiryOf } from '@/lib/domain'
-import { localDateOnly } from '@/lib/format'
-import { lastNetworkEvent } from '@/lib/data/network-events'
-import { getRadiusStatus } from '@/lib/radius-db'
-import { resolveStatus } from '@/lib/status'
 import { CHECKOFF_HINT, getSchemaCapabilities } from '@/lib/schema'
 import { displayName, requirePermission } from '@/lib/session'
-import { tenantClient } from '@/lib/supabase/tenant'
-import { toCustomerType, toExpiryMode } from '@/lib/types'
 
 export const metadata: Metadata = { title: 'Record Payment · ISPMan' }
-
-/**
- * Preloads a customer when arriving via ?customer=<id>, so the flow from a
- * customer record lands ready to take the payment.
- */
-async function preload(companyId: number, id: number): Promise<SearchHit | null> {
-  const caps = await getSchemaCapabilities()
-  const db = tenantClient()
-
-  const cols =
-    'id, first_name, last_name, phone, address, mac_address, last_bill_date, monthly_rate, cut_off_date' +
-    (caps.accountNumbers ? ', account_number' : '') +
-    (caps.connectionTypes ? ', customer_type' : '') +
-    (caps.expiryMode ? ', expiry_mode' : '') +
-    (caps.anniversaryExpiry ? ', expiry_rule, anniversary_day' : '') +
-    (caps.billing
-      ? ', carried_balance, account_credit, bill_date, last_billed_date'
-      : '') +
-    (caps.catalog
-      ? ', service_plans!customers_service_plan_id_fkey(name, speed_down_mbps, speed_up_mbps, monthly_price)'
-      : '')
-
-  const { data } = await db
-    .from('customers')
-    .select(cols)
-    .eq('company_id', companyId)
-    .eq('id', id)
-    .maybeSingle()
-
-  if (!data) return null
-
-  const r = data as unknown as {
-    id: number
-    first_name: string | null
-    last_name: string | null
-    phone: string | null
-    address: string | null
-    account_number?: string | null
-    mac_address: string | null
-    last_bill_date: string | null
-    monthly_rate: number | string | null
-    cut_off_date: number | null
-    customer_type?: string | null
-    expiry_mode?: string | null
-    expiry_rule?: string | null
-    anniversary_day?: number | null
-    carried_balance?: number | string | null
-    account_credit?: number | string | null
-    bill_date?: number | null
-    last_billed_date?: string | null
-    service_plans?: {
-      name: string | null
-      speed_down_mbps: number | null
-      speed_up_mbps: number | null
-      monthly_price: number | string | null
-    } | null
-  }
-
-  let addons: { id: number; name: string; price: number }[] = []
-  if (caps.catalog) {
-    const { data: links } = await db
-      .from('customer_additional_services')
-      .select('additional_services(id, name, monthly_price)')
-      .eq('customer_id', id)
-
-    addons = ((links ?? []) as unknown as {
-      additional_services: { id: number; name: string | null; monthly_price: number | string | null } | null
-    }[])
-      .filter((l) => l.additional_services)
-      .map((l) => ({
-        id: l.additional_services!.id,
-        name: l.additional_services!.name ?? 'Add-on',
-        price: Number(l.additional_services!.monthly_price ?? 0),
-      }))
-  }
-
-  const expiry = expiryOf({ last_bill_date: r.last_bill_date })
-  const base = Number(r.monthly_rate ?? 0)
-
-  return {
-    id: r.id,
-    first_name: r.first_name,
-    last_name: r.last_name,
-    phone: r.phone,
-    address: r.address,
-    account_number: r.account_number ?? null,
-    mac_address: r.mac_address,
-    ...(await (async () => {
-      const [net, lastEvent] = await Promise.all([
-        getRadiusStatus(r.mac_address ?? '').catch(() => null),
-        lastNetworkEvent(companyId, r.id),
-      ])
-      return {
-        // Same derivation as the customer list and the search dropdown: the
-        // registry's answer, with a deliberate disconnection separated from an
-        // ordinary lapse by the event log.
-        status: net ? resolveStatus(net.status, lastEvent) : 'unknown',
-        // The calendar date, not an instant — see SearchHit.network_expiry.
-        network_expiry: net?.expiry ? localDateOnly(net.expiry) : null,
-      }
-    })()),
-    customer_type: caps.connectionTypes ? toCustomerType(r.customer_type) : null,
-    monthly_rate: base,
-    expires_at: expiry ? expiry.toISOString() : null,
-    expiry_mode: toExpiryMode(caps.expiryMode ? r.expiry_mode : 'from_expiry'),
-    cut_off_date: r.cut_off_date ?? null,
-    expiry_rule: toExpiryRule(caps.anniversaryExpiry ? r.expiry_rule : null),
-    anniversary_day: caps.anniversaryExpiry ? toAnniversaryDay(r.anniversary_day) : null,
-    service_plan: r.service_plans
-      ? {
-          name: r.service_plans.name ?? 'Plan',
-          speed:
-            r.service_plans.speed_down_mbps != null
-              ? r.service_plans.speed_down_mbps + '↓ ' + (r.service_plans.speed_up_mbps ?? 0) + '↑ Mbps'
-              : null,
-          price: Number(r.service_plans.monthly_price ?? 0),
-        }
-      : null,
-    addons,
-    total_monthly: base + addons.reduce((s, a) => s + a.price, 0),
-    carried_balance: Number(r.carried_balance ?? 0),
-    account_credit: Number(r.account_credit ?? 0),
-    bill_date: r.bill_date ?? null,
-    last_billed_date: r.last_billed_date ?? null,
-  }
-}
 
 export default async function RecordPaymentPage({
   searchParams,
@@ -169,7 +35,10 @@ export default async function RecordPaymentPage({
   const agentName = displayName(profile)
 
   const [initialCustomer, collections, paymentCategories] = await Promise.all([
-    Number.isInteger(customerId) ? preload(company.id, customerId) : Promise.resolve(null),
+    // Preloads a customer when arriving via ?customer=<id>, so the flow from a
+    // customer record lands ready to take the payment — the same hit the
+    // search would have returned for them.
+    getSearchHit(company.id, customerId),
     getAgentCollections({
       companyId: company.id,
       userId: profile.id,

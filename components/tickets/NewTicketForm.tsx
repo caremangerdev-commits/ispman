@@ -5,9 +5,9 @@ import { useActionState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import { createTicket, type ActionResult } from '@/app/actions/tickets'
+import { TicketCustomerPicker } from '@/components/tickets/TicketCustomerPicker'
 import type { AgentOption } from '@/lib/data/checkoff'
-import type { TicketCustomerOption } from '@/lib/data/tickets'
-import { fullName } from '@/lib/format'
+import type { SearchHit } from '@/lib/data/customer-search'
 import { TICKET_PRIORITIES, TICKET_PRIORITY_LABELS } from '@/lib/tickets'
 
 const inputBase =
@@ -55,14 +55,12 @@ function SaveButton() {
 }
 
 export function NewTicketForm({
-  customers,
   agents,
-  presetCustomerId,
+  presetCustomer,
 }: {
-  customers: TicketCustomerOption[]
   agents: AgentOption[]
   /** From ?customer= on the customer record's New Ticket button. */
-  presetCustomerId: string
+  presetCustomer: SearchHit | null
 }) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(createTicket, null)
 
@@ -80,20 +78,20 @@ export function NewTicketForm({
       ) : null}
 
       <section className="space-y-4 rounded-xl border border-gray-800 bg-gray-900 p-5">
-        <Field label="Customer" htmlFor="customer_id" error={errors.customer_id} required>
-          <select
-            id="customer_id"
-            name="customer_id"
-            // A failed submit re-seeds from what was posted; otherwise the
-            // preset from the customer record wins.
-            defaultValue={v('customer_id') || presetCustomerId}
-            className={cls('customer_id')}
-          >
-            <option value="">Select a customer…</option>
-            {customers.map((c) => (
-              <option key={c.id} value={c.id}>{fullName(c)}</option>
-            ))}
-          </select>
+        <Field
+          label="Customer"
+          htmlFor="customer_search"
+          error={errors.customer_id}
+          hint="Search as you would in the header: name, phone, address, MAC or #id."
+          required
+        >
+          {/* The pick lives in the picker's own state, so a failed submit
+              keeps it without re-seeding from what was posted. */}
+          <TicketCustomerPicker
+            initial={presetCustomer}
+            inputId="customer_search"
+            inputClassName={cls('customer_id')}
+          />
         </Field>
 
         <Field label="Title" htmlFor="title" error={errors.title} required>

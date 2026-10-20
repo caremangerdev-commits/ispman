@@ -46,6 +46,12 @@ export type Permission =
 
 const PERMISSIONS: Record<Permission, Role[]> = {
   view_dashboard_kpis: ['super_admin', 'company_admin', 'manager'],
+  // Browsing the whole customer book. Roles without it (cashier, technician)
+  // reach a customer only by searching — two characters, twenty matches, no
+  // paging (lib/search.ts#isSearchQuery) — in every box that searches,
+  // including the ticket area's. The SAME ROLE LIST is written into
+  // supabase/migrations/0040_customers_browse_rls.sql, which stops the others
+  // reading customers directly from the database; change both together.
   view_customer_list: ['super_admin', 'company_admin', 'manager', 'csr'],
   view_customer_billing_history: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
   view_customer_tech_info: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],

@@ -99,12 +99,15 @@ export default async function CustomerDetailPage({
 
   return (
     <div className="space-y-4">
+      {/* A technician or cashier reaches a record by searching and has no
+          customer list to go back to; the link would bounce them off an
+          access-denied redirect. */}
       <Link
-        href="/dashboard/customers"
+        href={can(profile.role, 'view_customer_list') ? '/dashboard/customers' : '/dashboard'}
         className="inline-flex items-center gap-1 text-xs font-medium text-gray-500 transition hover:text-gray-300"
       >
         <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
-        Back to customers
+        {can(profile.role, 'view_customer_list') ? 'Back to customers' : 'Back to dashboard'}
       </Link>
 
       <CustomerDetail

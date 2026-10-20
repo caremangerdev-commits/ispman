@@ -1,12 +1,13 @@
 import Link from 'next/link'
 import { Receipt, Search, Users, Wifi } from 'lucide-react'
 
+import { CustomerHitCard } from '@/components/customers/CustomerHitCard'
 import { EmptyState, Panel } from '@/components/dashboard/Panel'
+import type { SearchHit } from '@/lib/data/customer-search'
 import { formatCurrency, formatRelativeDate, fullName, timeAgo } from '@/lib/format'
 import type {
   CashierDashboard as CashierData,
   CsrDashboard as CsrData,
-  CustomerHit,
   MyTicket,
   TechnicianDashboard as TechData,
 } from '@/lib/data/roleDashboards'
@@ -33,7 +34,12 @@ function TicketList({ tickets }: { tickets: MyTicket[] }) {
         return (
           <li key={t.id} className="px-5 py-2.5">
             <div className="flex items-start justify-between gap-3">
-              <p className="min-w-0 flex-1 truncate text-sm font-medium text-gray-200">{t.title}</p>
+              <Link
+                href={'/dashboard/tickets/' + t.id}
+                className="min-w-0 flex-1 truncate text-sm font-medium text-gray-200 transition hover:text-blue-400"
+              >
+                {t.title}
+              </Link>
               <span className="shrink-0 text-xs text-gray-500">{timeAgo(t.created_at)}</span>
             </div>
             <div className="mt-1 flex items-center gap-2">
@@ -73,25 +79,35 @@ function SearchForm({ defaultValue, placeholder }: { defaultValue: string; place
   )
 }
 
-function HitList({ hits, showBalance }: { hits: CustomerHit[]; showBalance: boolean }) {
+/**
+ * The header search's result card, opening the record on click — the same
+ * thing that happens when the same customer is picked from the header box.
+ * Every role that lands here holds view_customer_billing_history, which is
+ * what the record page asks for.
+ */
+function HitList({ hits, showBalance }: { hits: SearchHit[]; showBalance: boolean }) {
   if (hits.length === 0) return <EmptyState message="No customers matched that search." />
   return (
     <ul className="divide-y divide-gray-800">
       {hits.map((h) => (
-        <li key={h.id} className="flex items-center gap-3 px-5 py-2.5">
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-gray-200">{h.name}</p>
-            <p className="truncate text-xs text-gray-500">
-              {h.phone ?? '—'}
-              {h.address ? <span className="ml-2">{h.address}</span> : null}
-              <span className="ml-2 font-mono">{h.mac_address ?? '—'}</span>
-            </p>
-          </div>
-          {showBalance ? (
-            <span className={'shrink-0 text-sm tabular-nums ' + (Number(h.balance ?? 0) > 0 ? 'text-orange-400' : 'text-gray-400')}>
-              {formatCurrency(h.balance)}
-            </span>
-          ) : null}
+        <li key={h.id}>
+          <Link
+            href={'/dashboard/customers/' + h.id}
+            className="flex items-center gap-3 px-5 py-2.5 transition hover:bg-gray-800/60"
+          >
+            <CustomerHitCard
+              hit={h}
+              aside={
+                // carried_balance, not balance: see lib/billing.ts. `balance`
+                // reads 0 for everybody who actually owes.
+                showBalance ? (
+                  <span className={'shrink-0 text-sm tabular-nums ' + (h.carried_balance > 0 ? 'text-orange-400' : 'text-gray-400')}>
+                    {formatCurrency(h.carried_balance)}
+                  </span>
+                ) : null
+              }
+            />
+          </Link>
         </li>
       ))}
     </ul>
@@ -105,7 +121,7 @@ export function CsrDashboard({
 }: {
   data: CsrData
   query: string
-  hits: CustomerHit[]
+  hits: SearchHit[]
 }) {
   return (
     <div className="space-y-5">
@@ -166,7 +182,7 @@ export function CashierDashboard({
 }: {
   data: CashierData
   query: string
-  hits: CustomerHit[]
+  hits: SearchHit[]
 }) {
   return (
     <div className="space-y-5">
@@ -238,7 +254,7 @@ export function TechnicianDashboard({
 }: {
   data: TechData
   query: string
-  hits: CustomerHit[]
+  hits: SearchHit[]
 }) {
   return (
     <div className="space-y-5">
@@ -266,15 +282,20 @@ export function TechnicianDashboard({
           ) : (
             <ul className="divide-y divide-gray-800">
               {data.customersWithOpenTickets.map((c) => (
-                <li key={c.customerId} className="flex items-center gap-3 px-5 py-2.5">
-                  <Wifi className="h-4 w-4 shrink-0 text-gray-600" aria-hidden />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm text-gray-200">{c.name}</p>
-                    <p className="truncate font-mono text-xs text-gray-500">{c.macAddress ?? '—'}</p>
-                  </div>
-                  <span className="shrink-0 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-blue-400">
-                    {c.openTickets} open
-                  </span>
+                <li key={c.customerId}>
+                  <Link
+                    href={'/dashboard/customers/' + c.customerId}
+                    className="flex items-center gap-3 px-5 py-2.5 transition hover:bg-gray-800/60"
+                  >
+                    <Wifi className="h-4 w-4 shrink-0 text-gray-600" aria-hidden />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm text-gray-200">{c.name}</p>
+                      <p className="truncate font-mono text-xs text-gray-500">{c.macAddress ?? '—'}</p>
+                    </div>
+                    <span className="shrink-0 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-blue-400">
+                      {c.openTickets} open
+                    </span>
+                  </Link>
                 </li>
               ))}
             </ul>

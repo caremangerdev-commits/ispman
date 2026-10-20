@@ -4,7 +4,7 @@ import { useState, type ReactNode } from 'react'
 
 import { RecordPaymentForm } from '@/components/payments/RecordPaymentForm'
 import type { PaymentCategory } from '@/lib/data/payment-categories'
-import type { SearchHit } from '@/app/api/search/route'
+import type { SearchHit } from '@/lib/data/customer-search'
 
 /**
  * Layout shell for the record-payment screen.

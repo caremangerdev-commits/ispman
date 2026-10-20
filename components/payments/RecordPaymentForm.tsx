@@ -12,7 +12,7 @@ import {
   loadPaymentContext, recordPayment, type PaymentContext, type PaymentResult,
 } from '@/app/actions/payments'
 import { ReceiptModal } from '@/components/payments/ReceiptModal'
-import type { SearchHit } from '@/app/api/search/route'
+import type { SearchHit } from '@/lib/data/customer-search'
 import { StatusBadge } from '@/components/customers/StatusBadge'
 import {
   amountDue as computeAmountDue, amountDueForMonths, billingPeriod, billingPeriodLabel,

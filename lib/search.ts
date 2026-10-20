@@ -60,7 +60,36 @@ export function searchTokens(query: string): string[] {
  * into a wildcard the cashier did not ask for.
  */
 function pattern(token: string): string {
-  return '%' + token.replace(/[%*,()]/g, '') + '%'
+  return '%' + searchable(token) + '%'
+}
+
+/** A word with the characters `pattern` strips taken out: what is searched for. */
+function searchable(token: string): string {
+  return token.replace(/[%*,()]/g, '')
+}
+
+/**
+ * THE VISIBILITY LIMIT OF A CUSTOMER SEARCH, one rule for every box that
+ * searches: the header search, the role dashboards, the record-payment picker
+ * and the New Ticket picker all go through lib/data/customer-search.ts, which
+ * applies these two.
+ *
+ * A search FINDS someone; it never LISTS everyone. Browsing the whole book is
+ * view_customer_list — the customer list page — and roles without it
+ * (technician, cashier) reach a customer only by typing at least
+ * SEARCH_MIN_CHARS of something that identifies them, and see at most
+ * SEARCH_LIMIT matches, with no paging. The ticket area used to hand a
+ * technician every customer in the company as one dropdown; this is the rule
+ * it now follows instead.
+ *
+ * Counted AFTER the characters `pattern` strips, so "%%" or "**" — which would
+ * otherwise become a match-anything ilike — is not a search.
+ */
+export const SEARCH_MIN_CHARS = 2
+export const SEARCH_LIMIT = 20
+
+export function isSearchQuery(query: string): boolean {
+  return searchTokens(query).map(searchable).join('').length >= SEARCH_MIN_CHARS
 }
 
 /** The digits of `1234` or `#1234`. Null when the word is not an id. */
@@ -189,7 +218,7 @@ export function nameClauses(query: string): string[] {
  */
 export function matchScore(row: SearchableCustomer, query: string): number {
   const tokens = searchTokens(query)
-    .map((t) => t.replace(/[%*,()]/g, '').toLowerCase())
+    .map((t) => searchable(t).toLowerCase())
     .filter(Boolean)
 
   const name = [row.first_name, row.last_name].filter(Boolean).join(' ').toLowerCase()
@@ -268,7 +297,7 @@ export function matchesCustomer(row: SearchableCustomer, query: string): boolean
     if (asId(token) === String(row.id)) return true
     if (macMatches(row.mac_address, token)) return true
 
-    const needle = token.replace(/[%*,()]/g, '').toLowerCase()
+    const needle = searchable(token).toLowerCase()
     return needle ? haystack.some((v) => v.includes(needle)) : true
   })
 }

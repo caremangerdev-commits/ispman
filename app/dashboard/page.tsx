@@ -15,9 +15,10 @@ import {
 } from '@/components/dashboard/RoleDashboards'
 import { AccessDenied } from '@/components/ui/AccessDenied'
 import { StatCard } from '@/components/ui/StatCard'
+import { searchCustomers } from '@/lib/data/customer-search'
 import { getDashboardData } from '@/lib/data/dashboard'
 import {
-  getCashierDashboard, getCsrDashboard, getTechnicianDashboard, searchCustomersLite,
+  getCashierDashboard, getCsrDashboard, getTechnicianDashboard,
 } from '@/lib/data/roleDashboards'
 import { formatCurrency } from '@/lib/format'
 import { skipsDashboard } from '@/lib/home'
@@ -52,7 +53,12 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
   // Roles without KPI access get a task-focused home instead of the full
   // analytics dashboard. Each variant re-checks its own data permissions.
   if (!can(role, 'view_dashboard_kpis')) {
-    const hits = query ? await searchCustomersLite(company.id, query) : []
+    // The same search as the header box, behind the same gate as /api/search,
+    // so a technician finds the same people here as there — and nobody gets a
+    // list out of it (lib/search.ts#isSearchQuery).
+    const hits = query && can(role, 'view_customer_billing_history')
+      ? await searchCustomers(company.id, query)
+      : []
 
     if (role === 'cashier') {
       const data = await getCashierDashboard(company.id, displayName(profile))

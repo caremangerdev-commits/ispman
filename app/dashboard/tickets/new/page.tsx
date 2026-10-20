@@ -4,7 +4,7 @@ import { ArrowLeft } from 'lucide-react'
 
 import { NewTicketForm } from '@/components/tickets/NewTicketForm'
 import { listAgents } from '@/lib/data/checkoff'
-import { listTicketCustomers } from '@/lib/data/tickets'
+import { getSearchHit } from '@/lib/data/customer-search'
 import { requirePermission } from '@/lib/session'
 
 export const metadata: Metadata = { title: 'New Ticket · ISPMan' }
@@ -17,11 +17,15 @@ export default async function NewTicketPage({
   const sp = await searchParams
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v)
   // Pre-selected when arriving from a customer record. Validated server-side by
-  // the action regardless — this only seeds the control.
-  const preset = one(sp.customer) ?? ''
+  // the action regardless — this only seeds the picker.
+  //
+  // ONE customer, by id, as the search would return them — never the book. The
+  // page used to load every customer in the company for a dropdown, which
+  // handed a technician the customer list they are not given anywhere else.
+  const preset = Number(one(sp.customer))
 
-  const [customers, agents] = await Promise.all([
-    listTicketCustomers(company.id),
+  const [presetCustomer, agents] = await Promise.all([
+    getSearchHit(company.id, preset),
     listAgents(company.id),
   ])
 
@@ -35,7 +39,7 @@ export default async function NewTicketPage({
         Back to tickets
       </Link>
 
-      <NewTicketForm customers={customers} agents={agents} presetCustomerId={preset} />
+      <NewTicketForm agents={agents} presetCustomer={presetCustomer} />
     </div>
   )
 }

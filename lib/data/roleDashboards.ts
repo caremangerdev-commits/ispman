@@ -1,6 +1,4 @@
 import { withExpiry } from '@/lib/domain'
-import { getSchemaCapabilities } from '@/lib/schema'
-import { searchClauses } from '@/lib/search'
 import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 import type { Customer, CustomerWithExpiry } from '@/lib/types'
@@ -44,78 +42,9 @@ async function ticketsAssignedTo(companyId: number, userId: number, limit = 8) {
   return (data ?? []) as unknown as MyTicket[]
 }
 
-export type CustomerHit = {
-  id: number
-  name: string
-  phone: string | null
-  /** Shown on a hit, because the search matches on it. */
-  address: string | null
-  /** Migration 0020. Null until applied. */
-  accountNumber: string | null
-  mac_address: string | null
-  /** carried_balance — the only column that carries real debt. */
-  balance: number | string | null
-}
-
-/**
- * Lightweight customer lookup for roles that have no customer-list page.
- *
- * Cashier and technician both lack `view_customer_list`, so their dashboards
- * search inline instead of linking to /dashboard/customers. Returns only
- * identifying fields; callers decide whether to show the balance.
- *
- * Matches on the same fields as everywhere else — see lib/search.ts. This was
- * a THIRD hand-rolled field list, and the one belonging to the role that needs
- * it most: a cashier with no customer-list page has this box and nothing else,
- * and it was the one search that could not find anybody by address.
- */
-export async function searchCustomersLite(
-  companyId: number,
-  query: string,
-  limit = 8
-): Promise<CustomerHit[]> {
-  const caps = await getSchemaCapabilities()
-  const clauses = searchClauses(query, { accountNumbers: caps.accountNumbers })
-  if (clauses.length === 0) return []
-
-  const db = tenantClient()
-  let lookup = db
-    .from('customers')
-    .select(
-      'id, first_name, last_name, phone, address, mac_address, carried_balance' +
-        (caps.accountNumbers ? ', account_number' : '')
-    )
-    .eq('company_id', companyId)
-  for (const clause of clauses) lookup = lookup.or(clause)
-
-  const { data, error } = await lookup.limit(limit)
-
-  if (error) throw new Error('Customer search failed: ' + error.message)
-
-  type Row = {
-    id: number
-    first_name: string | null
-    last_name: string | null
-    phone: string | null
-    address: string | null
-    account_number?: string | null
-    mac_address: string | null
-    carried_balance: number | string | null
-  }
-
-  return ((data ?? []) as unknown as Row[]).map((r) => ({
-    id: r.id,
-    name: [r.first_name, r.last_name].filter(Boolean).join(' ') || 'Unknown',
-    phone: r.phone,
-    address: r.address,
-    accountNumber: r.account_number ?? null,
-    mac_address: r.mac_address,
-    // carried_balance, not balance: see lib/billing.ts. `balance` reads 0 for
-    // everybody who actually owes, so a cashier looking a customer up at the
-    // till was told they owed nothing.
-    balance: r.carried_balance,
-  }))
-}
+// The role dashboards' customer search used to live here as a "lite" copy —
+// unranked, eight rows, no status, and no way through to the record. They now
+// call lib/data/customer-search.ts#searchCustomers, the header box's search.
 
 export type CsrDashboard = {
   myTickets: MyTicket[]

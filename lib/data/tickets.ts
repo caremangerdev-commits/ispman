@@ -1,4 +1,3 @@
-import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 import type { TicketPriority, TicketStatus } from '@/lib/tickets'
 
@@ -127,42 +126,11 @@ export async function getTicket(companyId: number, id: number): Promise<TicketDe
   return withAssignee
 }
 
-/** Customers for the create form's picker. */
-export type TicketCustomerOption = {
-  id: number
-  first_name: string | null
-  last_name: string | null
-}
-
-/**
- * Every customer in the company, alphabetically, for the New Ticket picker.
- *
- * PAGED. This used to be one unranged select, which PostgREST silently cut at
- * 1000 rows — ordered by first name, so at any company past 1000 customers
- * everyone late in the alphabet was missing. A ticket started from such a
- * customer's record (?customer=<id>) found no option to pre-select and came up
- * blank, and they could not be picked by hand either: Ezmze's YANESHA YONIQUE
- * WALTERS, 14 Oct 2026, with Vernon and Smartcomm Bogue past 1000 as well.
- *
- * Paged by id (fetchAllRows needs a stable order), then sorted by name here.
- */
-export async function listTicketCustomers(companyId: number): Promise<TicketCustomerOption[]> {
-  const db = tenantClient()
-  const rows = (await fetchAllRows(
-    (from, to) =>
-      db
-        .from('customers')
-        .select('id, first_name, last_name')
-        .eq('company_id', companyId)
-        .order('id', { ascending: true })
-        .range(from, to),
-    'customers'
-  )) as TicketCustomerOption[]
-
-  const key = (c: TicketCustomerOption) =>
-    ((c.first_name ?? '') + ' ' + (c.last_name ?? '')).trim().toLowerCase()
-  return rows.sort((a, b) => key(a).localeCompare(key(b)) || a.id - b.id)
-}
+// The New Ticket picker used to be fed from here: every customer in the
+// company, paged past PostgREST's 1000-row cut. That was the customer list by
+// another door, open to every role including technician. The picker now
+// searches (components/tickets/TicketCustomerPicker.tsx, through /api/search),
+// and a preset customer is one row from lib/data/customer-search.ts#getSearchHit.
 
 // ---------------------------------------------------------------------------
 // Ticket messages — the conversation (migration 0037, ticket_messages).
