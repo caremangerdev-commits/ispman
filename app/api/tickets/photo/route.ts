@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
-import { downloadTicketPhoto } from '@/lib/data/portal-tickets'
+import { downloadTicketPhoto, parseTicketPhotoPath } from '@/lib/data/portal-tickets'
 import { can } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
 
@@ -16,8 +16,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Forbidden.' }, { status: 403 })
   }
 
+  // Parsed whole, not prefix-checked: see parseTicketPhotoPath for the ".."
+  // walk a prefix check let through.
   const path = request.nextUrl.searchParams.get('path') ?? ''
-  if (!path.startsWith('tickets/' + company.id + '/')) {
+  const parsed = parseTicketPhotoPath(path)
+  if (!parsed || parsed.companyId !== company.id) {
     return NextResponse.json({ error: 'Not found.' }, { status: 404 })
   }
 

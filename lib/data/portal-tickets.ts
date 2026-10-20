@@ -122,13 +122,16 @@ const EXT: Record<string, string> = {
   'image/heic': 'heic',
 }
 
+/** What a photo of any other image type is saved as. */
+const FALLBACK_EXT = 'bin'
+
 /** Uploads one photo for a ticket, returns its storage path. Throws on failure. */
 export async function uploadTicketPhoto(
   companyId: number,
   ticketId: number,
   file: File
 ): Promise<string> {
-  const ext = EXT[file.type] ?? 'bin'
+  const ext = EXT[file.type] ?? FALLBACK_EXT
   const path = 'tickets/' + companyId + '/' + ticketId + '/' + randomUUID() + '.' + ext
   const bytes = new Uint8Array(await file.arrayBuffer())
   const { error } = await tenantClient()
@@ -138,10 +141,44 @@ export async function uploadTicketPhoto(
   return path
 }
 
-/** Downloads a ticket photo (service role), for a scoped serving route. */
+/**
+ * The one reader of a ticket photo path: exactly what uploadTicketPhoto writes,
+ * tickets/<companyId>/<ticketId>/<uuid>.<ext>, and nothing else. Null for
+ * anything that is not that shape.
+ *
+ * WHY IT IS STRICT. Both serving routes used to check only that the path
+ * STARTED with tickets/<their company>/ and then handed the rest to storage
+ * with the service role. A path is joined into the storage URL, and URL
+ * parsing resolves "..", so tickets/5/12/../../../7/logo.png passed the prefix
+ * check and fetched another company's file — or, with more "..", an object in
+ * any bucket. Parsing the whole path means the prefix the routes check is the
+ * prefix that is read.
+ */
+export function parseTicketPhotoPath(path: string): { companyId: number; ticketId: number } | null {
+  const parts = path.split('/')
+  if (parts.length !== 4 || parts[0] !== 'tickets') return null
+  const [, company, ticket, file] = parts
+  if (!/^[0-9]{1,15}$/.test(company) || !/^[0-9]{1,15}$/.test(ticket)) return null
+
+  const dot = file.lastIndexOf('.')
+  if (dot < 0) return null
+  const name = file.slice(0, dot)
+  const ext = file.slice(dot + 1)
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(name)) return null
+  if (ext !== FALLBACK_EXT && !Object.values(EXT).includes(ext)) return null
+
+  return { companyId: Number(company), ticketId: Number(ticket) }
+}
+
+/**
+ * Downloads a ticket photo (service role), for a scoped serving route. Refuses
+ * any path parseTicketPhotoPath does not accept, so a route that forgets to
+ * parse still cannot be walked out of the ticket folder.
+ */
 export async function downloadTicketPhoto(
   path: string
 ): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  if (!parseTicketPhotoPath(path)) return null
   const { data, error } = await tenantClient().storage.from(BUCKET).download(path)
   if (error || !data) return null
   const type = Object.entries(EXT).find(([, e]) => path.endsWith('.' + e))?.[0] ?? 'application/octet-stream'

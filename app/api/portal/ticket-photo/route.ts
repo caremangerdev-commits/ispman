@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
-import { downloadTicketPhoto, ticketBelongsToCustomer } from '@/lib/data/portal-tickets'
+import { downloadTicketPhoto, parseTicketPhotoPath, ticketBelongsToCustomer } from '@/lib/data/portal-tickets'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPortalSession } from '@/lib/portal/session'
 
@@ -18,13 +18,14 @@ export async function GET(request: NextRequest) {
   const session = await getPortalSession(company.id)
   if (!session) return NextResponse.json({ error: 'Sign in first.' }, { status: 401 })
 
+  // Parsed whole, not prefix-checked: see parseTicketPhotoPath for the ".."
+  // walk a prefix check let through.
   const path = request.nextUrl.searchParams.get('path') ?? ''
-  const prefix = 'tickets/' + company.id + '/'
-  if (!path.startsWith(prefix)) return NextResponse.json({ error: 'Not found.' }, { status: 404 })
-
-  const ticketId = Number(path.slice(prefix.length).split('/')[0])
-  if (!Number.isInteger(ticketId)) return NextResponse.json({ error: 'Not found.' }, { status: 404 })
-  if (!(await ticketBelongsToCustomer(company.id, session.customerId, ticketId))) {
+  const parsed = parseTicketPhotoPath(path)
+  if (!parsed || parsed.companyId !== company.id) {
+    return NextResponse.json({ error: 'Not found.' }, { status: 404 })
+  }
+  if (!(await ticketBelongsToCustomer(company.id, session.customerId, parsed.ticketId))) {
     return NextResponse.json({ error: 'Not found.' }, { status: 404 })
   }
 
