@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { downloadTicketPhoto, parseTicketPhotoPath, ticketBelongsToCustomer } from '@/lib/data/portal-tickets'
+import { photoIsCustomerVisible } from '@/lib/data/tickets'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPortalSession } from '@/lib/portal/session'
 
@@ -26,6 +27,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Not found.' }, { status: 404 })
   }
   if (!(await ticketBelongsToCustomer(company.id, session.customerId, parsed.ticketId))) {
+    return NextResponse.json({ error: 'Not found.' }, { status: 404 })
+  }
+  // Their ticket, but a photo staff attached to an internal note is not theirs
+  // to see, even by its path.
+  if (!(await photoIsCustomerVisible(company.id, path))) {
     return NextResponse.json({ error: 'Not found.' }, { status: 404 })
   }
 

@@ -14,8 +14,10 @@ import { getSession } from '@/lib/session'
  *   ?month=YYYY-MM                       that calendar month
  *   ?payment=ID                          a Receipt for that payment
  *
- * Gated on seeing a customer's billing history. The company is the session's;
- * the customer id from the path is only ever looked up inside it.
+ * Gated on seeing a customer's money (view_customer_billing_history), which a
+ * technician does not hold: the record hides these links from them, and this
+ * refuses the URL typed by hand. The company is the session's; the customer id
+ * from the path is only ever looked up inside it.
  */
 export const dynamic = 'force-dynamic'
 

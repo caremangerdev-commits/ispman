@@ -15,7 +15,7 @@ import {
 } from '@/components/dashboard/RoleDashboards'
 import { AccessDenied } from '@/components/ui/AccessDenied'
 import { StatCard } from '@/components/ui/StatCard'
-import { searchCustomers } from '@/lib/data/customer-search'
+import { searchCustomers, toCustomerHit } from '@/lib/data/customer-search'
 import { getDashboardData } from '@/lib/data/dashboard'
 import {
   getCashierDashboard, getCsrDashboard, getTechnicianDashboard,
@@ -56,7 +56,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
     // The same search as the header box, behind the same gate as /api/search,
     // so a technician finds the same people here as there — and nobody gets a
     // list out of it (lib/search.ts#isSearchQuery).
-    const hits = query && can(role, 'view_customer_billing_history')
+    const hits = query && can(role, 'view_customer')
       ? await searchCustomers(company.id, query)
       : []
 
@@ -75,7 +75,8 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
       return (
         <div className="space-y-4">
           {banner}
-          <TechnicianDashboard data={data} query={query} hits={hits} />
+          {/* No money in a technician's hits, not just none drawn. */}
+          <TechnicianDashboard data={data} query={query} hits={hits.map(toCustomerHit)} />
         </div>
       )
     }

@@ -385,26 +385,40 @@ export async function getDashboardData(companyId: number): Promise<DashboardData
   }
 }
 
+/**
+ * The bell notifications that name a customer's money: "<name> paid J$… online"
+ * (lib/data/payment-gateways.ts). Left out of the bell — the list, the unread
+ * count, and what Mark all read touches — for a role without
+ * view_customer_billing_history.
+ */
+export const MONEY_NOTIFICATION_TYPES = ['payment']
+
 /** Navbar bell: the 5 newest notifications plus the unread count. */
 export async function getNotifications(
-  companyId: number
+  companyId: number,
+  opts: { money: boolean }
 ): Promise<{ items: NotificationRow[]; unread: number }> {
   // Reads go through the tenant client and are scoped by companyId — see the
   // RLS note in lib/supabase/tenant.ts.
   const supabase = tenantClient()
 
+  let list = supabase
+    .from('notifications_queue')
+    .select('id, type, message, status, created_at')
+    .eq('company_id', companyId)
+  let count = supabase
+    .from('notifications_queue')
+    .select('id', { count: 'exact', head: true })
+    .eq('company_id', companyId)
+    .eq('status', 'pending')
+  if (!opts.money) {
+    list = list.not('type', 'in', '(' + MONEY_NOTIFICATION_TYPES.join(',') + ')')
+    count = count.not('type', 'in', '(' + MONEY_NOTIFICATION_TYPES.join(',') + ')')
+  }
+
   const [listRes, countRes] = await Promise.all([
-    supabase
-      .from('notifications_queue')
-      .select('id, type, message, status, created_at')
-      .eq('company_id', companyId)
-      .order('created_at', { ascending: false })
-      .limit(5),
-    supabase
-      .from('notifications_queue')
-      .select('id', { count: 'exact', head: true })
-      .eq('company_id', companyId)
-      .eq('status', 'pending'),
+    list.order('created_at', { ascending: false }).limit(5),
+    count,
   ])
 
   if (listRes.error) throw new Error('Failed to load notifications: ' + listRes.error.message)

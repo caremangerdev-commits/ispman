@@ -3,7 +3,7 @@ import { Receipt, Search, Users, Wifi } from 'lucide-react'
 
 import { CustomerHitCard } from '@/components/customers/CustomerHitCard'
 import { EmptyState, Panel } from '@/components/dashboard/Panel'
-import type { SearchHit } from '@/lib/data/customer-search'
+import type { CustomerHit, SearchHit } from '@/lib/data/customer-search'
 import { formatCurrency, formatRelativeDate, fullName, timeAgo } from '@/lib/format'
 import type {
   CashierDashboard as CashierData,
@@ -82,10 +82,14 @@ function SearchForm({ defaultValue, placeholder }: { defaultValue: string; place
 /**
  * The header search's result card, opening the record on click — the same
  * thing that happens when the same customer is picked from the header box.
- * Every role that lands here holds view_customer_billing_history, which is
- * what the record page asks for.
+ * Every role that lands here holds view_customer, which is what the record
+ * page asks for.
+ *
+ * The balance is drawn when the hit carries one, and only a SearchHit does: a
+ * technician's hits are CustomerHits (lib/data/customer-search.ts), with no
+ * balance in them to draw.
  */
-function HitList({ hits, showBalance }: { hits: SearchHit[]; showBalance: boolean }) {
+function HitList({ hits }: { hits: (CustomerHit | SearchHit)[] }) {
   if (hits.length === 0) return <EmptyState message="No customers matched that search." />
   return (
     <ul className="divide-y divide-gray-800">
@@ -100,7 +104,7 @@ function HitList({ hits, showBalance }: { hits: SearchHit[]; showBalance: boolea
               aside={
                 // carried_balance, not balance: see lib/billing.ts. `balance`
                 // reads 0 for everybody who actually owes.
-                showBalance ? (
+                'carried_balance' in h ? (
                   <span className={'shrink-0 text-sm tabular-nums ' + (h.carried_balance > 0 ? 'text-orange-400' : 'text-gray-400')}>
                     {formatCurrency(h.carried_balance)}
                   </span>
@@ -143,7 +147,7 @@ export function CsrDashboard({
 
       {query ? (
         <Panel title="Search Results" subtitle={hits.length + ' found'} href={'/dashboard/customers?q=' + encodeURIComponent(query)} linkLabel="Open in full list">
-          <HitList hits={hits} showBalance />
+          <HitList hits={hits} />
         </Panel>
       ) : null}
 
@@ -192,7 +196,7 @@ export function CashierDashboard({
 
       {query ? (
         <Panel title="Search Results" subtitle={hits.length + ' found'}>
-          <HitList hits={hits} showBalance />
+          <HitList hits={hits} />
         </Panel>
       ) : null}
 
@@ -254,7 +258,8 @@ export function TechnicianDashboard({
 }: {
   data: TechData
   query: string
-  hits: SearchHit[]
+  /** CustomerHit, not SearchHit: a technician is sent no customer's money. */
+  hits: CustomerHit[]
 }) {
   return (
     <div className="space-y-5">
@@ -266,8 +271,7 @@ export function TechnicianDashboard({
 
       {query ? (
         <Panel title="Search Results" subtitle={hits.length + ' found'}>
-          {/* showBalance deliberately false: technicians see no billing data. */}
-          <HitList hits={hits} showBalance={false} />
+          <HitList hits={hits} />
         </Panel>
       ) : null}
 

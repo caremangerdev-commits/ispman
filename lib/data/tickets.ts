@@ -1,3 +1,4 @@
+import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 import type { TicketPriority, TicketStatus } from '@/lib/tickets'
 
@@ -140,8 +141,12 @@ export type TicketMessage = {
   id: number
   author: 'customer' | 'staff'
   authorName: string | null
+  /** The staff user who wrote it; null for a customer's message. */
+  authorUserId: number | null
   body: string | null
   photoPath: string | null
+  /** A staff-only note (migration 0041). Never in a customer's thread. */
+  internal: boolean
   createdAt: string
 }
 
@@ -149,19 +154,38 @@ type MessageRow = {
   id: number
   author: string
   author_name: string | null
+  author_user_id: number | null
   body: string | null
   photo_path: string | null
+  internal?: boolean | null
   created_at: string
 }
 
-/** Every message on a ticket, oldest first. Empty if 0037 is not applied. */
-export async function listTicketMessages(companyId: number, ticketId: number): Promise<TicketMessage[]> {
-  const { data, error } = await tenantClient()
+/**
+ * Every message on a ticket, oldest first. Empty if 0037 is not applied.
+ *
+ * `audience` IS REQUIRED, so nobody reads a thread without saying who it is
+ * for. 'customer' — the portal — never gets an internal note: they are
+ * filtered in the query, not after it. Before 0041 there is no internal column
+ * and no internal note can exist, so both audiences read the same thread.
+ */
+export async function listTicketMessages(
+  companyId: number,
+  ticketId: number,
+  audience: 'staff' | 'customer'
+): Promise<TicketMessage[]> {
+  const caps = await getSchemaCapabilities()
+  let query = tenantClient()
     .from('ticket_messages')
-    .select('id, author, author_name, body, photo_path, created_at')
+    .select(
+      'id, author, author_name, author_user_id, body, photo_path, created_at' +
+        (caps.ticketNotes ? ', internal' : '')
+    )
     .eq('company_id', companyId)
     .eq('ticket_id', ticketId)
-    .order('created_at', { ascending: true })
+  if (caps.ticketNotes && audience === 'customer') query = query.eq('internal', false)
+
+  const { data, error } = await query.order('created_at', { ascending: true })
 
   if (error) {
     if (error.code === 'PGRST205' || error.code === '42P01') return []
@@ -171,13 +195,39 @@ export async function listTicketMessages(companyId: number, ticketId: number): P
     id: m.id,
     author: m.author === 'staff' ? 'staff' : 'customer',
     authorName: m.author_name,
+    authorUserId: m.author_user_id,
     body: m.body,
     photoPath: m.photo_path,
+    internal: Boolean(m.internal),
     createdAt: m.created_at,
   }))
 }
 
-/** Appends one message to a ticket. */
+/**
+ * Whether a stored photo belongs to a message the customer can see — the
+ * portal's photo route asks this, so a photo attached to an internal note is
+ * not served to them even by its path.
+ */
+export async function photoIsCustomerVisible(companyId: number, path: string): Promise<boolean> {
+  const caps = await getSchemaCapabilities()
+  let query = tenantClient()
+    .from('ticket_messages')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('photo_path', path)
+  if (caps.ticketNotes) query = query.eq('internal', false)
+  const { data } = await query.limit(1)
+  return (data ?? []).length > 0
+}
+
+/**
+ * Appends one message to a ticket.
+ *
+ * An internal note is written with internal = true and fails outright before
+ * 0041 rather than landing as an ordinary message — which the customer would
+ * then read. Callers offer notes only when the capability says the column is
+ * there.
+ */
 export async function addTicketMessage(input: {
   companyId: number
   ticketId: number
@@ -186,8 +236,9 @@ export async function addTicketMessage(input: {
   authorName: string | null
   body: string | null
   photoPath: string | null
+  internal?: boolean
 }): Promise<void> {
-  const { error } = await tenantClient().from('ticket_messages').insert({
+  const row: Record<string, unknown> = {
     company_id: input.companyId,
     ticket_id: input.ticketId,
     author: input.author,
@@ -195,7 +246,9 @@ export async function addTicketMessage(input: {
     author_name: input.authorName,
     body: input.body,
     photo_path: input.photoPath,
-  })
+  }
+  if (input.internal) row.internal = true
+  const { error } = await tenantClient().from('ticket_messages').insert(row)
   if (error) throw new Error('Could not post ticket message: ' + error.message)
 }
 

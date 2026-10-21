@@ -55,10 +55,13 @@ export function toTicketStatus(value: string | null | undefined): TicketStatus {
   return TICKET_STATUSES.includes(value as TicketStatus) ? (value as TicketStatus) : 'open'
 }
 
+/** What a ticket opens at when nobody chose — the portal's, and a technician's. */
+export const DEFAULT_TICKET_PRIORITY: TicketPriority = 'medium'
+
 export function toTicketPriority(value: string | null | undefined): TicketPriority {
   return TICKET_PRIORITIES.includes(value as TicketPriority)
     ? (value as TicketPriority)
-    : 'medium'
+    : DEFAULT_TICKET_PRIORITY
 }
 
 /** Label for a status that may be a legacy value this list no longer carries. */

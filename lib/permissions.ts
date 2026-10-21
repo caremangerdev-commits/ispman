@@ -9,6 +9,7 @@ export type Role =
 export type Permission =
   | 'view_dashboard_kpis'
   | 'view_customer_list'
+  | 'view_customer'
   | 'view_customer_billing_history'
   | 'view_customer_tech_info'
   | 'add_customer'
@@ -30,9 +31,11 @@ export type Permission =
   | 'view_revenue_reports'
   | 'view_support_tickets'
   | 'create_ticket'
+  | 'reply_ticket'
   | 'edit_ticket'
   | 'assign_ticket'
   | 'resolve_ticket'
+  | 'resolve_any_ticket'
   | 'reopen_ticket'
   | 'view_network_infrastructure'
   | 'view_nas_management'
@@ -53,7 +56,29 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // supabase/migrations/0040_customers_browse_rls.sql, which stops the others
   // reading customers directly from the database; change both together.
   view_customer_list: ['super_admin', 'company_admin', 'manager', 'csr'],
-  view_customer_billing_history: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  // Opening ONE customer's record, and finding them by search to get there:
+  // who they are, where they are, how they connect, and whether their service
+  // is on and until when. Every role. It is what /api/search and the customer
+  // record page ask for. It carries NO money — that is the next permission.
+  view_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  // A CUSTOMER'S MONEY, every form of it: their balance and credit, their rate
+  // and the prices on their plan and add-ons, their bill day and last bill,
+  // one-off charges, their payment history, and their statement and bill PDFs.
+  // Also the "paid online" bell notifications, which name an amount.
+  //
+  // TECHNICIAN REMOVED (owner, 21 Oct 2026). A technician is sent out when
+  // someone is off, so they keep the service state — active or not, and
+  // "expired on 5 Nov" — through view_customer above. What the customer owes
+  // is a call to the office, not a number on their screen. This used to be
+  // the gate on the record page and the search as well, which is why every
+  // role held it; those now ask for view_customer, and this one means money
+  // alone. Without it the money is not merely hidden: the server never loads
+  // it, and never sends it to the browser (/api/search strips it from hits).
+  //
+  // Directly from the database, payments and the other money tables are
+  // readable by a narrower list still — see
+  // supabase/migrations/0041_money_and_ticket_rls.sql.
+  view_customer_billing_history: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
   view_customer_tech_info: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
   add_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
   edit_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
@@ -87,7 +112,13 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // owe — the same authority as adjusting the carried balance, for the same
   // reason. Anyone who may record a payment may TAKE money against a charge.
   manage_charges: ['super_admin', 'company_admin', 'manager'],
-  record_payment: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  // TECHNICIAN REMOVED (owner, 21 Oct 2026), with view_customer_billing_history
+  // and for the same reason: taking a payment shows what the customer owes, and
+  // the screen leads with the taker's own collections and totals. Every role
+  // left here also holds view_customer_billing_history, and must — the payment
+  // form is built from a customer's balance. A technician who collects cash in
+  // the field needs a role that may see money.
+  record_payment: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
   // The whole payments book — every payment the company has ever taken, by
   // anyone. NARROWED FROM csr AND cashier, who used to hold this.
   //
@@ -107,6 +138,11 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // are deliberately not merged: this one means "may read the payments book",
   // that one means "may see aggregate revenue". Handing a CSR the list back
   // should not also hand them revenue reporting.
+  //
+  // THE SAME ROLE LIST is written into
+  // supabase/migrations/0041_money_and_ticket_rls.sql: the roles that may read
+  // payments and the other money tables directly from the database. Change both
+  // together.
   view_all_payments: ['super_admin', 'company_admin', 'manager'],
   // Correcting a recorded payment is a management action: a cashier may take a
   // payment but may not go back and restate one.
@@ -136,15 +172,37 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // record, so excluding them from the dashboard panel only made the two
   // surfaces disagree.
   view_support_tickets: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
-  // Every role raises, edits, assigns and resolves. Support work is not
-  // rank-gated here the way money is: whoever takes the call owns the
-  // ticket. Reopen is named separately from resolve so undoing a colleague's
-  // resolution can be narrowed later without touching the other three.
+  // A TECHNICIAN DOES THEIR OWN WORK; SOMEONE ELSE DECIDES WHO DOES WHAT
+  // (owner, 21 Oct 2026). The office roles raise, reword, reprioritise, assign,
+  // resolve and reopen any ticket. A technician opens tickets, talks on them —
+  // replies, internal notes, photos — and resolves the ones assigned to them.
+  // Every rule that depends on WHICH ticket (is it theirs?) is in
+  // lib/ticket-rules.ts, read by the actions and the page alike.
+  //
+  // Opening a ticket. A technician's lands at the default priority, assigned
+  // to them or to nobody: choosing someone else, or a priority, is
+  // assign_ticket and edit_ticket below, checked in createTicket.
   create_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
-  edit_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
-  assign_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  // Adding to the conversation: a reply to the customer, an internal note, a
+  // photo. Any ticket the role can see — a note on a ticket that is not yours
+  // is how the person it is assigned to finds out what you saw.
+  reply_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  // Deciding what a ticket IS: its title, description and priority, after it is
+  // opened or while opening it. The description is the opener's own words, so
+  // a technician adds a note instead of rewriting it.
+  //
+  // THIS ROLE LIST is also the one 0041_money_and_ticket_rls.sql lets write
+  // support_tickets and ticket_messages directly. Change both together.
+  edit_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
+  // Deciding who works it — anyone other than yourself, at any point.
+  assign_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
+  // Resolving a ticket assigned to YOU. The app has one finished state,
+  // Resolved; "work done" is that.
   resolve_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
-  reopen_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  // Resolving a ticket assigned to somebody else, or to nobody.
+  resolve_any_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
+  // Putting a resolved ticket back into play overrides whoever resolved it.
+  reopen_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
   view_network_infrastructure: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
   view_nas_management: ['super_admin', 'company_admin', 'manager'],
   // Manager included: they run the team day to day. The guardrails that matter

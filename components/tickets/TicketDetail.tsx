@@ -15,7 +15,8 @@ import type { AgentOption } from '@/lib/data/checkoff'
 import type { TicketDetail as TicketDetailRow } from '@/lib/data/tickets'
 import { fullName } from '@/lib/format'
 import { hasGps } from '@/lib/gps'
-import { can, type Role } from '@/lib/permissions'
+import type { Role } from '@/lib/permissions'
+import { ticketRights } from '@/lib/ticket-rules'
 import {
   TICKET_PRIORITIES, TICKET_PRIORITY_LABELS, toTicketStatus,
 } from '@/lib/tickets'
@@ -75,10 +76,13 @@ export function TicketDetail({
   ticket,
   agents,
   role,
+  userId,
 }: {
   ticket: TicketDetailRow
   agents: AgentOption[]
   role: Role
+  /** The signed-in user, for "is this ticket theirs". */
+  userId: number
 }) {
   const [editing, setEditing] = useState(false)
   const [resolving, setResolving] = useState(false)
@@ -102,10 +106,14 @@ export function TicketDetail({
   const customerGps = ticket.customers ? ticket.customers.gps : null
   const offerLocation = ticket.customer_id !== null && !hasGps(customerGps)
 
-  const mayEdit = can(role, 'edit_ticket')
-  const mayAssign = can(role, 'assign_ticket')
-  const mayResolve = can(role, 'resolve_ticket')
-  const mayReopen = can(role, 'reopen_ticket')
+  // The same answer the actions get — lib/ticket-rules.ts — so nothing is
+  // offered here that the server would refuse. A technician sees Resolve only
+  // on a ticket assigned to them, and none of Edit, Assign or Reopen.
+  const rights = ticketRights(role, userId, ticket)
+  const mayEdit = rights.edit
+  const mayAssign = rights.assign
+  const mayResolve = rights.resolve
+  const mayReopen = rights.reopen
 
   const assigneeName = ticket.assignee
     ? [ticket.assignee.first_name, ticket.assignee.last_name].filter(Boolean).join(' ') ||
@@ -184,6 +192,8 @@ export function TicketDetail({
             <p role="alert" className="mt-1 text-xs text-red-400">
               {resolveErrors.resolution_notes}
             </p>
+          ) : resolveState && !resolveState.ok ? (
+            <p role="alert" className="mt-1 text-xs text-red-400">{resolveState.error}</p>
           ) : null}
 
           {/* Optional, and it says so. Leaving it blank resolves the ticket
@@ -357,6 +367,12 @@ export function TicketDetail({
                     className="shrink-0 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-500"
                   />
                 </form>
+              ) : !rights.resolve && status !== 'resolved' ? (
+                // Said once, here, rather than leaving a technician to wonder
+                // where the Resolve button went on somebody else's ticket.
+                <p className="mt-2 text-[11px] leading-snug text-gray-500">
+                  Only the person it is assigned to, or the office, can resolve it.
+                </p>
               ) : null}
             </div>
           </Card>

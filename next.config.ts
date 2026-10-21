@@ -21,6 +21,18 @@ const nextConfig: NextConfig = {
    * package external makes the server require it from node_modules as-is.
    */
   serverExternalPackages: ["mysql2"],
+  experimental: {
+    serverActions: {
+      /**
+       * A ticket photo is posted through a server action — by a customer from
+       * the portal, and by staff on the ticket page — and both accept one of up
+       * to 4 MB (lib/data/portal-tickets.ts#readTicketPhoto). The framework's
+       * default cap is 1 MB, which refused most phone photos before that check
+       * ever ran. 5 MB leaves room for the multipart overhead.
+       */
+      bodySizeLimit: "5mb",
+    },
+  },
 };
 
 export default nextConfig;

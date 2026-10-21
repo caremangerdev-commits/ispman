@@ -7,8 +7,10 @@ import { useFormStatus } from 'react-dom'
 import { createTicket, type ActionResult } from '@/app/actions/tickets'
 import { TicketCustomerPicker } from '@/components/tickets/TicketCustomerPicker'
 import type { AgentOption } from '@/lib/data/checkoff'
-import type { SearchHit } from '@/lib/data/customer-search'
-import { TICKET_PRIORITIES, TICKET_PRIORITY_LABELS } from '@/lib/tickets'
+import type { CustomerHit } from '@/lib/data/customer-search'
+import {
+  DEFAULT_TICKET_PRIORITY, TICKET_PRIORITIES, TICKET_PRIORITY_LABELS,
+} from '@/lib/tickets'
 
 const inputBase =
   'w-full rounded-lg border bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 outline-none transition focus:ring-2'
@@ -57,10 +59,20 @@ function SaveButton() {
 export function NewTicketForm({
   agents,
   presetCustomer,
+  self,
+  mayAssign,
+  maySetPriority,
 }: {
+  /** Everyone a ticket can go to. Empty when the role may not assign. */
   agents: AgentOption[]
   /** From ?customer= on the customer record's New Ticket button. */
-  presetCustomer: SearchHit | null
+  presetCustomer: CustomerHit | null
+  /** The signed-in user, offered as "Me" to a role that may not assign. */
+  self: { id: number; name: string }
+  /** assign_ticket: may put anyone on it. Without it, themselves or nobody. */
+  mayAssign: boolean
+  /** edit_ticket: may choose the priority. Without it, the default. */
+  maySetPriority: boolean
 }) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(createTicket, null)
 
@@ -119,24 +131,32 @@ export function NewTicketForm({
         </Field>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Priority" htmlFor="priority">
-            <select
-              id="priority"
-              name="priority"
-              defaultValue={v('priority') || 'medium'}
-              className={cls('priority')}
-            >
-              {TICKET_PRIORITIES.map((p) => (
-                <option key={p} value={p}>{TICKET_PRIORITY_LABELS[p]}</option>
-              ))}
-            </select>
-          </Field>
+          {/* Without edit_ticket nothing is posted and the ticket opens at the
+              default; createTicket refuses a priority from such a role. */}
+          {maySetPriority ? (
+            <Field label="Priority" htmlFor="priority">
+              <select
+                id="priority"
+                name="priority"
+                defaultValue={v('priority') || DEFAULT_TICKET_PRIORITY}
+                className={cls('priority')}
+              >
+                {TICKET_PRIORITIES.map((p) => (
+                  <option key={p} value={p}>{TICKET_PRIORITY_LABELS[p]}</option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <Field label="Priority" hint="The office sets the priority.">
+              <p className="py-2 text-sm text-gray-300">{TICKET_PRIORITY_LABELS[DEFAULT_TICKET_PRIORITY]}</p>
+            </Field>
+          )}
 
           <Field
             label="Assign To"
             htmlFor="assigned_to"
             error={errors.assigned_to}
-            hint="Optional — can be assigned later."
+            hint={mayAssign ? 'Optional — can be assigned later.' : 'Take it yourself, or leave it for the office to assign.'}
           >
             <select
               id="assigned_to"
@@ -145,9 +165,11 @@ export function NewTicketForm({
               className={cls('assigned_to')}
             >
               <option value="">Unassigned</option>
-              {agents.map((a) => (
-                <option key={a.id} value={a.id}>{a.name}</option>
-              ))}
+              {mayAssign
+                ? agents.map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))
+                : <option value={self.id}>Me ({self.name})</option>}
             </select>
           </Field>
         </div>

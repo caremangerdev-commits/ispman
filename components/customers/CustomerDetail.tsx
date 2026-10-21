@@ -36,7 +36,7 @@ import {
   CONNECTION_TYPES, CONNECTION_TYPE_LABELS, CUSTOMER_CATEGORIES,
   CUSTOMER_CATEGORY_LABELS, CUSTOMER_TYPES, CUSTOMER_TYPE_LABELS, describePlan,
   EXPIRY_MODES, EXPIRY_MODE_HELP, EXPIRY_MODE_LABELS,
-  type AdditionalService, type ConnectionType, type CustomerCategory,
+  type AddonOption, type ConnectionType, type CustomerCategory,
   type CustomerType, type ExpiryMode, type MiscCategory, type ServicePlan,
 } from '@/lib/types'
 import {
@@ -54,10 +54,7 @@ export type DetailCustomer = {
   address: string | null
   gps: string | null
   mac_address: string | null
-  monthly_rate: number | string | null
-  balance: number | string | null
   cut_off_date: number | null
-  last_bill_date: string | null
   /** migration 0019. The value; the LABEL comes from taxIdLabel below. */
   taxId: string | null
   taxIdAvailable: boolean
@@ -75,16 +72,7 @@ export type DetailCustomer = {
   emailOptedOut: boolean
   /** migration 0011 */
   billingAvailable: boolean
-  bill_date: number | null
-  carried_balance: number
-  /** Money held for the next charge (migration 0011). 0 when there is none. */
-  account_credit?: number
-  last_billed_date: string | null
-  /** The engine's latest charge for this customer (migration 0024), or null. */
-  lastCharge: { chargedOn: string; periodStart: string; periodEnd: string } | null
   date_added: string | null
-  expiresAtIso: string | null
-  daysUntilExpiry: number | null
   /** migration 0003 */
   customerType: CustomerType | null
   pppoeUsername: string | null
@@ -111,13 +99,40 @@ export type DetailCustomer = {
   miscCategoryId: number | null
   miscCategoryName: string | null
   servicePlanId: number | null
+  /** Name and speeds only. Its price is the customer's money — see DetailMoney. */
   servicePlan: {
     id: number
     name: string
     speed_down_mbps: number
     speed_up_mbps: number
-    monthly_price: number | string
   } | null
+}
+
+/**
+ * A CUSTOMER'S MONEY, kept out of DetailCustomer so it can be left out whole.
+ *
+ * Null for a role without view_customer_billing_history (a technician): the
+ * page does not load it and does not build this, so none of it is in the
+ * props a client component sends to the browser — hiding a row would still
+ * have shipped the figure in the page payload, readable in devtools.
+ */
+export type DetailMoney = {
+  monthly_rate: number | string | null
+  balance: number | string | null
+  carried_balance: number
+  /** Money held for the next charge (migration 0011). 0 when there is none. */
+  account_credit?: number
+  bill_date: number | null
+  last_billed_date: string | null
+  /** The engine's latest charge for this customer (migration 0024), or null. */
+  lastCharge: { chargedOn: string; periodStart: string; periodEnd: string } | null
+  /** The last hand-adjustment of the carried balance, or null if never. */
+  balanceAdjustment: BalanceAdjustment | null
+  /** What a delete would destroy, so the confirmation can name it rather than
+   *  describe it. Payments only: they are the irreplaceable part and the only
+   *  count this page holds in full. */
+  paymentCount: number
+  paymentsValue: number
 }
 
 const inputCls =
@@ -239,35 +254,35 @@ type BalanceAdjustment = { at: string; details: string }
 
 export function CustomerDetail({
   customer,
+  money,
   radius,
   role,
   servicePlans,
   additionalServices,
   miscCategories,
   selectedAddonIds,
-  balanceAdjustment,
-  paymentCount,
-  paymentsValue,
   provisionPlan,
 }: {
   customer: DetailCustomer
+  /** Null when the role may not see the customer's money. */
+  money: DetailMoney | null
   radius: RadiusStatus
   role: Role
+  /** The plan catalogue, for the edit select. Empty without `money`: choosing a
+   *  plan sets the rate, and that is the office's call. */
   servicePlans: ServicePlan[]
-  additionalServices: AdditionalService[]
+  /** Priced alongside `money`; without it, the customer's active add-ons by
+   *  name only (lib/types.ts#withoutPrice). */
+  additionalServices: AddonOption[]
   miscCategories: MiscCategory[]
   selectedAddonIds: number[]
-  /** The last hand-adjustment of the carried balance, or null if never. */
-  balanceAdjustment?: BalanceAdjustment | null
-  /** What a delete would destroy, so the confirmation can name it rather than
-   *  describe it. Payments only: they are the irreplaceable part and the only
-   *  count this page holds in full. */
-  paymentCount: number
-  paymentsValue: number
   /** The two dates Provision offers; null when Provision is not shown. */
   provisionPlan?: ProvisionPlan | null
 }) {
   const c = customer
+  const balanceAdjustment = money?.balanceAdjustment ?? null
+  const paymentCount = money?.paymentCount ?? 0
+  const paymentsValue = money?.paymentsValue ?? 0
 
   // Mirrors the server-side checks in app/actions/customers.ts. Hiding a
   // control is presentation only; the action re-verifies before mutating.
@@ -278,8 +293,8 @@ export function CustomerDetail({
   // reached: controls stay hidden rather than acting on a guess.
   const status = radius.status
 
-  // Days remaining against the REGISTRY expiry. c.daysUntilExpiry is derived
-  // from last_bill_date and is no longer shown anywhere.
+  // Days remaining against the REGISTRY expiry. The countdown derived from
+  // last_bill_date is not passed to this component at all any more.
   //
   // Counted from the calendar date, NOT from radius.expiresAt. That Date is an
   // instant built in the SERVER's zone out of radcheck's wall-clock text, so
@@ -301,13 +316,13 @@ export function CustomerDetail({
   //
   // Falls back to `balance` only before migration 0011, where carried_balance
   // does not exist and balance is the only figure there is.
-  const owed = c.billingAvailable ? c.carried_balance : Number(c.balance ?? 0)
+  const owed = !money ? 0 : c.billingAvailable ? money.carried_balance : Number(money.balance ?? 0)
 
   // Prepaid money held for the next charge (account_credit). Shown beside the
   // balance, never folded into it: the balance is carried_balance exactly as
   // stored, which may now be negative (migration 0027) when the customer is
   // owed money.
-  const credit = c.billingAvailable ? Number(c.account_credit ?? 0) : 0
+  const credit = money && c.billingAvailable ? Number(money.account_credit ?? 0) : 0
 
   // The four network actions. Each is CSR-or-above and applies to a distinct
   // set of statuses, so at most two are ever offered at once. The server action
@@ -331,7 +346,7 @@ export function CustomerDetail({
   // a missing row, so offering this without one only produces an error.
   const showCorrectExpiry =
     can(role, 'correct_expiry') && radius.available && radius.expiry !== null
-  const showAdjustBalance = can(role, 'adjust_carried_balance') && c.billingAvailable
+  const showAdjustBalance = can(role, 'adjust_carried_balance') && c.billingAvailable && money !== null
 
   const [editing, setEditing] = useState(false)
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
@@ -343,7 +358,7 @@ export function CustomerDetail({
   const [expiryMode, setExpiryMode] = useState<ExpiryMode>(c.expiryMode)
   const [expiryRule, setExpiryRule] = useState<ExpiryRule>(c.expiryRule)
   const [planId, setPlanId] = useState(c.servicePlanId ? String(c.servicePlanId) : '')
-  const [rate, setRate] = useState(String(Number(c.monthly_rate ?? 0)))
+  const [rate, setRate] = useState(String(Number(money?.monthly_rate ?? 0)))
   const [addons, setAddons] = useState<number[]>(selectedAddonIds)
 
   const [state, formAction] = useActionState<ActionResult | null, FormData>(updateCustomer, null)
@@ -364,7 +379,7 @@ export function CustomerDetail({
     setExpiryMode(c.expiryMode)
     setExpiryRule(c.expiryRule)
     setPlanId(c.servicePlanId ? String(c.servicePlanId) : '')
-    setRate(String(Number(c.monthly_rate ?? 0)))
+    setRate(String(Number(money?.monthly_rate ?? 0)))
     setAddons(selectedAddonIds)
     setFormKey((k) => k + 1)
     setEditing(false)
@@ -708,7 +723,10 @@ export function CustomerDetail({
         </Card>
 
         {/* ---------------- Billing ---------------- */}
-        <Card title="Billing Information" icon={Wallet}>
+        {/* "Service" without money: what is left is the plan's name and speed,
+            the cut-off day, the expiry and the rules that move it — enough to
+            know whether someone should be online, and nothing they owe. */}
+        <Card title={money ? 'Billing Information' : 'Service'} icon={money ? Wallet : Wifi}>
           {/* Straight into the payment flow with this customer preloaded. */}
           {can(role, 'record_payment') && !editing ? (
             <div className="px-4 pb-1 pt-3">
@@ -725,7 +743,9 @@ export function CustomerDetail({
           {c.catalogAvailable ? (
             <ControlRow
               label="Service Plan"
-              editing={editing}
+              // Choosing a plan sets the rate, so without money it is shown
+              // and not offered — updateCustomer refuses it from such a role.
+              editing={editing && money !== null}
               value={c.servicePlan ? describePlan(c.servicePlan) : '—'}
               control={
                 <select
@@ -743,10 +763,12 @@ export function CustomerDetail({
             />
           ) : null}
 
+          {money ? (
+          <>
           <ControlRow
             label="Monthly Rate"
             editing={editing}
-            value={formatCurrency(c.monthly_rate)}
+            value={formatCurrency(money.monthly_rate)}
             control={
               <input
                 name="monthly_rate"
@@ -810,11 +832,11 @@ export function CustomerDetail({
                   be able to correct. Shown for every customer now. */}
               <Row
                 label="Bill Date"
-                value={c.bill_date ? 'Day ' + c.bill_date + ' of each month' : '—'}
+                value={money.bill_date ? 'Day ' + money.bill_date + ' of each month' : '—'}
                 editing={editing}
                 name="bill_date"
                 type="number"
-                defaultValue={c.bill_date ?? ''}
+                defaultValue={money.bill_date ?? ''}
               />
               {/* No "Carried Balance" row here any more: the Balance field
                   above now shows carried_balance for every billing type, and
@@ -828,13 +850,15 @@ export function CustomerDetail({
               <Row
                 label="Last Billed"
                 value={
-                  c.lastCharge
-                    ? monthLabel(c.lastCharge.periodStart) +
-                      ' (charged ' + formatDateOnly(c.lastCharge.chargedOn) + ')'
-                    : formatDateOnly(c.last_billed_date)
+                  money.lastCharge
+                    ? monthLabel(money.lastCharge.periodStart) +
+                      ' (charged ' + formatDateOnly(money.lastCharge.chargedOn) + ')'
+                    : formatDateOnly(money.last_billed_date)
                 }
               />
             </>
+          ) : null}
+          </>
           ) : null}
 
           <Row label="Cut Off Date" value={c.cut_off_date ? 'Day ' + c.cut_off_date : '—'} editing={editing} name="cut_off_date" type="number" defaultValue={c.cut_off_date ?? ''} />
@@ -1089,7 +1113,10 @@ export function CustomerDetail({
           </header>
 
           <div className="p-4">
-            {editing ? (
+            {/* Without money the add-ons are names only and not editable: each
+                one is a monthly charge, and updateCustomer refuses a change to
+                them from such a role. */}
+            {editing && money ? (
               <div className="grid gap-2 sm:grid-cols-2">
                 {additionalServices.length === 0 ? (
                   <p className="text-sm text-gray-600">No additional services configured.</p>
@@ -1118,7 +1145,7 @@ export function CustomerDetail({
                       ) : null}
                     </span>
                     <span className="shrink-0 text-sm tabular-nums text-gray-300">
-                      {formatCurrency(a.monthly_price)}
+                      {formatCurrency(a.monthly_price ?? 0)}
                     </span>
                   </label>
                 ))}
@@ -1133,18 +1160,22 @@ export function CustomerDetail({
                     className="inline-flex items-center gap-1.5 rounded-lg bg-green-500/15 px-2.5 py-1 text-xs font-medium text-green-400"
                   >
                     {a.name}
-                    <span className="text-green-500/70">{formatCurrency(a.monthly_price)}</span>
+                    {money ? (
+                      <span className="text-green-500/70">{formatCurrency(a.monthly_price ?? 0)}</span>
+                    ) : null}
                   </span>
                 ))}
               </div>
             )}
 
-            <div className="mt-3 flex items-center justify-between border-t border-gray-800 pt-3">
-              <span className="text-xs text-gray-500">Total additional services</span>
-              <span className="text-sm font-semibold tabular-nums text-white">
-                {formatCurrency(addonTotal)}/mo
-              </span>
-            </div>
+            {money ? (
+              <div className="mt-3 flex items-center justify-between border-t border-gray-800 pt-3">
+                <span className="text-xs text-gray-500">Total additional services</span>
+                <span className="text-sm font-semibold tabular-nums text-white">
+                  {formatCurrency(addonTotal)}/mo
+                </span>
+              </div>
+            ) : null}
           </div>
         </section>
       ) : null}

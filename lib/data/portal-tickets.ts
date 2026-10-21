@@ -68,7 +68,8 @@ export async function getPortalTicket(
     status: row.status ?? 'open',
     description: row.description,
     createdAt: row.created_at,
-    messages: await listTicketMessages(companyId, id),
+    // The customer's thread: internal notes are not in it.
+    messages: await listTicketMessages(companyId, id, 'customer'),
   }
 }
 
@@ -124,6 +125,22 @@ const EXT: Record<string, string> = {
 
 /** What a photo of any other image type is saved as. */
 const FALLBACK_EXT = 'bin'
+
+/** Largest photo either side accepts. */
+const MAX_PHOTO_BYTES = 4_000_000
+
+/**
+ * The optional `photo` field of a ticket form: none, one acceptable photo, or
+ * why not. The one check for both sides of a ticket — the portal's customer
+ * and staff on the ticket page — so they accept the same files.
+ */
+export function readTicketPhoto(formData: FormData): { file: File | null; error?: string } {
+  const photo = formData.get('photo')
+  if (!(photo instanceof File) || photo.size === 0) return { file: null }
+  if (!photo.type.startsWith('image/')) return { file: null, error: 'The attachment must be a photo.' }
+  if (photo.size > MAX_PHOTO_BYTES) return { file: null, error: 'That photo is too large — try one under 4 MB.' }
+  return { file: photo }
+}
 
 /** Uploads one photo for a ticket, returns its storage path. Throws on failure. */
 export async function uploadTicketPhoto(

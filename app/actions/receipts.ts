@@ -21,8 +21,8 @@ import { tenantClient } from '@/lib/supabase/tenant'
  * now enforced rather than assumed, see the ownership check below.
  *
  * THIS IS WHY A CASHIER KEEPS RECEIPTS after view_all_payments narrowed to
- * manager and above: record_payment is held by every role, so the first half
- * of the check still passes for them. Reprinting the receipt for a payment you
+ * manager and above: record_payment is held by every role but technician, so
+ * the first half of the check still passes for them. Reprinting the receipt for a payment you
  * took is part of taking it.
  */
 export async function loadReceipt(paymentId: number): Promise<Receipt | null> {

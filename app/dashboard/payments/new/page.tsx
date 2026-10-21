@@ -16,7 +16,7 @@ export const metadata: Metadata = { title: 'Record Payment · ISPMan' }
 export default async function RecordPaymentPage({
   searchParams,
 }: PageProps<'/dashboard/payments/new'>) {
-  // Every role holds record_payment, so this is reachable by all of them.
+  // Every role but technician holds record_payment (lib/permissions.ts).
   const { company, profile } = await requirePermission('record_payment')
 
   const sp = await searchParams

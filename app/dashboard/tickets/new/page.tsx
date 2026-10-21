@@ -4,15 +4,16 @@ import { ArrowLeft } from 'lucide-react'
 
 import { NewTicketForm } from '@/components/tickets/NewTicketForm'
 import { listAgents } from '@/lib/data/checkoff'
-import { getSearchHit } from '@/lib/data/customer-search'
-import { requirePermission } from '@/lib/session'
+import { getSearchHit, toCustomerHit } from '@/lib/data/customer-search'
+import { can } from '@/lib/permissions'
+import { displayName, requirePermission } from '@/lib/session'
 
 export const metadata: Metadata = { title: 'New Ticket · ISPMan' }
 
 export default async function NewTicketPage({
   searchParams,
 }: PageProps<'/dashboard/tickets/new'>) {
-  const { company } = await requirePermission('create_ticket')
+  const { company, profile } = await requirePermission('create_ticket')
 
   const sp = await searchParams
   const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v)
@@ -24,9 +25,13 @@ export default async function NewTicketPage({
   // handed a technician the customer list they are not given anywhere else.
   const preset = Number(one(sp.customer))
 
-  const [presetCustomer, agents] = await Promise.all([
+  // Choosing who works it is assign_ticket. Without it the form offers only
+  // "Me" and "Unassigned", and the staff list is not sent at all.
+  const mayAssign = can(profile.role, 'assign_ticket')
+
+  const [hit, agents] = await Promise.all([
     getSearchHit(company.id, preset),
-    listAgents(company.id),
+    mayAssign ? listAgents(company.id) : Promise.resolve([]),
   ])
 
   return (
@@ -39,7 +44,14 @@ export default async function NewTicketPage({
         Back to tickets
       </Link>
 
-      <NewTicketForm agents={agents} presetCustomer={presetCustomer} />
+      <NewTicketForm
+        agents={agents}
+        // A ticket needs none of the customer's money, whoever is opening it.
+        presetCustomer={hit ? toCustomerHit(hit) : null}
+        self={{ id: profile.id, name: displayName(profile) }}
+        mayAssign={mayAssign}
+        maySetPriority={can(profile.role, 'edit_ticket')}
+      />
     </div>
   )
 }

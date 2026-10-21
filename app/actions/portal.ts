@@ -6,7 +6,7 @@ import { redirect } from 'next/navigation'
 import { createGatewayCheckout } from '@/lib/data/payment-gateways'
 import { findCustomerIdByMac, matchCustomersByPhone } from '@/lib/data/portal'
 import {
-  createPortalTicket, getPortalTicket, uploadTicketPhoto,
+  createPortalTicket, getPortalTicket, readTicketPhoto, uploadTicketPhoto,
 } from '@/lib/data/portal-tickets'
 import { addTicketMessage } from '@/lib/data/tickets'
 import { classifyPhone } from '@/lib/phone'
@@ -209,14 +209,8 @@ async function notifyStaffTicket(companyId: number, customerId: number, message:
   }
 }
 
-/** Validates an optional photo from the form, or returns null / an error. */
-function readPhoto(formData: FormData): { file: File | null; error?: string } {
-  const photo = formData.get('photo')
-  if (!(photo instanceof File) || photo.size === 0) return { file: null }
-  if (!photo.type.startsWith('image/')) return { file: null, error: 'The attachment must be a photo.' }
-  if (photo.size > 4_000_000) return { file: null, error: 'That photo is too large — try one under 4 MB.' }
-  return { file: photo }
-}
+// The photo check is lib/data/portal-tickets.ts#readTicketPhoto, shared with
+// the staff side of the ticket.
 
 export async function openTicket(
   _prev: TicketActionState,
@@ -232,7 +226,7 @@ export async function openTicket(
   if (!subject) return { ok: false, error: 'Enter a short subject.' }
   if (!description) return { ok: false, error: 'Describe the problem.' }
 
-  const photo = readPhoto(formData)
+  const photo = readTicketPhoto(formData)
   if (photo.error) return { ok: false, error: photo.error }
 
   const ticketId = await createPortalTicket({ companyId: company.id, customerId: session.customerId, subject, description })
@@ -265,7 +259,7 @@ export async function replyToTicket(
   if (!ticket) return { ok: false, error: 'That ticket could not be found.' }
 
   const body = fd(formData, 'body')
-  const photo = readPhoto(formData)
+  const photo = readTicketPhoto(formData)
   if (photo.error) return { ok: false, error: photo.error }
   if (!body && !photo.file) return { ok: false, error: 'Write a message or attach a photo.' }
 

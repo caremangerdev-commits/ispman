@@ -2,7 +2,7 @@
 
 import { useRef, useState } from 'react'
 
-import type { SearchHit } from '@/lib/data/customer-search'
+import type { CustomerHit } from '@/lib/data/customer-search'
 import { isSearchQuery } from '@/lib/search'
 
 const DEBOUNCE_MS = 300
@@ -22,7 +22,7 @@ const DEBOUNCE_MS = 300
  */
 export function useCustomerSearch() {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchHit[]>([])
+  const [results, setResults] = useState<CustomerHit[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(-1)
@@ -52,7 +52,7 @@ export function useCustomerSearch() {
       try {
         const res = await fetch('/api/search?q=' + encodeURIComponent(term))
         if (!res.ok) throw new Error('search failed')
-        const json = (await res.json()) as { results: SearchHit[] }
+        const json = (await res.json()) as { results: CustomerHit[] }
         if (seq !== requestRef.current) return
         setResults(json.results ?? [])
         setActive(-1)
@@ -80,7 +80,7 @@ export function useCustomerSearch() {
   }
 
   /** Arrow keys move through the list; returns the hit Enter chose, if any. */
-  function onKeyDown(e: React.KeyboardEvent): SearchHit | null {
+  function onKeyDown(e: React.KeyboardEvent): CustomerHit | null {
     if (e.key === 'Escape') {
       setOpen(false)
       return null

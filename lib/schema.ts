@@ -196,6 +196,12 @@ export type SchemaCapabilities = {
    * no choice.
    */
   anniversaryExpiry: boolean
+  /**
+   * Migration 0041: `ticket_messages.internal`. Absent, a ticket takes replies
+   * only: an internal note cannot be stored apart from a reply, so it is not
+   * offered — it would otherwise land in the customer's thread.
+   */
+  ticketNotes: boolean
 }
 
 /**
@@ -233,6 +239,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     ticketMessagesRes, incidentsRes, outageSwitchRes,
     paymentGatewaysRes,
     billDocumentsRes, anniversaryRes,
+    ticketNotesRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -331,6 +338,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
       .limit(1),
     // 0039: the per-customer expiry rule. One ALTER.
     db.from('customers').select('expiry_rule, anniversary_day').limit(1),
+    // 0041: the internal-note flag on a ticket message.
+    db.from('ticket_messages').select('internal').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -607,6 +616,13 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for customers.expiry_rule: ' + anniversaryRes.error.message)
   }
 
+  // 0041: one column, on a table 0037 creates — absent either way when 0037 is.
+  const missingTicketNotes =
+    missingTicketMessages || ticketNotesRes.error?.code === '42703'
+  if (ticketNotesRes.error && !missingTicketNotes) {
+    throw new Error('Schema probe failed for ticket_messages.internal: ' + ticketNotesRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -643,6 +659,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     paymentGateways: !missingPaymentGateways,
     billDocuments: !missingBillDocuments,
     anniversaryExpiry: !missingAnniversary,
+    ticketNotes: !missingTicketNotes,
   }
 })
 

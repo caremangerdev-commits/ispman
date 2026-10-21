@@ -18,7 +18,9 @@ import { toCustomerType, toExpiryMode } from '@/lib/types'
  *
  * Every box that looks a customer up calls this: the header search and the
  * record-payment picker (through /api/search), the role dashboards, and the
- * New Ticket picker (through /api/search). They used to be three
+ * New Ticket picker (through /api/search). What comes back is the full
+ * SearchHit, money included; a caller serving anyone without
+ * view_customer_billing_history narrows it with toCustomerHit first. They used to be three
  * implementations — /api/search, a "lite" search behind the role dashboards
  * that skipped the ranking and the status, and a full-company dropdown on the
  * New Ticket page that was no search at all — and a technician could see
@@ -33,7 +35,14 @@ import { toCustomerType, toExpiryMode } from '@/lib/types'
  * Callers authorise first. This trusts the company id it is given.
  */
 
-export type SearchHit = {
+/**
+ * A hit with NO MONEY IN IT: who the customer is, how they connect, and
+ * whether their service is on and until when. What every search box but the
+ * payment picker needs, and all a role without view_customer_billing_history
+ * is ever sent — /api/search, the role dashboards and the New Ticket page all
+ * narrow to this with toCustomerHit.
+ */
+export type CustomerHit = {
   id: number
   first_name: string | null
   last_name: string | null
@@ -47,11 +56,6 @@ export type SearchHit = {
   /** Derived from the network registry — drives the status dot and badge. */
   status: CustomerStatus
   customer_type: string | null
-  /** Billing fields, so the payment page can act on a pick without a second
-   *  round trip. Already covered by the view_customer_billing_history gate. */
-  monthly_rate: number
-  /** Billing expiry, derived from last_bill_date. Drives the renewal preview. */
-  expires_at: string | null
   /**
    * Network expiry from the registry, AS THE CALENDAR DATE RADCHECK HOLDS:
    * "YYYY-MM-DD", never an instant. Read it with parseYmd, never `new Date()`.
@@ -65,6 +69,39 @@ export type SearchHit = {
    * lib/format.ts#localDateOnly, which exists for exactly this.
    */
   network_expiry: string | null
+}
+
+/**
+ * The narrowing every caller without view_customer_billing_history goes
+ * through. The fields are PICKED, not omitted, so a money field added to
+ * SearchHit later is left out here until someone decides otherwise.
+ */
+export function toCustomerHit(hit: SearchHit): CustomerHit {
+  return {
+    id: hit.id,
+    first_name: hit.first_name,
+    last_name: hit.last_name,
+    phone: hit.phone,
+    address: hit.address,
+    account_number: hit.account_number,
+    mac_address: hit.mac_address,
+    status: hit.status,
+    customer_type: hit.customer_type,
+    network_expiry: hit.network_expiry,
+  }
+}
+
+/**
+ * A hit as the payment form needs it: CustomerHit plus the customer's money
+ * and renewal rules, so a pick can be acted on without a second round trip.
+ * Only for roles holding view_customer_billing_history.
+ */
+export type SearchHit = CustomerHit & {
+  /** Billing fields, so the payment page can act on a pick without a second
+   *  round trip. */
+  monthly_rate: number
+  /** Billing expiry, derived from last_bill_date. Drives the renewal preview. */
+  expires_at: string | null
   expiry_mode: string
   /** Day of month the customer is cut off. Drives the from_expiry preview,
    *  which walks to the next cut-off day rather than adding whole months. */

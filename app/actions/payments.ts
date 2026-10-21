@@ -430,8 +430,8 @@ async function recordOtherPayment(
 /**
  * Records a payment, settles what it leaves owing, and moves network access.
  *
- * Every role can record a payment (see lib/permissions.ts), so this is gated on
- * `record_payment` rather than any customer-management right.
+ * Every role but technician can record a payment (see lib/permissions.ts), so
+ * this is gated on `record_payment` rather than any customer-management right.
  *
  * The two billing types share this one path and differ in three places only:
  * which date access runs to, whether a billing period is stamped on the row,

@@ -27,7 +27,8 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // the operator is still themselves, with their own role and their own user id.
   const { profile, company, authUser, actingAs } = await getSession()
   const [{ items, unread }, settings, cookieStore] = await Promise.all([
-    getNotifications(company.id),
+    // No online-payment alerts for a role that may not see a customer's money.
+    getNotifications(company.id, { money: can(profile.role, 'view_customer_billing_history') }),
     getGeneralSettings(company.id),
     // Read here rather than in the client so the first paint is already at the
     // right width — see lib/shell.ts. The layout was already dynamic; the

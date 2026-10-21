@@ -32,6 +32,7 @@ import { can } from '@/lib/permissions'
 import { getRadiusStatus } from '@/lib/radius/client'
 import { radiusIdentity } from '@/lib/radius/format'
 import { requirePermission } from '@/lib/session'
+import { withoutPrice } from '@/lib/types'
 
 export const metadata: Metadata = { title: 'Customer · ISPMan' }
 
@@ -42,16 +43,25 @@ export default async function CustomerDetailPage({
   const customerId = Number(id)
   if (!Number.isInteger(customerId)) notFound()
 
-  const { company, profile } = await requirePermission('view_customer_billing_history')
+  const { company, profile } = await requirePermission('view_customer')
   const customer = await getCustomer(company.id, customerId)
   if (!customer) notFound()
+
+  // A CUSTOMER'S MONEY IS NOT LOADED FOR A ROLE THAT MAY NOT SEE IT — a
+  // technician (lib/permissions.ts#view_customer_billing_history). Not loaded,
+  // so it cannot be rendered, and cannot leak into the client component's
+  // props either: CustomerDetail gets money={null}, and the payment history,
+  // bill links and one-off charges are not on the page. The service state —
+  // status, expiry, cut-off day, expiry rule — stays.
+  const money = can(profile.role, 'view_customer_billing_history')
+  const none = <T,>(empty: T) => Promise.resolve(empty)
 
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
     balanceAdjustment, changeHistory, settings, caps, lastCharge, charges, paymentCategories,
     calendar,
   ] = await Promise.all([
-      getCustomerPayments(company.id, customerId),
+      money ? getCustomerPayments(company.id, customerId) : none([]),
       getCustomerTickets(company.id, customerId),
       // MAC for DHCP, PPPoE username for PPPoE — radcheck and radacct are both
       // keyed on that identity, so looking a PPPoE customer up by MAC finds
@@ -71,7 +81,7 @@ export default async function CustomerDetailPage({
       getCustomerAddonIds(company.id, customerId),
       // Marks a carried balance that was set by hand rather than by the bill
       // run. Log-derived, so there is no column and no migration behind it.
-      lastBalanceAdjustment(company.id, customerId),
+      money ? lastBalanceAdjustment(company.id, customerId) : none(null),
       // The edit trail for this record. Log-derived like the two above, so
       // there is no column and no migration behind it either.
       listCustomerChanges(company.id, customerId, 10),
@@ -79,11 +89,11 @@ export default async function CustomerDetailPage({
       getGeneralSettings(company.id),
       getSchemaCapabilities(),
       // The engine's latest charge (migration 0024), for the Last Billed row.
-      lastChargeFor(company.id, customerId),
+      money ? lastChargeFor(company.id, customerId) : none(null),
       // One-off charges (0025), and the category list a new one is filed
       // under. Both empty until 0025 is applied, and the card then hides.
-      listCustomerCharges(company.id, customerId),
-      listPaymentCategories(company.id),
+      money ? listCustomerCharges(company.id, customerId) : none([]),
+      money ? listPaymentCategories(company.id) : none([]),
       // Whether the prepaid calendar model applies, which makes the expiry
       // rule (0039) inert — the same test the payment path makes.
       prepaidCalendarFor(company.id),
@@ -120,8 +130,6 @@ export default async function CustomerDetailPage({
           address: customer.address,
           gps: customer.gps,
           mac_address: customer.mac_address,
-          monthly_rate: customer.monthly_rate,
-          balance: customer.balance,
           cut_off_date: customer.cut_off_date,
           taxId: customer.taxId,
           taxIdAvailable: caps.taxId,
@@ -133,16 +141,7 @@ export default async function CustomerDetailPage({
           emailAvailable: customer.emailAvailable,
           emailOptedOut: customer.emailOptedOut,
           billingAvailable: customer.billingAvailable,
-          bill_date: customer.bill_date,
-          carried_balance: customer.carried_balance,
-          last_billed_date: customer.last_billed_date,
-          lastCharge: lastCharge
-            ? { chargedOn: lastCharge.chargedOn, periodStart: lastCharge.periodStart, periodEnd: lastCharge.periodEnd }
-            : null,
-          last_bill_date: customer.last_bill_date,
           date_added: customer.date_added,
-          expiresAtIso: customer.expiresAt ? customer.expiresAt.toISOString() : null,
-          daysUntilExpiry: customer.daysUntilExpiry,
           customerType: customer.customerType,
           pppoeUsername: customer.pppoeUsername,
           accessPoint: customer.accessPoint,
@@ -160,15 +159,44 @@ export default async function CustomerDetailPage({
           miscCategoryId: customer.miscCategoryId,
           miscCategoryName: customer.miscCategoryName,
           servicePlanId: customer.servicePlanId,
-          servicePlan: customer.servicePlan,
+          // Built field by field: the plan row also carries its price, and
+          // passing it whole would send that to every role's browser.
+          servicePlan: customer.servicePlan
+            ? {
+                id: customer.servicePlan.id,
+                name: customer.servicePlan.name,
+                speed_down_mbps: customer.servicePlan.speed_down_mbps,
+                speed_up_mbps: customer.servicePlan.speed_up_mbps,
+              }
+            : null,
         }}
+        money={
+          money
+            ? {
+                monthly_rate: customer.monthly_rate,
+                balance: customer.balance,
+                carried_balance: customer.carried_balance,
+                bill_date: customer.bill_date,
+                last_billed_date: customer.last_billed_date,
+                lastCharge: lastCharge
+                  ? { chargedOn: lastCharge.chargedOn, periodStart: lastCharge.periodStart, periodEnd: lastCharge.periodEnd }
+                  : null,
+                balanceAdjustment,
+                paymentCount: payments.length,
+                paymentsValue: totalPaid,
+              }
+            : null
+        }
         radius={radius}
         role={profile.role}
-        balanceAdjustment={balanceAdjustment}
-        paymentCount={payments.length}
-        paymentsValue={totalPaid}
-        servicePlans={plans}
-        additionalServices={addons}
+        // Without money: no plan catalogue (choosing a plan sets the rate), and
+        // the active add-ons by name only.
+        servicePlans={money ? plans : []}
+        additionalServices={
+          money
+            ? addons
+            : addons.filter((a) => selectedAddonIds.includes(a.id)).map(withoutPrice)
+        }
         miscCategories={miscCats}
         selectedAddonIds={selectedAddonIds}
         provisionPlan={provision}
@@ -177,7 +205,7 @@ export default async function CustomerDetailPage({
       {/* Money owed that is not service. Beside the record rather than inside
           its billing card, because it does not decide access and must not
           read as part of the service balance. */}
-      {caps.charges ? (
+      {caps.charges && money ? (
         <OneOffCharges
           customerId={customer.id}
           customerName={fullName(customer)}
@@ -192,9 +220,14 @@ export default async function CustomerDetailPage({
       {/* Sits beside Network History because they answer the same kind of
           question — what has been done to this record, by whom, and when —
           from the two halves of the log that record it. */}
-      <ChangeHistory entries={changeHistory} />
+      {/* Without money, an edit to the rate or bill day is left out of the
+          trail — it would be the figure the record does not show. */}
+      <ChangeHistory entries={changeHistory} hideMoney={!money} />
 
-      {/* Payment history */}
+      {/* Payment history, with the bill and statement links. Not rendered at
+          all without money: there is no empty card saying something is hidden.
+          The links' route refuses the role as well (api/customers/[id]/bill). */}
+      {money ? (
       <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
         <header className="flex items-baseline justify-between gap-3 border-b border-gray-800 px-5 py-3">
           <h2 className="text-sm font-semibold text-white">Payment History</h2>
@@ -332,6 +365,7 @@ export default async function CustomerDetailPage({
           </>
         )}
       </section>
+      ) : null}
 
       {/* Support tickets */}
       <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">

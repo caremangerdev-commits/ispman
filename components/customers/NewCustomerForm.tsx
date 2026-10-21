@@ -13,8 +13,8 @@ import {
   CONNECTION_TYPES, CONNECTION_TYPE_LABELS, CUSTOMER_CATEGORIES,
   CUSTOMER_CATEGORY_LABELS, CUSTOMER_TYPES, CUSTOMER_TYPE_LABELS, describePlan,
   toCustomerType,
-  type AdditionalService, type CustomerType,
-  type MiscCategory, type ServicePlan,
+  type AddonOption, type CustomerType,
+  type MiscCategory, type PlanOption,
 } from '@/lib/types'
 
 const inputBase =
@@ -84,9 +84,11 @@ export function NewCustomerForm({
   billingAvailable,
   defaultBillDate,
   defaultCutOffDate,
+  showMoney,
 }: {
-  servicePlans: ServicePlan[]
-  additionalServices: AdditionalService[]
+  /** Priced only when showMoney; without it, names and speeds. */
+  servicePlans: PlanOption[]
+  additionalServices: AddonOption[]
   miscCategories: MiscCategory[]
   typesAvailable: boolean
   catalogAvailable: boolean
@@ -106,6 +108,13 @@ export function NewCustomerForm({
    *  were being saved on the 5th because the field said so (owner, 11 Oct
    *  2026). Null leaves it blank, and the server fills in the company's. */
   defaultCutOffDate: number | null
+  /**
+   * view_customer_billing_history. Without it (a technician) there is no rate,
+   * bill day or price on the form: createCustomer charges the plan's list price
+   * — or the company's default — from the company's bill day, and refuses a
+   * rate or bill day posted by such a role.
+   */
+  showMoney: boolean
 }) {
   const [state, formAction] = useActionState<ActionResult | null, FormData>(createCustomer, null)
 
@@ -134,7 +143,7 @@ export function NewCustomerForm({
   function choosePlan(value: string) {
     setPlanId(value)
     const plan = servicePlans.find((p) => String(p.id) === value)
-    if (plan) setRate(String(Number(plan.monthly_price)))
+    if (plan && plan.monthly_price !== undefined) setRate(String(Number(plan.monthly_price)))
   }
 
   const addonTotal = additionalServices
@@ -305,10 +314,14 @@ export function NewCustomerForm({
         </p>
       </Card>
 
-      <Card title="Billing &amp; Service">
+      <Card title={showMoney ? 'Billing & Service' : 'Service'}>
         <div className="grid gap-4 sm:grid-cols-2">
           {catalogAvailable ? (
-            <Field label="Service Plan" htmlFor="service_plan_id" hint="Selecting a plan fills in the rate.">
+            <Field
+              label="Service Plan"
+              htmlFor="service_plan_id"
+              hint={showMoney ? 'Selecting a plan fills in the rate.' : 'The plan they signed up for. The office handles billing.'}
+            >
               <select
                 id="service_plan_id"
                 name="service_plan_id"
@@ -324,6 +337,7 @@ export function NewCustomerForm({
             </Field>
           ) : null}
 
+          {showMoney ? (
           <Field label="Monthly Rate" htmlFor="monthly_rate" error={errors.monthly_rate} required>
             <div className="relative">
               <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">J$</span>
@@ -340,11 +354,12 @@ export function NewCustomerForm({
               />
             </div>
           </Field>
+          ) : null}
 
           {/* No billing type here. It is the COMPANY'S setting
               (settings.billing_type, migration 0024); a customer has none. */}
 
-          {billingAvailable ? (
+          {billingAvailable && showMoney ? (
             <Field
               label="Bill Date"
               htmlFor="bill_date"
@@ -399,19 +414,23 @@ export function NewCustomerForm({
                     <span className="block truncate text-xs text-gray-600">{a.description}</span>
                   ) : null}
                 </span>
-                <span className="shrink-0 text-sm tabular-nums text-gray-300">
-                  {formatCurrency(a.monthly_price)}
-                </span>
+                {showMoney ? (
+                  <span className="shrink-0 text-sm tabular-nums text-gray-300">
+                    {formatCurrency(a.monthly_price ?? 0)}
+                  </span>
+                ) : null}
               </label>
             ))}
           </div>
 
-          <div className="mt-3 flex items-center justify-between border-t border-gray-800 pt-3">
-            <span className="text-xs text-gray-500">Total additional services</span>
-            <span className="text-sm font-semibold tabular-nums text-white">
-              {formatCurrency(addonTotal)}/mo
-            </span>
-          </div>
+          {showMoney ? (
+            <div className="mt-3 flex items-center justify-between border-t border-gray-800 pt-3">
+              <span className="text-xs text-gray-500">Total additional services</span>
+              <span className="text-sm font-semibold tabular-nums text-white">
+                {formatCurrency(addonTotal)}/mo
+              </span>
+            </div>
+          ) : null}
         </Card>
       ) : null}
 

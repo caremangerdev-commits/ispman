@@ -8,14 +8,19 @@ import {
 } from '@/lib/data/catalog'
 import { getDefaultBillDate, getDefaultMonthlyRate } from '@/lib/data/company'
 import { CATALOG_HINT, getSchemaCapabilities } from '@/lib/schema'
+import { can } from '@/lib/permissions'
 import { requirePermission } from '@/lib/session'
 import { getGeneralSettings } from '@/lib/data/company'
 import { taxIdLabel } from '@/lib/tax-id'
+import { withoutPrice } from '@/lib/types'
 
 export const metadata: Metadata = { title: 'Add Customer · ISPMan' }
 
 export default async function NewCustomerPage() {
-  const { company } = await requirePermission('add_customer')
+  const { company, profile } = await requirePermission('add_customer')
+  // A technician adds customers without seeing a price; see
+  // components/customers/NewCustomerForm.tsx#showMoney.
+  const money = can(profile.role, 'view_customer_billing_history')
 
   const [
     plans, addons, miscCats, caps, defaultRate, defaultBillDate,
@@ -58,16 +63,19 @@ export default async function NewCustomerPage() {
       ) : null}
 
       <NewCustomerForm
-        servicePlans={plans}
-        additionalServices={addons}
+        // Without money the prices are taken off before they reach the form,
+        // not just left undrawn by it.
+        servicePlans={money ? plans : plans.map(withoutPrice)}
+        additionalServices={money ? addons : addons.map(withoutPrice)}
+        showMoney={money}
         miscCategories={miscCats}
         typesAvailable={caps.connectionTypes}
         taxIdAvailable={caps.taxId}
         taxIdLabel={taxIdLabel(settings.taxIdLabel, settings.country)}
         catalogAvailable={caps.catalog}
-        defaultMonthlyRate={defaultRate}
+        defaultMonthlyRate={money ? defaultRate : 0}
         billingAvailable={caps.billing}
-        defaultBillDate={defaultBillDate}
+        defaultBillDate={money ? defaultBillDate : null}
         defaultCutOffDate={settings.cutOffDate}
       />
     </div>

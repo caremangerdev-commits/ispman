@@ -200,6 +200,25 @@ export type AdditionalService = {
   status: string | null
 }
 
+/**
+ * A plan or add-on as a customer form offers it. The price is left off — not
+ * zeroed — for a role without view_customer_billing_history, so it is not in
+ * the page they are sent; the forms then show names and speeds only.
+ */
+export type PlanOption = Omit<ServicePlan, 'monthly_price'> & {
+  monthly_price?: ServicePlan['monthly_price']
+}
+export type AddonOption = Omit<AdditionalService, 'monthly_price'> & {
+  monthly_price?: AdditionalService['monthly_price']
+}
+
+/** The same rows with the price taken off, for a role that may not see it. */
+export function withoutPrice<T extends { monthly_price?: unknown }>(row: T): Omit<T, 'monthly_price'> {
+  const { monthly_price: _price, ...rest } = row
+  void _price
+  return rest
+}
+
 export type MiscCategory = {
   id: number
   name: string

@@ -17,7 +17,7 @@ import { formatCurrencyExact } from '@/lib/format'
 import { parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
 import { parseYmd, toExpiryRule } from '@/lib/billing'
-import { getExpiryClock } from '@/lib/data/company'
+import { getDefaultBillDate, getDefaultMonthlyRate, getExpiryClock } from '@/lib/data/company'
 import { describeMacHolders, findMacHolders, type MacHolder } from '@/lib/data/mac-holders'
 import { FIRST_MONTH_EVENTS, provisionPlan, type ProvisionPlan } from '@/lib/data/provision'
 import { canonicalMac } from '@/lib/mac'
@@ -99,6 +99,37 @@ const numOrNull = (fd: FormData, key: string) => {
   return Number.isFinite(n) ? n : null
 }
 
+/**
+ * The form fields that decide what a customer pays. A role without
+ * view_customer_billing_history is never shown them, so they arrive from such
+ * a role only in a post made by hand — updateCustomer refuses it.
+ *
+ * createCustomer refuses only the first two. A plan and add-ons picked while
+ * signing someone up overwrite no arrangement: the rate is then the plan's list
+ * price, set by the server, which is what the office would have typed.
+ */
+const MONEY_FORM_FIELDS = ['monthly_rate', 'bill_date', 'service_plan_id', 'addon_ids']
+const MONEY_FIELDS_ON_CREATE = ['monthly_rate', 'bill_date']
+
+/**
+ * What a customer signed up by a role without money is charged: their plan's
+ * list price, or the company's default rate when no plan was picked (0 when
+ * there is neither — the office then sets it, as it would a typed 0).
+ */
+async function listRate(companyId: number, planId: number | null): Promise<number> {
+  if (planId !== null) {
+    const { data } = await tenantClient()
+      .from('service_plans')
+      .select('monthly_price')
+      .eq('company_id', companyId)
+      .eq('id', planId)
+      .maybeSingle()
+    const price = (data as { monthly_price: number | string | null } | null)?.monthly_price
+    if (price !== null && price !== undefined) return Number(price)
+  }
+  return getDefaultMonthlyRate(companyId)
+}
+
 function todayYmd() {
   const d = new Date()
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString().slice(0, 10)
@@ -129,9 +160,22 @@ export async function createCustomer(
   // compared in another spelling is invisible to the duplicate check below.
   const macTyped = str(formData, 'mac_address')
   const mac_address = canonicalMac(macTyped) ?? ''
-  const monthly_rate = numOrNull(formData, 'monthly_rate')
+
+  // A role without money (a technician) signs a customer up without seeing a
+  // price: the form asks for no rate and no bill day, and the server fills in
+  // the chosen plan's list price — or the company's default rate — and the
+  // company's bill day. See MONEY_FORM_FIELDS.
+  const mayMoney = can(profile.role, 'view_customer_billing_history')
+  if (!mayMoney && MONEY_FIELDS_ON_CREATE.some((field) => formData.has(field))) {
+    return fail('The rate and bill day are set by the office. Nothing was saved.')
+  }
+  const monthly_rate = mayMoney
+    ? numOrNull(formData, 'monthly_rate')
+    : await listRate(company.id, caps.catalog ? numOrNull(formData, 'service_plan_id') : null)
   const cut_off_date = numOrNull(formData, 'cut_off_date')
-  const bill_date = numOrNull(formData, 'bill_date')
+  const bill_date = mayMoney
+    ? numOrNull(formData, 'bill_date')
+    : (await getDefaultBillDate(company.id)) ?? 1
   const customerType = toCustomerType(str(formData, 'customer_type') || 'dhcp')
   const pppoe_username = str(formData, 'pppoe_username')
   const pppoe_password = str(formData, 'pppoe_password')
@@ -346,6 +390,21 @@ export async function updateCustomer(
   const id = numOrNull(formData, 'id')
   if (id === null) return { ok: false, error: 'Missing customer id.' }
 
+  // WHAT A CUSTOMER PAYS IS CHANGED ONLY BY A ROLE THAT CAN SEE IT. Without
+  // view_customer_billing_history (a technician) the record shows no rate, bill
+  // day or prices and offers no plan or add-on choice, so the form posts none of
+  // those fields — and every one of them is absent from the patch below rather
+  // than written as blank, which would have wiped the customer's plan, rate and
+  // add-ons on the first save of a MAC. A post that carries them anyway was put
+  // together by hand, and is refused whole.
+  const mayMoney = can(profile.role, 'view_customer_billing_history')
+  if (!mayMoney && MONEY_FORM_FIELDS.some((field) => formData.has(field))) {
+    return {
+      ok: false,
+      error: 'The plan, rate, add-ons and bill day are changed by the office. Nothing was saved.',
+    }
+  }
+
   // Stored form, as createCustomer: a MAC saved with dashes is a spelling no
   // other row uses, so no duplicate check or search would ever match it.
   const macTyped = str(formData, 'mac_address')
@@ -380,12 +439,12 @@ export async function updateCustomer(
     address: str(formData, 'address') || null,
     gps: gps && gps.ok ? gps.value : null,
     mac_address: mac_address || null,
-    monthly_rate: numOrNull(formData, 'monthly_rate'),
     cut_off_date: numOrNull(formData, 'cut_off_date'),
     // bill_due_date is deliberately absent — see the note in createCustomer.
     // Patching it here would also have overwritten stored values with null the
     // moment the field stopped rendering.
   }
+  if (mayMoney) patch.monthly_rate = numOrNull(formData, 'monthly_rate')
 
   // Keyed on presence rather than value: an unconditional patch would null out
   // a customer's bill day whenever the form that submitted never rendered the
@@ -396,7 +455,7 @@ export async function updateCustomer(
   // 338 rows written before the billing split was retired carry no bill day at
   // all — rejecting a blank would have made every one of those customers
   // impossible to edit at all, for any field.
-  if (caps.billing && formData.has('bill_date')) {
+  if (caps.billing && mayMoney && formData.has('bill_date')) {
     const raw = str(formData, 'bill_date')
     if (raw) {
       const bill_date = numOrNull(formData, 'bill_date')
@@ -430,7 +489,7 @@ export async function updateCustomer(
     patch.customer_category = toCustomerCategory(str(formData, 'customer_category'))
     patch.notes = str(formData, 'notes') || null
     patch.misc_category_id = numOrNull(formData, 'misc_category_id')
-    patch.service_plan_id = numOrNull(formData, 'service_plan_id')
+    if (mayMoney) patch.service_plan_id = numOrNull(formData, 'service_plan_id')
   }
 
   // Expiry mode changes who gets free days on a late renewal, so it needs the
@@ -499,8 +558,10 @@ export async function updateCustomer(
 
   if (error) return { ok: false, error: 'Could not save changes: ' + error.message }
 
+  // Not for a role without money: syncAddons reads an absent list as "none",
+  // and would strip every add-on the customer has.
   let addonChange: FieldChange | null = null
-  if (caps.catalog) {
+  if (caps.catalog && mayMoney) {
     const result = await syncAddons(company.id, id, formData)
     if (!result.ok) return result.error
     addonChange = result.change

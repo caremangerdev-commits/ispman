@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { CustomerHitCard } from '@/components/customers/CustomerHitCard'
 import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
-import type { SearchHit } from '@/lib/data/customer-search'
+import type { CustomerHit } from '@/lib/data/customer-search'
 
 /**
  * Who the ticket is for, found the way the header search finds anyone.
@@ -29,12 +29,12 @@ export function TicketCustomerPicker({
   inputClassName,
 }: {
   /** The customer a record sent us with (?customer=), or null. */
-  initial: SearchHit | null
+  initial: CustomerHit | null
   /** For the field's <label>. */
   inputId: string
   inputClassName: string
 }) {
-  const [selected, setSelected] = useState<SearchHit | null>(initial)
+  const [selected, setSelected] = useState<CustomerHit | null>(initial)
   const search = useCustomerSearch()
   const { query, results, loading, open, setOpen, active, setActive } = search
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -50,7 +50,7 @@ export function TicketCustomerPicker({
     return () => document.removeEventListener('mousedown', onDown)
   }, [open, setOpen])
 
-  function pick(hit: SearchHit) {
+  function pick(hit: CustomerHit) {
     search.clear()
     setSelected(hit)
     setFocusSearch(false)

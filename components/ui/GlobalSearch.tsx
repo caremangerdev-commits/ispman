@@ -6,7 +6,7 @@ import { useEffect, useRef } from 'react'
 
 import { CustomerHitCard } from '@/components/customers/CustomerHitCard'
 import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
-import type { SearchHit } from '@/lib/data/customer-search'
+import type { CustomerHit } from '@/lib/data/customer-search'
 
 export function GlobalSearch() {
   const router = useRouter()
@@ -23,7 +23,7 @@ export function GlobalSearch() {
     return () => document.removeEventListener('mousedown', onDown)
   }, [open, setOpen])
 
-  function go(hit: SearchHit) {
+  function go(hit: CustomerHit) {
     search.clear()
     router.push('/dashboard/customers/' + hit.id)
   }

@@ -4,13 +4,16 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
+import { readTicketPhoto, uploadTicketPhoto } from '@/lib/data/portal-tickets'
 import { addTicketMessage, getTicket } from '@/lib/data/tickets'
 import { hasGps, parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
+import { getSchemaCapabilities } from '@/lib/schema'
 import { displayName, getSession } from '@/lib/session'
 import { sendDirectSms } from '@/lib/sms/direct'
 import { tenantClient } from '@/lib/supabase/tenant'
-import { toTicketPriority } from '@/lib/tickets'
+import { assignableOnCreate, ticketRights } from '@/lib/ticket-rules'
+import { DEFAULT_TICKET_PRIORITY, toTicketPriority } from '@/lib/tickets'
 
 /**
  * Every mutation re-checks its own permission.
@@ -160,8 +163,24 @@ export async function createTicket(
   const customerId = idOrNull(formData, 'customer_id')
   const title = str(formData, 'title')
   const description = str(formData, 'description')
-  const priority = toTicketPriority(str(formData, 'priority'))
+  const postedPriority = str(formData, 'priority')
+  const priority = toTicketPriority(postedPriority)
   const assignedTo = idOrNull(formData, 'assigned_to')
+
+  // REFUSED, NOT QUIETLY CORRECTED. The form shows a technician neither
+  // control, so a priority or another person's id in the post was put there by
+  // hand. Choosing either is someone else's decision (lib/permissions.ts).
+  if (!can(profile.role, 'edit_ticket') && postedPriority && priority !== DEFAULT_TICKET_PRIORITY) {
+    return { ok: false, error: 'The office sets a ticket’s priority. Nothing was saved.', values }
+  }
+  const allowed = assignableOnCreate(profile.role, profile.id)
+  if (allowed !== null && assignedTo !== null && !allowed.includes(assignedTo)) {
+    return {
+      ok: false,
+      error: 'You can take this ticket yourself or leave it for the office to assign. Nothing was saved.',
+      values,
+    }
+  }
 
   if (customerId === null) fieldErrors.customer_id = 'Choose a customer.'
   if (!title) fieldErrors.title = 'A title is required.'
@@ -247,6 +266,9 @@ export async function updateTicket(
   _prev: ActionResult | null,
   formData: FormData
 ): Promise<ActionResult> {
+  // Title, description and priority — and nothing else. Which customer a
+  // ticket belongs to is set when it is opened and is not changed here or
+  // anywhere else.
   const { company } = await authorize('edit_ticket')
 
   const id = idOrNull(formData, 'id')
@@ -374,6 +396,18 @@ export async function resolveTicket(
   const existing = await loadTicket(company.id, id)
   if (!existing) return { ok: false, error: 'That ticket no longer exists.' }
 
+  // resolve_ticket lets a technician in the door; whether THIS ticket is one
+  // they may close — assigned to them, and not already resolved — is the
+  // ticket's half of the rule (lib/ticket-rules.ts).
+  if (!ticketRights(profile.role, profile.id, existing).resolve) {
+    return {
+      ok: false,
+      error: existing.status === 'resolved'
+        ? 'This ticket is already resolved.'
+        : 'Only the person this ticket is assigned to, or the office, can resolve it.',
+    }
+  }
+
   const { error } = await tenantClient()
     .from('support_tickets')
     .update({
@@ -494,6 +528,9 @@ export async function reopenTicket(formData: FormData) {
 
   const existing = await loadTicket(company.id, id)
   if (!existing) toast('/dashboard/tickets', 'That ticket no longer exists.', 'error')
+  if (!ticketRights(profile.role, profile.id, existing).reopen) {
+    toast('/dashboard/tickets/' + id, 'Only a resolved ticket can be reopened.', 'error')
+  }
 
   const { error } = await tenantClient()
     .from('support_tickets')
@@ -518,35 +555,68 @@ export async function reopenTicket(formData: FormData) {
 }
 
 /**
- * Posts a staff reply onto a ticket's thread and texts the customer.
+ * Posts a staff message onto a ticket's thread: a reply the customer sees, or
+ * an internal note they never do. Either may carry one photo.
  *
- * The SMS is off by default per company (settings.notify_ticket_reply_enabled)
- * and respects the SMS master switch and the customer's opt-out — see
- * lib/sms/direct.ts. It never blocks the reply.
+ * A reply texts the customer. The SMS is off by default per company
+ * (settings.notify_ticket_reply_enabled) and respects the SMS master switch and
+ * the customer's opt-out — see lib/sms/direct.ts. It never blocks the reply. A
+ * note texts nobody.
+ *
+ * reply_ticket, which a technician holds: talking on a ticket is doing the
+ * work. Nothing here edits or removes a message already posted — there is no
+ * such action for anyone.
  */
 export async function replyTicket(_prev: ActionResult | null, formData: FormData): Promise<ActionResult> {
-  const { company, profile } = await authorize('edit_ticket')
+  const { company, profile } = await authorize('reply_ticket')
 
   const ticketId = Number(formData.get('ticket_id'))
   if (!Number.isInteger(ticketId)) return { ok: false, error: 'Unknown ticket.' }
   const body = String(formData.get('body') ?? '').trim()
-  if (!body) return { ok: false, error: 'Write a reply first.' }
+  const internal = str(formData, 'kind') === 'note'
+
+  // Before 0041 a note has nowhere to be kept apart from the customer's thread,
+  // and the form does not offer one. A post asking for it anyway is refused
+  // rather than written as a reply the customer would read.
+  if (internal && !(await getSchemaCapabilities()).ticketNotes) {
+    return { ok: false, error: 'Internal notes are not set up on this system yet. Nothing was posted.' }
+  }
+
+  const photo = readTicketPhoto(formData)
+  if (photo.error) return { ok: false, error: photo.error }
+  if (!body && !photo.file) {
+    return { ok: false, error: internal ? 'Write a note or attach a photo.' : 'Write a reply or attach a photo.' }
+  }
 
   const ticket = await getTicket(company.id, ticketId)
   if (!ticket) return { ok: false, error: 'That ticket no longer exists.' }
 
+  // A photo that will not upload is reported, not dropped: the person posting
+  // it is usually standing at the fault, and it is the point of the message.
+  let photoPath: string | null = null
+  if (photo.file) {
+    try {
+      photoPath = await uploadTicketPhoto(company.id, ticketId, photo.file)
+    } catch (err) {
+      return { ok: false, error: (err as Error).message + ' Nothing was posted.' }
+    }
+  }
+
   await addTicketMessage({
     companyId: company.id, ticketId, author: 'staff',
-    authorUserId: profile.id, authorName: displayName(profile), body, photoPath: null,
+    authorUserId: profile.id, authorName: displayName(profile),
+    body: body || null, photoPath, internal,
   })
 
-  if (ticket.customer_id) {
+  if (!internal && ticket.customer_id) {
     await sendDirectSms({
       companyId: company.id,
       customerId: ticket.customer_id,
-      text: company.name + ': an update on your support request — ' + body.slice(0, 300),
+      text:
+        company.name + ': an update on your support request — ' +
+        (body ? body.slice(0, 300) : 'we added a photo. Sign in to see it.'),
       gateColumn: 'notify_ticket_reply_enabled',
-      idemKey: 'ticket-reply-' + ticketId + '-' + profile.id + '-' + body.length,
+      idemKey: 'ticket-reply-' + ticketId + '-' + profile.id + '-' + body.length + (photoPath ? '-photo' : ''),
     }).catch(() => false)
   }
 

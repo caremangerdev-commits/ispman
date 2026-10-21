@@ -1,4 +1,4 @@
-import type { SearchHit } from '@/lib/data/customer-search'
+import type { CustomerHit } from '@/lib/data/customer-search'
 import { STATUS_DOT } from '@/lib/status'
 
 const DOTS: Record<string, string> = STATUS_DOT
@@ -16,7 +16,7 @@ export function CustomerHitCard({
   hit,
   aside,
 }: {
-  hit: Pick<SearchHit, 'status' | 'first_name' | 'last_name' | 'phone' | 'address' | 'mac_address'>
+  hit: Pick<CustomerHit, 'status' | 'first_name' | 'last_name' | 'phone' | 'address' | 'mac_address'>
   /** Shown after the MAC, e.g. the balance on a cashier's dashboard. */
   aside?: React.ReactNode
 }) {

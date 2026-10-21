@@ -1,6 +1,6 @@
 import { PencilLine } from 'lucide-react'
 
-import { decodeChanges, EMPTY } from '@/lib/customer-changes'
+import { decodeChanges, EMPTY, MONEY_FIELDS } from '@/lib/customer-changes'
 import { logField, logSubject, readLogDetail } from '@/lib/log-detail'
 import { timeAgo } from '@/lib/format'
 import type { LogRow } from '@/lib/types'
@@ -36,7 +36,32 @@ function parse(details: string | null) {
   }
 }
 
-export function ChangeHistory({ entries }: { entries: LogRow[] }) {
+export function ChangeHistory({
+  entries: rows,
+  hideMoney = false,
+}: {
+  entries: LogRow[]
+  /**
+   * Leave out the money fields (lib/customer-changes.ts#MONEY_FIELDS), and any
+   * edit that changed nothing else. For a role without
+   * view_customer_billing_history. A server component, so the left-out values
+   * are not in the page at all.
+   */
+  hideMoney?: boolean
+}) {
+  const entries = rows
+    .map((row) => {
+      const parsed = parse(row.details)
+      return {
+        row,
+        ...parsed,
+        changes: hideMoney
+          ? parsed.changes.filter((c) => !MONEY_FIELDS.includes(c.field))
+          : parsed.changes,
+      }
+    })
+    .filter((entry) => entry.changes.length > 0 || !hideMoney)
+
   return (
     <section className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
       <header className="flex items-baseline justify-between gap-3 border-b border-gray-800 px-5 py-3">
@@ -54,8 +79,7 @@ export function ChangeHistory({ entries }: { entries: LogRow[] }) {
         </p>
       ) : (
         <ul className="divide-y divide-gray-800">
-          {entries.map((entry) => {
-            const { by, platform, changes } = parse(entry.details)
+          {entries.map(({ row: entry, by, platform, changes }) => {
             return (
               <li key={entry.id} className="flex gap-3 px-5 py-3">
                 <span

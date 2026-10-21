@@ -60,6 +60,14 @@ export const FIELD_LABELS: Record<string, string> = {
   addons: 'Add-ons',
 }
 
+/**
+ * The edited fields whose values are a customer's money. A role without
+ * view_customer_billing_history is shown a customer's Change History without
+ * them (components/customers/ChangeHistory.tsx) — the rate a technician cannot
+ * see on the record must not be readable in the record's edit trail instead.
+ */
+export const MONEY_FIELDS: readonly string[] = ['monthly_rate', 'bill_date']
+
 /** Shown in place of a value that is null, empty, or only whitespace. */
 export const EMPTY = '(none)'
 

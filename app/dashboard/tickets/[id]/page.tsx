@@ -9,6 +9,7 @@ import { listAgents } from '@/lib/data/checkoff'
 import { getTicket, listTicketMessages } from '@/lib/data/tickets'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { requirePermission } from '@/lib/session'
+import { ticketRights } from '@/lib/ticket-rules'
 
 export const metadata: Metadata = { title: 'Ticket · ISPMan' }
 
@@ -25,10 +26,12 @@ export default async function TicketDetailPage({
   const [ticket, agents, messages] = await Promise.all([
     getTicket(company.id, ticketId),
     listAgents(company.id),
-    caps.portalTier2 ? listTicketMessages(company.id, ticketId) : Promise.resolve([]),
+    // Staff read the whole thread, internal notes included.
+    caps.portalTier2 ? listTicketMessages(company.id, ticketId, 'staff') : Promise.resolve([]),
   ])
 
   if (!ticket) notFound()
+  const mayReply = ticketRights(profile.role, profile.id, ticket).reply
 
   const fmt = (v: string) =>
     new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(v))
@@ -43,7 +46,7 @@ export default async function TicketDetailPage({
         Back to tickets
       </Link>
 
-      <TicketDetail ticket={ticket} agents={agents} role={profile.role} />
+      <TicketDetail ticket={ticket} agents={agents} role={profile.role} userId={profile.id} />
 
       {caps.portalTier2 ? (
         <section className="space-y-3 rounded-lg border border-gray-800 bg-gray-900/40 p-4">
@@ -53,9 +56,24 @@ export default async function TicketDetailPage({
           ) : (
             <ol className="space-y-2">
               {messages.map((m) => (
-                <li key={m.id} className="rounded-md border border-gray-800 p-3">
-                  <div className="flex items-center justify-between text-xs text-gray-500">
-                    <span>{m.author === 'staff' ? m.authorName || 'Staff' : 'Customer'}</span>
+                <li
+                  key={m.id}
+                  className={
+                    'rounded-md border p-3 ' +
+                    (m.internal ? 'border-amber-900/50 bg-amber-950/20' : 'border-gray-800')
+                  }
+                >
+                  <div className="flex items-center justify-between gap-2 text-xs text-gray-500">
+                    <span className="flex items-center gap-2">
+                      {m.author === 'staff' ? m.authorName || 'Staff' : 'Customer'}
+                      {/* Never shown to the customer: the portal's read leaves
+                          these out (lib/data/tickets.ts#listTicketMessages). */}
+                      {m.internal ? (
+                        <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-400">
+                          Internal note
+                        </span>
+                      ) : null}
+                    </span>
                     <span>{fmt(m.createdAt)}</span>
                   </div>
                   {m.body ? <p className="mt-1 whitespace-pre-line text-sm text-gray-200">{m.body}</p> : null}
@@ -72,7 +90,7 @@ export default async function TicketDetailPage({
               ))}
             </ol>
           )}
-          <TicketReply ticketId={ticketId} />
+          {mayReply ? <TicketReply ticketId={ticketId} notesAvailable={caps.ticketNotes} /> : null}
         </section>
       ) : null}
     </div>
