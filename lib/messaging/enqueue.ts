@@ -7,7 +7,9 @@ import { adapterFor, allAdapters } from '@/lib/messaging/registry'
 import { resolveRoute, type Resolution } from '@/lib/messaging/route'
 import type { Channel, Route } from '@/lib/messaging/routes'
 import { getSchemaCapabilities } from '@/lib/schema'
-import { renderTemplate, type PlaceholderValues, type SmsKind } from '@/lib/sms/templates'
+import {
+  isDocumentKind, renderTemplate, type DocumentKind, type MessageKind, type PlaceholderValues,
+} from '@/lib/sms/templates'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 /**
@@ -59,7 +61,7 @@ export type EnqueueOutcome =
 export async function enqueueMessage(opts: {
   companyId: number
   channel: Channel
-  kind: SmsKind
+  kind: MessageKind
   customerId: number | null
   recipient: string
   subject: string | null
@@ -127,10 +129,14 @@ export type RouteOutcome = {
  * page lets the operator choose per send — and defaults to the setting.
  * Templates are per channel: `text.sms` is the SMS wording and `text.email`
  * the subject and body; each is rendered with the same placeholder values.
+ *
+ * A DOCUMENT KIND (lib/sms/templates.ts#DocumentKind) has no stored route and
+ * goes by email, the one channel that can carry the document; `text.sms` is
+ * then never used.
  */
 export async function enqueueForRoute(opts: {
   companyId: number
-  kind: RoutedKind
+  kind: RoutedKind | DocumentKind
   settings: MessagingSettings
   readiness: Readiness
   route?: Route
@@ -141,7 +147,7 @@ export async function enqueueForRoute(opts: {
   batchId?: number | null
   attachment?: AttachmentRef | null
 }): Promise<RouteOutcome> {
-  const route = opts.route ?? opts.settings.routes[opts.kind]
+  const route = opts.route ?? (isDocumentKind(opts.kind) ? 'email' : opts.settings.routes[opts.kind])
   const resolution = resolveRoute({
     route, customer: opts.customer, settings: opts.settings, ready: opts.readiness,
   })

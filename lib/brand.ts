@@ -2,8 +2,8 @@
  * What a company looks like: its name, its logo, one colour, how to reach it.
  *
  * ONE DEFINITION, TWO RENDERERS. The HTML email shell (lib/messaging/
- * email-shell.ts) and the PDF letterhead (lib/letterhead-pdf.ts) both take a
- * `Brand` and nothing else about the company. Neither reads settings, neither
+ * email-shell.ts) and the bill (lib/bill/pdf.ts) both take a `Brand` and
+ * nothing else about the company. Neither reads settings, neither
  * parses a colour, neither decides what "no logo" means — those are decided
  * here and in lib/data/brand.ts#brandFor, once, so an emailed bill and the PDF
  * attached to it cannot show two different companies.

@@ -1,5 +1,8 @@
 import 'server-only'
 
+import { billFilename, billPdf } from '@/lib/bill/pdf'
+import { toBillTemplate, type BillTemplate } from '@/lib/bill/settings'
+import { loadBill } from '@/lib/data/bill'
 import { getReceipt } from '@/lib/data/receipts'
 import { renderReceipt } from '@/lib/receipt'
 import { receiptFilename, receiptPdf } from '@/lib/receipt-pdf'
@@ -14,29 +17,36 @@ import { receiptFilename, receiptPdf } from '@/lib/receipt-pdf'
  * refers to a record since deleted fails with a reason rather than sending a
  * stale copy.
  *
- * ADDING A KIND is a case in the switch: bills (migration 0014) are the next
- * one, and an emailed bill is their main delivery.
+ * A BILL is '{"kind":"bill","id":<customer id>,"template":"statement"}': the
+ * customer's current bill, drawn by lib/bill/pdf.ts#billPdf from
+ * lib/data/bill.ts#loadBill — the same loader and renderer as the portal's
+ * download and the staff "Bill (PDF)" link, so an emailed bill cannot be a
+ * different document from either. The template is the company's choice at the
+ * moment staff pressed Email, pinned so the cover note that was written then
+ * and the PDF drawn now name the same kind of document.
  */
 
 export type AttachmentRef =
   | { kind: 'receipt'; id: number }
-  | { kind: 'bill'; id: number }
+  | { kind: 'bill'; id: number; template: BillTemplate }
 
 export type RenderedAttachment = { filename: string; bytes: Uint8Array; contentType: string }
 
 export function parseAttachmentRef(raw: string | null | undefined): AttachmentRef | null {
   if (!raw) return null
   try {
-    const v = JSON.parse(raw) as { kind?: string; id?: number }
-    if ((v.kind === 'receipt' || v.kind === 'bill') && Number.isInteger(v.id)) {
-      return { kind: v.kind, id: v.id as number }
-    }
+    const v = JSON.parse(raw) as { kind?: string; id?: number; template?: string }
+    if (!Number.isInteger(v.id)) return null
+    if (v.kind === 'receipt') return { kind: 'receipt', id: v.id as number }
+    if (v.kind === 'bill') return { kind: 'bill', id: v.id as number, template: toBillTemplate(v.template) }
   } catch { /* fall through */ }
   return null
 }
 
 export function serialiseAttachmentRef(ref: AttachmentRef): string {
-  return JSON.stringify({ kind: ref.kind, id: ref.id })
+  return JSON.stringify(ref.kind === 'bill'
+    ? { kind: ref.kind, id: ref.id, template: ref.template }
+    : { kind: ref.kind, id: ref.id })
 }
 
 export async function renderAttachment(
@@ -53,9 +63,10 @@ export async function renderAttachment(
         contentType: 'application/pdf',
       }
     }
-    case 'bill':
-      // The slot bills will fill. Refused rather than sent empty, so a row
-      // queued before the renderer exists fails visibly.
-      return { error: 'Bill documents are not available yet.' }
+    case 'bill': {
+      const bill = await loadBill(companyId, ref.id, { template: ref.template })
+      if (!bill) return { error: 'Customer #' + ref.id + ' no longer exists.' }
+      return { filename: billFilename(bill), bytes: billPdf(bill), contentType: 'application/pdf' }
+    }
   }
 }

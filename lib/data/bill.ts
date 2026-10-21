@@ -236,7 +236,7 @@ export async function loadBill(
 
 /**
  * A bill for a customer nobody has, in the company's own settings, brand and
- * letterhead — so Settings > Bills can show each template before it goes out.
+ * letterhead — so Settings > Bill Design can show each template before it goes out.
  * The rows are the reference's: three months of a 3,500 plan, paid each month.
  */
 export async function sampleBill(companyId: number, template: BillTemplate): Promise<BillDocument> {

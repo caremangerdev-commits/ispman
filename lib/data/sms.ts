@@ -50,6 +50,8 @@ export type MessagingSettings = {
   ticketReplyNotify: boolean
   /** 0037 — text affected customers on an outage open/restore. Off by default. */
   outageNotify: boolean
+  /** 0042 — staff may email a customer their bill. Off by default; set under Settings > Bill Design. */
+  billEmail: boolean
   emailFromName: string | null
   emailReplyTo: string | null
   emailFromDomain: string | null
@@ -89,6 +91,7 @@ export const SMS_SETTINGS_OFF: MessagingSettings = {
   allowForeign: false,
   ticketReplyNotify: false,
   outageNotify: false,
+  billEmail: false,
   emailFromName: null,
   emailReplyTo: null,
   emailFromDomain: null,
@@ -131,6 +134,7 @@ type SettingRow = {
   sms_allow_foreign: boolean | null
   notify_ticket_reply_enabled?: boolean | null
   notify_outage_enabled?: boolean | null
+  notify_bill_enabled?: boolean | null
   email_enabled?: boolean | null
   email_from_name?: string | null
   email_reply_to?: string | null
@@ -197,6 +201,7 @@ function toSettings(
     allowForeign: Boolean(s?.sms_allow_foreign),
     ticketReplyNotify: Boolean(s?.notify_ticket_reply_enabled),
     outageNotify: Boolean(s?.notify_outage_enabled),
+    billEmail: Boolean(s?.notify_bill_enabled),
     emailFromName: s?.email_from_name || null,
     emailReplyTo: s?.email_reply_to || null,
     emailFromDomain: s?.email_from_domain || null,
@@ -213,7 +218,8 @@ export async function getSmsSettings(companyId: number): Promise<MessagingSettin
 
   const cols = BASE_COLS + ', ' +
     (caps.messaging ? SWITCH_COLS_0022 + ', ' + MESSAGING_COLS : SWITCH_COLS_0021) +
-    (caps.portalTier2 ? ', notify_ticket_reply_enabled, notify_outage_enabled' : '')
+    (caps.portalTier2 ? ', notify_ticket_reply_enabled, notify_outage_enabled' : '') +
+    (caps.emailBills ? ', notify_bill_enabled' : '')
 
   const db = tenantClient()
   const [{ data, error }, { data: co }] = await Promise.all([

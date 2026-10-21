@@ -9,6 +9,8 @@ import { ArrowLeft, Plus } from 'lucide-react'
 
 import { CustomerDetail } from '@/components/customers/CustomerDetail'
 import { ChangeHistory } from '@/components/customers/ChangeHistory'
+import { EmailBillButton } from '@/components/customers/EmailBillButton'
+import { billEmailOffer } from '@/lib/sms/notify'
 import { NetworkHistory } from '@/components/customers/NetworkHistory'
 import { OneOffCharges } from '@/components/customers/OneOffCharges'
 import { listCustomerCharges } from '@/lib/data/charges'
@@ -98,6 +100,12 @@ export default async function CustomerDetailPage({
       // rule (0039) inert — the same test the payment path makes.
       prepaidCalendarFor(company.id),
     ])
+
+  // "Email bill" beside "Bill (PDF)": shown when the company has bill emails
+  // on (0042), and disabled with the reason when this customer cannot get one.
+  const billOffer = money
+    ? await billEmailOffer(company.id, { email: customer.email, email_opted_out: customer.emailOptedOut })
+    : { shown: false as const }
 
   const totalPaid = payments.reduce((sum, p) => sum + Number(p.amount ?? 0), 0)
 
@@ -244,6 +252,14 @@ export default async function CustomerDetailPage({
               >
                 Bill (PDF)
               </a>
+              {/* The same PDF, sent to the customer: the attachment is drawn by
+                  the renderer behind the link above (lib/messaging/attachments.ts). */}
+              {billOffer.shown ? (
+                <>
+                  {' · '}
+                  <EmailBillButton customerId={customer.id} email={customer.email} blocked={billOffer.blocked} />
+                </>
+              ) : null}
               {' · '}
               {(['statement', 'ledger', 'receipt'] as const).map((t, i) => (
                 <span key={t}>

@@ -196,6 +196,8 @@ function LetterheadBlock({
         </form>
       ) : null}
 
+      {/* The one sample: the company's chosen template, from the renderer
+          every real bill comes from (app/api/company/bill-sample). */}
       <a
         href="/api/company/bill-sample"
         target="_blank"
@@ -204,6 +206,9 @@ function LetterheadBlock({
       >
         Open a sample bill (PDF)
       </a>
+      <p className="text-[11px] text-gray-600">
+        In the template chosen under Bill Design, with your logo, colour and letterhead as saved.
+      </p>
     </div>
   )
 }
@@ -348,15 +353,6 @@ export function BrandingCard({
             <Notice state={colorState} />
             <Submit label="Save colour" busy="Saving…" disabled={!available || invalid} />
           </form>
-
-          <a
-            href="/api/company/letterhead"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-block text-xs font-medium text-blue-400 hover:text-blue-300"
-          >
-            Open a sample letterhead (PDF)
-          </a>
         </div>
 
         {/* ---- Preview ---- */}

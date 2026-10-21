@@ -16,6 +16,27 @@ export type SmsKind =
   | 'disconnection_notice'
   | 'bulk'
 
+/**
+ * Messages that exist to deliver a DOCUMENT: email only, the document attached,
+ * the wording built from the document itself rather than an editable template.
+ * So none of them has an SMS template, a stored route or an email template on
+ * `settings`, and they are kept out of SmsKind, whose maps would otherwise all
+ * need an entry that means nothing. The emailed bill is the first (0042).
+ *
+ * THE NAME IS ITS PLACE IN THE QUEUE. The dispatcher drains kinds in
+ * descending name order (lib/sms/dispatch.ts): 'customer_bill' sorts after
+ * disconnection_notice and before bulk, so a bill a member of staff just sent
+ * never waits behind a bulk send.
+ */
+export type DocumentKind = 'customer_bill'
+
+/** Every value sms_outbox.kind can hold. */
+export type MessageKind = SmsKind | DocumentKind
+
+export function isDocumentKind(kind: string): kind is DocumentKind {
+  return kind === 'customer_bill'
+}
+
 /** The three automated types, in the order they appear on the settings page. */
 export const AUTOMATED_KINDS = [
   'payment_receipt', 'expiry_warning', 'disconnection_notice',

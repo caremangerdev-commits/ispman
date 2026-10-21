@@ -42,7 +42,7 @@ async function guard() {
 
 function revalidate() {
   revalidatePath('/dashboard/settings/company')
-  revalidatePath('/dashboard/settings/bills')
+  revalidatePath('/dashboard/settings/bill-design')
 }
 
 export async function uploadCompanyLogo(

@@ -21,6 +21,20 @@ const nextConfig: NextConfig = {
    * package external makes the server require it from node_modules as-is.
    */
   serverExternalPackages: ["mysql2"],
+  /**
+   * Settings > Bills became Settings > Bill Design on 2026-10-21 ("Bills" read
+   * like a list of bills). The old address keeps working for bookmarks and
+   * anything already linking to it.
+   */
+  async redirects() {
+    return [
+      {
+        source: "/dashboard/settings/bills",
+        destination: "/dashboard/settings/bill-design",
+        permanent: true,
+      },
+    ];
+  },
   experimental: {
     serverActions: {
       /**

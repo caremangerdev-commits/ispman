@@ -6,15 +6,21 @@ import { saveBillSettings, type BillSettingsResult } from '@/app/actions/bill-se
 import { Card, Field, SaveButton, Toggle } from '@/components/settings/form-parts'
 import { settingsInput } from '@/components/settings/Modal'
 import {
-  BANK_DETAILS_MAX, BILL_TEMPLATE_HELP, BILL_TEMPLATE_LABELS, BILL_TEMPLATES, CURRENCY_SYMBOL_MAX,
-  DEFAULT_TAX_LABEL, formatRate, REGISTERED_ADDRESS_MAX, splitTax, TAX_LABEL_MAX, TAX_NUMBER_MAX,
+  BANK_DETAILS_MAX, BILL_TEMPLATE_HELP, BILL_TEMPLATE_LABELS, BILL_TEMPLATES, DEFAULT_TAX_LABEL,
+  formatRate, INVOICE_PREFIX_MAX, REGISTERED_ADDRESS_MAX, splitTax, TAX_LABEL_MAX, TAX_NUMBER_MAX,
   type BillSettings, type BillTemplate,
 } from '@/lib/bill/settings'
 
 /**
- * Settings > Bills: which of the three templates a company's bills use, and
- * everything a bill says about the company — its registered address, tax and
- * registration numbers, the tax line, the currency symbol, and how to pay.
+ * Settings > Bill Design: what is specific to the bill — which of the three
+ * templates it uses, its tax line and the company's tax and registration
+ * numbers, the registered address it prints, the invoice number prefix, how to
+ * pay, and whether staff may email it.
+ *
+ * NOT HERE: the logo, colour and letterhead, which are the company's identity
+ * across the portal, emails and documents and live in the Branding card on
+ * Settings > General; and the currency symbol, which the portal prints too and
+ * lives beside the currency in General (moved 2026-10-21).
  *
  * NOTHING HERE IS JAMAICA-SPECIFIC. The tax line's label and rate, the
  * currency symbol and the tax ID's label are all the company's own. The tax ID
@@ -31,9 +37,11 @@ export function BillSettingsForm({
   available,
   taxRateAvailable,
   contactAddress,
-  defaultSymbol,
+  invoicePrefixAvailable,
+  exampleMonth,
   hasLetterhead,
   onlineAvailable,
+  emailBills,
 }: {
   settings: BillSettings
   /** Migration 0038. */
@@ -42,25 +50,34 @@ export function BillSettingsForm({
   taxRateAvailable: boolean
   /** companies.address, printed when no registered address is set. */
   contactAddress: string | null
-  /** The symbol settings.currency gives, shown as the placeholder. */
-  defaultSymbol: string
+  /** Migration 0042: settings.invoice_prefix. */
+  invoicePrefixAvailable: boolean
+  /** This month as YYYYMM, for the prefix example. From the server: a render does not read the clock. */
+  exampleMonth: string
   hasLetterhead: boolean
   /** A payment gateway is on, so bills offer "Card, online". */
   onlineAvailable: boolean
+  /**
+   * Emailing bills (migration 0042): whether the switch exists, whether it is
+   * on, and whether this company can send email at all right now — the
+   * switch does nothing while email itself is off.
+   */
+  emailBills: { available: boolean; on: boolean; emailBlocked: string | null }
 }) {
   const [state, action] = useActionState<BillSettingsResult | null, FormData>(saveBillSettings, null)
   const [template, setTemplate] = useState<BillTemplate>(settings.template)
+  const [emailOn, setEmailOn] = useState(emailBills.on)
   const [registered, setRegistered] = useState(settings.taxRegistered)
   const [rate, setRate] = useState(settings.taxRate ? String(settings.taxRate) : '')
   const [label, setLabel] = useState(settings.taxLabelOverride ?? '')
-  const [symbol, setSymbol] = useState(settings.currencySymbolOverride ?? '')
+  const [prefix, setPrefix] = useState(settings.invoicePrefix ?? '')
 
   const locked = !available
   const lockedClass = (on: boolean) => settingsInput + (on ? '' : ' cursor-not-allowed opacity-50')
 
   // The example the tax hint works through, in the company's own symbol and
   // label, so the tax-inclusive rule is seen rather than read.
-  const shownSymbol = symbol.trim() || defaultSymbol
+  const shownSymbol = settings.currencySymbol
   const shownLabel = label.trim() || DEFAULT_TAX_LABEL
   const rateNum = Number(rate)
   const example = splitTax(3500, Number.isFinite(rateNum) ? rateNum : 0)
@@ -126,9 +143,34 @@ export function BillSettingsForm({
           ))}
         </div>
         <p className="text-[11px] text-gray-600">
-          Customers download it from the portal, and staff print it from the customer record. Samples use
-          your saved settings — save first to see a change.
+          Customers download it from the portal, staff print it from the customer record, and an emailed bill
+          is the same PDF. Samples use your saved settings — save first to see a change.
         </p>
+      </Card>
+
+      {/* ---- Emailing bills (0042) ---- */}
+      <Card title="Emailing Bills">
+        <Toggle
+          name="notify_bill_enabled"
+          label="Let staff email a customer their bill"
+          checked={emailOn}
+          onChange={setEmailOn}
+          disabled={locked || !emailBills.available}
+        />
+        <p className="text-[11px] leading-relaxed text-gray-600">
+          Off by default. When on, the customer record gets an &quot;Email bill&quot; link beside &quot;Bill (PDF)&quot;.
+          The customer receives a short note in your email layout with the bill attached as a PDF — the same
+          document as the sample above, in your chosen template, with your tax line, letterhead, currency and
+          bank details. It goes by email only, through your notification settings, and never to a customer
+          who has opted out of email.
+        </p>
+        {!emailBills.available ? (
+          <p className="text-[11px] text-amber-400/90">Needs migration 0042.</p>
+        ) : emailOn && emailBills.emailBlocked ? (
+          <p className="text-[11px] text-amber-400/90">
+            Nothing will send yet: {emailBills.emailBlocked.charAt(0).toLowerCase() + emailBills.emailBlocked.slice(1)}
+          </p>
+        ) : null}
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -236,24 +278,34 @@ export function BillSettingsForm({
           </p>
         </Card>
 
-        {/* ---- Money and payment ---- */}
-        <Card title="Currency">
+        {/* ---- Numbering ---- */}
+        <Card title="Invoice Numbers">
           <Field
-            label="Currency symbol"
-            htmlFor="currency_symbol"
-            hint={'Blank uses ' + defaultSymbol + ', from your currency in General Settings. Used on bills and the customer portal.'}
+            label="Invoice prefix"
+            htmlFor="invoice_prefix"
+            hint={
+              invoicePrefixAvailable
+                ? 'Optional, e.g. INV- or WCN/. Put in front of every invoice number: ' +
+                  (prefix.trim() || '') + '001403-' + exampleMonth + '.'
+                : 'Needs migration 0042.'
+            }
           >
             <input
-              id="currency_symbol"
-              name="currency_symbol"
-              maxLength={CURRENCY_SYMBOL_MAX}
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value)}
-              placeholder={defaultSymbol}
-              disabled={locked}
-              className={lockedClass(!locked)}
+              id="invoice_prefix"
+              name="invoice_prefix"
+              maxLength={INVOICE_PREFIX_MAX}
+              value={prefix}
+              onChange={(e) => setPrefix(e.target.value)}
+              placeholder="none"
+              disabled={locked || !invoicePrefixAvailable}
+              className={lockedClass(!locked && invoicePrefixAvailable)}
             />
           </Field>
+          <p className="text-[11px] leading-relaxed text-gray-600">
+            An invoice is numbered by account and month, so the same month&apos;s invoice keeps its number
+            however often it is printed. Receipts are numbered by payment. Amounts print in your currency
+            symbol, {settings.currencySymbol}, set in General Settings.
+          </p>
         </Card>
 
         <Card title="How to Pay">

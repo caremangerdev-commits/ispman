@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation'
 
 import { BrandingCard } from '@/components/settings/BrandingCard'
 import { GeneralSettingsForm } from '@/components/settings/GeneralSettingsForm'
+import { getBillSettings } from '@/lib/data/bill-settings'
 import { brandFor, getBrandColor, loadLetterhead } from '@/lib/data/brand'
 import { letterheadPreviewUri } from '@/lib/logo'
 import {
@@ -42,13 +43,16 @@ const SAMPLE_VALUES = {
 
 export default async function GeneralSettingsPage() {
   const { company } = await guard()
-  const [settings, caps, brand, color, messaging, letterhead] = await Promise.all([
+  const [settings, caps, brand, color, messaging, letterhead, billSettings] = await Promise.all([
     getGeneralSettings(company.id),
     getSchemaCapabilities(),
     brandFor(company.id),
     getBrandColor(company.id),
     getMessagingSettings(company.id),
     loadLetterhead(company.id),
+    // For the currency symbol, which is read with the rest of what prints on
+    // a bill (lib/data/bill-settings.ts) but set here.
+    getBillSettings(company.id),
   ])
   const letterheadPreview = letterhead ? await letterheadPreviewUri(letterhead.png) : null
 
@@ -82,6 +86,7 @@ export default async function GeneralSettingsPage() {
         taxIdAvailable={caps.taxId}
         accountNumbersAvailable={caps.accountNumbers}
         portalNoteAvailable={caps.portalNote}
+        currencySymbol={{ available: caps.billDocuments, override: billSettings.currencySymbolOverride }}
       />
 
       <BrandingCard

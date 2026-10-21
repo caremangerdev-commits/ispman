@@ -187,7 +187,7 @@ export type SchemaCapabilities = {
    * Migration 0038: the bill template, the company's tax and payment details,
    * and the letterhead path, all on `settings`. Absent, every bill is the
    * Statement with no tax line, the currency symbol comes from the currency
-   * code, and Settings > Bills and the letterhead upload say so.
+   * code, and Settings > Bill Design and the letterhead upload say so.
    */
   billDocuments: boolean
   /**
@@ -202,6 +202,14 @@ export type SchemaCapabilities = {
    * offered — it would otherwise land in the customer's thread.
    */
   ticketNotes: boolean
+  /**
+   * Migration 0042: settings.notify_bill_enabled. Absent, nobody can email a
+   * bill: the customer record offers no button and Settings > Bill Design says
+   * the switch needs the migration.
+   */
+  emailBills: boolean
+  /** Migration 0042: settings.invoice_prefix. Absent, invoices carry no prefix. */
+  invoicePrefix: boolean
 }
 
 /**
@@ -239,7 +247,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     ticketMessagesRes, incidentsRes, outageSwitchRes,
     paymentGatewaysRes,
     billDocumentsRes, anniversaryRes,
-    ticketNotesRes,
+    ticketNotesRes, emailBillsRes, invoicePrefixRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -340,6 +348,9 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('customers').select('expiry_rule, anniversary_day').limit(1),
     // 0041: the internal-note flag on a ticket message.
     db.from('ticket_messages').select('internal').limit(1),
+    // 0042: the per-company switch for emailing bills, and the invoice prefix.
+    db.from('settings').select('notify_bill_enabled').limit(1),
+    db.from('settings').select('invoice_prefix').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -623,6 +634,16 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for ticket_messages.internal: ' + ticketNotesRes.error.message)
   }
 
+  // 0042: two columns, probed apart so each feature says what it needs.
+  const missingEmailBills = emailBillsRes.error?.code === '42703'
+  if (emailBillsRes.error && !missingEmailBills) {
+    throw new Error('Schema probe failed for settings.notify_bill_enabled: ' + emailBillsRes.error.message)
+  }
+  const missingInvoicePrefix = invoicePrefixRes.error?.code === '42703'
+  if (invoicePrefixRes.error && !missingInvoicePrefix) {
+    throw new Error('Schema probe failed for settings.invoice_prefix: ' + invoicePrefixRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -660,6 +681,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     billDocuments: !missingBillDocuments,
     anniversaryExpiry: !missingAnniversary,
     ticketNotes: !missingTicketNotes,
+    emailBills: !missingEmailBills,
+    invoicePrefix: !missingInvoicePrefix,
   }
 })
 

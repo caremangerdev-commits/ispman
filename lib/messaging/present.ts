@@ -18,8 +18,10 @@ import { blocksFromText, LOGO_CID, renderEmailHtml, renderEmailText } from '@/li
  * The dispatcher calls this only for an adapter that declares supportsHtml, so
  * nothing here names a channel.
  *
- * EVERY KIND'S BLOCKS COME FROM ITS TEXT today. A kind that wants more than
- * words — a bill's amount due as a callout, a pay button — builds its own
+ * EVERY KIND'S BLOCKS COME FROM ITS TEXT today, the emailed bill's included:
+ * its cover note's "Label: value" lines become the shell's table, and the bill
+ * itself travels as the attached PDF (lib/bill/email.ts says why not HTML). A
+ * kind that wants more than words — a callout, a pay button — builds its own
  * block list here, switched on `row.kind`; the shell already draws them.
  */
 

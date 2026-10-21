@@ -1,6 +1,8 @@
 'use client'
 
 import { ACCOUNT_PREFIX_MAX } from '@/lib/account-number'
+import { CURRENCY_SYMBOL_MAX } from '@/lib/bill/settings'
+import { currencySymbol as symbolFor } from '@/lib/format'
 import { COUNTRIES, TAX_ID_MAX, taxIdLabel } from '@/lib/tax-id'
 import { Eye, EyeOff } from 'lucide-react'
 import { useActionState, useState } from 'react'
@@ -11,7 +13,11 @@ import { settingsInput } from '@/components/settings/Modal'
 import type { GeneralSettings } from '@/lib/data/company'
 
 /**
- * Settings > General: who the company is, where it is, and its network.
+ * Settings > General: who the company is, where it is, and its network — and,
+ * in the Branding card beside it, how it looks everywhere it appears: logo,
+ * colour and letterhead, used by the portal, emails and documents alike.
+ * What only a bill says (its template, tax line, tax numbers, bank details,
+ * invoice prefix) is Settings > Bill Design.
  *
  * Billing fields (the billing model and engine, bill and cut-off days, grace,
  * first-period rules, tax, the default rate, the thresholds) moved to
@@ -26,6 +32,7 @@ export function GeneralSettingsForm({
   taxIdAvailable,
   accountNumbersAvailable,
   portalNoteAvailable,
+  currencySymbol,
 }: {
   settings: GeneralSettings
   currencies: readonly string[]
@@ -38,6 +45,11 @@ export function GeneralSettingsForm({
   accountNumbersAvailable: boolean
   /** Migration 0036 — hides the portal payment note until applied. */
   portalNoteAvailable: boolean
+  /**
+   * The symbol before every amount on bills and in the portal (migration 0038):
+   * the stored override, or null for the one the currency gives.
+   */
+  currencySymbol: { available: boolean; override: string | null }
 }) {
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveCompanyProfile, null)
 
@@ -48,6 +60,7 @@ export function GeneralSettingsForm({
   // What the tax id field is called right now, shown as the placeholder and in
   // the hint so the operator can see what leaving the override blank gives.
   const [country, setCountry] = useState(settings.country)
+  const [currency, setCurrency] = useState(settings.currency)
   const resolvedTaxLabel = taxIdLabel(settings.taxIdLabel, country)
 
   const lockedHint = generalAvailable ? undefined : 'Needs migration 0007.'
@@ -102,12 +115,37 @@ export function GeneralSettingsForm({
           </Field>
 
           <Field label="Currency" htmlFor="currency">
-            <select id="currency" name="currency" defaultValue={settings.currency} className={settingsInput}>
+            <select
+              id="currency"
+              name="currency"
+              value={currency}
+              onChange={(e) => setCurrency(e.target.value)}
+              className={settingsInput}
+            >
               {currencies.map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
           </Field>
+
+          {/* Here, beside the currency, because it is the company's and not one
+              document's: the portal prints it as well as every bill. */}
+          {currencySymbol.available ? (
+            <Field
+              label="Currency symbol"
+              htmlFor="currency_symbol"
+              hint={'Before every amount on bills and in the portal. Blank uses ' + symbolFor(currency) + '.'}
+            >
+              <input
+                id="currency_symbol"
+                name="currency_symbol"
+                maxLength={CURRENCY_SYMBOL_MAX}
+                defaultValue={currencySymbol.override ?? ''}
+                placeholder={symbolFor(currency)}
+                className={settingsInput}
+              />
+            </Field>
+          ) : null}
 
           {/* Country, and what it implies. Setting it names the tax id field
               correctly and is the ONLY thing that lets its format be checked —

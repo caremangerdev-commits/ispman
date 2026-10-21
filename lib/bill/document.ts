@@ -520,10 +520,12 @@ export function buildBillDocument(input: BillInput): BillDocument {
 
   // --- Numbers and dates -----------------------------------------------------
   const yyyymm = (d: Ymd) => d.slice(0, 4) + d.slice(5, 7)
+  // The company's invoice prefix (0042) goes on invoices only: a receipt is
+  // numbered by its payment and a statement of account by its date.
   const number =
     template === 'receipt' && payment ? String(payment.id).padStart(8, '0')
       : template === 'ledger' ? acct + '-' + today.replace(/-/g, '')
-        : acct + '-' + yyyymm(period.start)
+        : (s.invoicePrefix ?? '') + acct + '-' + yyyymm(period.start)
 
   const runsTo = template === 'receipt' && receipt ? receipt.runsTo : expiry
   const owing = (template === 'ledger' ? round2(input.customer.carried) : totalDue) > EPS

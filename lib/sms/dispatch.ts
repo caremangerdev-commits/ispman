@@ -271,8 +271,9 @@ async function drain(
   while (budget > 0 && Date.now() < deadline) {
     // PAYMENT RECEIPTS FIRST. A customer standing at a counter must not wait
     // behind a 400-message blast. DESCENDING, and this relies on the kind
-    // names: payment_receipt > expiry_warning > disconnection_notice > bulk
-    // alphabetically, so Z-to-A is receipts first and bulk last. PostgREST
+    // names: payment_receipt > expiry_warning > disconnection_notice >
+    // customer_bill > bulk alphabetically, so Z-to-A is receipts first, a bill
+    // staff just emailed ahead of any bulk send, and bulk last. PostgREST
     // cannot express a CASE ordering; if a kind is ever added whose name
     // breaks this order, sort in memory here instead of renaming it.
     let query = db

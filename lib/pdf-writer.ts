@@ -1,50 +1,35 @@
-import { hexToRgb, isStoredLetterheadShape, isStoredLogoShape, readPngHeader, type Brand } from '@/lib/brand'
+import { isStoredLetterheadShape, isStoredLogoShape, readPngHeader } from '@/lib/brand'
 import { pdfString } from '@/lib/receipt-pdf'
 
 /**
- * The A4 letterhead, and the small PDF writer it sits on.
+ * The small PDF writer full-page documents are drawn with: base-14 text with
+ * its metrics, line wrapping, a stored logo or letterhead as an image, and the
+ * file itself. Bills (lib/bill/pdf.ts) are what draws on it.
  *
  * Written by hand for the reason lib/receipt-pdf.ts gives: there is no PDF
- * library in this project, and a page of base-14 text with one image does not
- * justify one. The 80mm receipt stays as it is and does NOT get a letterhead —
- * a colour logo on a one-colour thermal head is noise. This is for full-page
- * documents; bills are the first.
+ * library in this project, and pages of base-14 text with an image or two do
+ * not justify one. The 80mm receipt stays as it is.
  *
- * THE SAME FILE THE EMAIL EMBEDS. The logo drawn here is `brand.logo.png`, the
- * one derivative lib/logo.ts stored — not a print rendition. Its compressed
+ * THE SAME FILE THE EMAIL EMBEDS. An image here is a PNG lib/logo.ts stored —
+ * the logo, or the letterhead — not a print rendition. Its compressed
  * scanlines go into the PDF AS THEY ARE: a PNG's IDAT data is a zlib stream of
  * PNG-filtered rows, and that is exactly what PDF's FlateDecode with
  * /Predictor 15 reads. No decoding, no re-encoding, no image library. It only
  * works for an 8-bit image with no alpha and no interlacing, which is why the
- * derivative is that shape and why isStoredLogoShape() is checked again here:
- * anything else draws the wordmark rather than a corrupt page.
+ * stored files are that shape and why the shape is checked again here:
+ * anything else is left out rather than drawn as a corrupt page.
  *
- * NO LOGO is the company's name in Helvetica-Bold in its colour — the same
- * decision, from the same `Brand`, that the email header makes.
- *
- * Checked by scripts/verify-branding.mjs, which writes sample pages and reads
- * the embedded image back out of them. It is also live now, not waiting on
- * bills: the Branding card's "sample letterhead" link serves
- * letterheadSamplePdf().
+ * WAS lib/letterhead-pdf.ts, which also drew a generated letterhead and a
+ * "letterhead sample" page for the Branding card. That was a second, older way
+ * of heading a bill that had stopped looking like any of the three templates;
+ * it was deleted on 2026-10-21, and the Branding card's sample is now a real
+ * bill (app/api/company/bill-sample). Checked by scripts/verify-branding.mjs,
+ * which draws bills and reads the embedded image back out of them.
  */
 
 /** A4 in PostScript points. */
 export const A4 = { width: 595.28, height: 841.89 }
-export const PAGE_MARGIN = 48
 
-/** The logo is drawn inside this box, in points. */
-const LOGO_BOX_WIDTH = 170
-const LOGO_BOX_HEIGHT = 56
-/** Never stretched below 150 dpi: a small logo is drawn small, not blurred. */
-const MAX_POINTS_PER_PIXEL = 72 / 150
-
-const WORDMARK_SIZE = 20
-const WORDMARK_MIN_SIZE = 11
-const CONTACT_SIZE = 9
-const CONTACT_LEADING = 12.5
-const RULE_THICKNESS = 2.5
-
-const MUTED: [number, number, number] = [107, 114, 128]
 const TEXT: [number, number, number] = [31, 41, 51]
 
 /**
@@ -162,7 +147,7 @@ export function textOp(
 }
 
 /** Breaks text into lines no wider than `maxWidth`. A single over-long word is left whole. */
-export function wrapText(text: string, size: number, bold: boolean, maxWidth: number): string[] {
+export function wrapText(text: string, size: number, bold: boolean | PdfFont, maxWidth: number): string[] {
   const lines: string[] = []
   let line = ''
   for (const word of text.split(' ').filter(Boolean)) {
@@ -176,36 +161,6 @@ export function wrapText(text: string, size: number, bold: boolean, maxWidth: nu
   }
   if (line) lines.push(line)
   return lines
-}
-
-/**
- * The wordmark's size and lines for the room beside the contact block.
- *
- * FOUND BY THE SAMPLE PAGE. The first version only shrank the type, and a
- * 74-character company name at the 11pt floor still ran under the address.
- * So: one line at full size if it fits; otherwise the largest size at which
- * it fits on two; and at the floor, two lines with the second cut short — a
- * truncated name is a blemish, text printed over text is a defect.
- */
-function fitWordmark(name: string, room: number): { size: number; lines: string[] } {
-  if (textWidth(name, WORDMARK_SIZE, true) <= room) return { size: WORDMARK_SIZE, lines: [name] }
-
-  for (let size = WORDMARK_SIZE - 2; size >= WORDMARK_MIN_SIZE; size -= 1) {
-    const lines = wrapText(name, size, true, room)
-    if (lines.length <= 2 && lines.every((l) => textWidth(l, size, true) <= room)) return { size, lines }
-  }
-
-  const size = WORDMARK_MIN_SIZE
-  const lines = wrapText(name, size, true, room).slice(0, 2)
-  let last = lines[lines.length - 1]
-  while (last.length > 1 && textWidth(last + '...', size, true) > room) last = last.slice(0, -1)
-  lines[lines.length - 1] = last.trimEnd() + '...'
-  if (textWidth(lines[0], size, true) > room) {
-    let first = lines[0]
-    while (first.length > 1 && textWidth(first + '...', size, true) > room) first = first.slice(0, -1)
-    return { size, lines: [first.trimEnd() + '...'] }
-  }
-  return { size, lines }
 }
 
 export type PdfImage = {
@@ -251,109 +206,6 @@ export function pngToPdfImage(png: Uint8Array): PdfImage | null {
   for (const p of parts) { data.set(p, at); at += p.length }
 
   return { width: header.width, height: header.height, colours: header.colourType === 0 ? 1 : 3, data }
-}
-
-export type Letterhead = {
-  /** Content-stream operators that draw it. */
-  ops: string
-  /** The logo, to be registered as /Im1. Null when the wordmark was drawn. */
-  image: PdfImage | null
-  /** The y coordinate the document's own content may start from. */
-  bodyTop: number
-}
-
-/**
- * Draws the letterhead at the top of a page: logo or wordmark on the left,
- * the company's contact lines right-aligned, the colour as a rule beneath.
- */
-export function letterhead(
-  brand: Brand,
-  page: { width: number; height: number } = A4
-): Letterhead {
-  const left = PAGE_MARGIN
-  const right = page.width - PAGE_MARGIN
-  const top = page.height - PAGE_MARGIN
-  const ops: string[] = []
-
-  const image = brand.logo ? pngToPdfImage(brand.logo.png) : null
-
-  // --- right: who this is from -------------------------------------------
-  // With a logo the name is restated here in words, because a mark is not
-  // always legible as a name. With a wordmark it would only be said twice.
-  const lines: { text: string; bold: boolean }[] = []
-  if (image && brand.name) lines.push({ text: brand.name, bold: true })
-  for (const l of (brand.contact.address ?? '').split(/\s*\n\s*/).filter(Boolean).slice(0, 4)) {
-    lines.push({ text: l, bold: false })
-  }
-  if (brand.contact.phone) lines.push({ text: brand.contact.phone, bold: false })
-  if (brand.contact.email) lines.push({ text: brand.contact.email, bold: false })
-
-  let contactWidth = 0
-  lines.forEach((line, i) => {
-    const w = textWidth(line.text, CONTACT_SIZE, line.bold)
-    contactWidth = Math.max(contactWidth, w)
-    const y = top - CONTACT_SIZE - i * CONTACT_LEADING
-    ops.push(textOp(line.text, right - w, y, CONTACT_SIZE, {
-      bold: line.bold, colour: line.bold ? TEXT : MUTED,
-    }))
-  })
-  const contactHeight = lines.length ? CONTACT_SIZE + (lines.length - 1) * CONTACT_LEADING : 0
-
-  // --- left: the logo, or the name ---------------------------------------
-  let markHeight: number
-  if (image) {
-    const scale = Math.min(
-      LOGO_BOX_WIDTH / image.width, LOGO_BOX_HEIGHT / image.height, MAX_POINTS_PER_PIXEL
-    )
-    const w = image.width * scale
-    const h = image.height * scale
-    // An image is a unit square scaled and placed by the matrix before it.
-    ops.push('q ' + num(w) + ' 0 0 ' + num(h) + ' ' + num(left) + ' ' + num(top - h) + ' cm /Im1 Do Q')
-    markHeight = h
-  } else {
-    const room = right - left - (contactWidth ? contactWidth + 28 : 0)
-    const { size, lines: nameLines } = fitWordmark(brand.name, room)
-    const leading = size * 1.2
-    // 0.72 of the size is Helvetica's cap height: the capitals' tops meet the
-    // top margin, level with the first contact line.
-    nameLines.forEach((line, i) => {
-      ops.push(textOp(line, left, top - size * 0.72 - i * leading, size, {
-        bold: true, colour: hexToRgb(brand.palette.ink),
-      }))
-    })
-    markHeight = size * 0.72 + (nameLines.length - 1) * leading
-  }
-
-  // --- the rule ----------------------------------------------------------
-  const ruleTop = top - Math.max(markHeight, contactHeight) - 14
-  ops.push(
-    fill(hexToRgb(brand.palette.accent)) + ' ' +
-    num(left) + ' ' + num(ruleTop - RULE_THICKNESS) + ' ' + num(right - left) + ' ' + num(RULE_THICKNESS) + ' re f'
-  )
-
-  return { ops: ops.join('\n'), image, bodyTop: ruleTop - RULE_THICKNESS - 28 }
-}
-
-/**
- * Assembles a one-page PDF. Fonts F1 (Helvetica) and F2 (Helvetica-Bold) are
- * always available; `image`, if given, is /Im1.
- *
- * BYTES, NOT A STRING. lib/receipt-pdf.ts builds its file as a string because
- * everything in it is text; an image stream is binary, so offsets here are
- * counted over the byte chunks themselves.
- */
-export function buildPdf(opts: {
-  width: number
-  height: number
-  content: string
-  image: PdfImage | null
-}): Uint8Array {
-  return buildPdfDocument({
-    width: opts.width,
-    height: opts.height,
-    pages: [opts.content],
-    images: opts.image ? [opts.image] : [],
-  })
 }
 
 /**
@@ -446,37 +298,4 @@ export function buildPdfDocument(opts: {
   let at = 0
   for (const c of chunks) { out.set(c, at); at += c.length }
   return out
-}
-
-/**
- * A page with the letterhead and enough under it to judge the spacing.
- *
- * Served by /api/company/letterhead so a company admin can see their logo on
- * paper the moment they upload it, and written by scripts/verify-branding.mjs.
- */
-export function letterheadSamplePdf(brand: Brand): Uint8Array {
-  const head = letterhead(brand, A4)
-  const ops = [head.ops]
-  let y = head.bodyTop
-
-  ops.push(textOp('Letterhead sample', PAGE_MARGIN, y, 16, { bold: true }))
-  y -= 26
-  for (const line of [
-    'This is how full-page documents from ' + (brand.name || 'your company') + ' are headed.',
-    'Bills and statements start here, below the rule.',
-    '',
-    'The logo is the one uploaded under Settings, the same file that heads your emails.',
-    'The rule is your brand colour. With no logo, your company name is set in its place.',
-  ]) {
-    for (const part of line ? wrapText(line, 10.5, false, A4.width - PAGE_MARGIN * 2) : ['']) {
-      if (part) ops.push(textOp(part, PAGE_MARGIN, y, 10.5, { colour: MUTED }))
-      y -= 16
-    }
-  }
-
-  return buildPdf({ width: A4.width, height: A4.height, content: ops.join('\n'), image: head.image })
-}
-
-export function letterheadSampleFilename(): string {
-  return 'letterhead-sample.pdf'
 }

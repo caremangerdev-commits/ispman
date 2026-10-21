@@ -43,11 +43,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     permission: 'manage_company_settings',
   },
   {
-    key: 'bills',
-    label: 'Bills',
-    href: '/dashboard/settings/bills',
+    // How the bill LOOKS and what only it says — "Bills" read like a list of
+    // them (owner, 21 Oct 2026). Logo, colour and letterhead are the company's
+    // identity everywhere, so they stay in General's Branding card.
+    key: 'bill-design',
+    label: 'Bill Design',
+    href: '/dashboard/settings/bill-design',
     icon: 'fileText',
-    description: 'The bill template (Statement, Ledger or Receipt), tax line and rate, tax and registration numbers, currency symbol and bank details.',
+    description: 'The bill template (Statement, Ledger or Receipt), tax line and rate, tax and registration numbers, invoice prefix, bank details, and emailing bills.',
     permission: 'manage_company_settings',
   },
   {

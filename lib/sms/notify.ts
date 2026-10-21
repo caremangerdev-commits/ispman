@@ -1,9 +1,13 @@
 import 'server-only'
 
+import { billEmail } from '@/lib/bill/email'
+import { loadBill } from '@/lib/data/bill'
 import { portalUrlForCompany } from '@/lib/data/portal'
 import { getSmsSettings } from '@/lib/data/sms'
 import { formatCurrency } from '@/lib/format'
+import type { RecipientSource } from '@/lib/messaging/adapter'
 import { channelReadiness, enqueueForRoute } from '@/lib/messaging/enqueue'
+import { adapterFor } from '@/lib/messaging/registry'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { SERVICE_RESTORED_EMAIL, SERVICE_RESTORED_SMS } from '@/lib/sms/templates'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -220,4 +224,94 @@ export async function notifyDisconnection(opts: {
   } catch (err) {
     console.error('[messaging] disconnection notice not queued:', (err as Error).message)
   }
+}
+
+/**
+ * Emails a customer their bill: the cover note, and the bill itself attached
+ * as the PDF the portal and the staff record produce.
+ *
+ * THE ONE STAFF-INITIATED MESSAGE HERE, and so the one that REPORTS rather
+ * than swallows: the person who pressed "Email bill" is waiting to be told it
+ * went to a@b.com, or why it did not. It still never throws.
+ *
+ * Off unless the company has switched it on (settings.notify_bill_enabled,
+ * migration 0042), and by email only — the route is the document kind's (see
+ * lib/sms/templates.ts#DocumentKind) — through the same outbox, master switch,
+ * opt-out and dispatcher as every other message.
+ *
+ * The cover note is written now from the bill as it stands now
+ * (lib/bill/email.ts); the PDF is drawn when the dispatcher sends, a minute or
+ * so later, in the template pinned here. The dedupe key is the bill's number
+ * and the minute, so a double click sends one email and a resend later sends
+ * another.
+ */
+export async function emailBill(opts: {
+  companyId: number
+  customerId: number
+}): Promise<{ ok: true; to: string; title: string } | { ok: false; error: string }> {
+  try {
+    const caps = await getSchemaCapabilities()
+    if (!caps.emailBills) return { ok: false, error: 'Emailing bills is not set up on this system yet (migration 0042).' }
+
+    const ready = await prepare(opts.companyId, opts.customerId)
+    if (!ready) return { ok: false, error: 'That customer could not be found, or messaging is not set up.' }
+    const { settings, readiness, customer, portalUrl } = ready
+    if (!settings.billEmail) {
+      return { ok: false, error: 'Emailing bills is switched off. A manager can turn it on under Settings > Bill Design.' }
+    }
+
+    const bill = await loadBill(opts.companyId, opts.customerId)
+    if (!bill) return { ok: false, error: 'That customer could not be found.' }
+    const text = billEmail(bill, { firstName: customer.first_name })
+
+    const outcome = await enqueueForRoute({
+      companyId: opts.companyId,
+      kind: 'customer_bill',
+      settings,
+      readiness,
+      customer,
+      // The wording is already final; these fill nothing in it, and are here so
+      // a placeholder typed into a company name is left as typed.
+      values: baseValues(customer, bill.company.name, portalUrl),
+      text: { sms: '', email: text },
+      dedupeKey: 'bill:' + bill.number + ':' + Math.floor(Date.now() / 60_000),
+      attachment: { kind: 'bill', id: opts.customerId, template: bill.template },
+    })
+
+    // outcome.skipped holds both why a channel was not used (no address,
+    // opted out, email switched off) and why a row was not written (already
+    // queued a moment ago).
+    const sent = outcome.queued.find((q) => q.channel === 'email')
+    if (!sent) {
+      return { ok: false, error: outcome.skipped.map((s) => s.reason).join('; ') || 'Not reachable by email.' }
+    }
+    const to = outcome.resolution.targets.find((t) => t.channel === 'email')?.address ?? 'their email address'
+    return { ok: true, to, title: bill.title }
+  } catch (err) {
+    console.error('[messaging] bill email not queued:', (err as Error).message)
+    return { ok: false, error: 'The bill could not be queued: ' + (err as Error).message }
+  }
+}
+
+/**
+ * Whether the record shows "Email bill", and if it cannot go, why — asked of
+ * the email adapter's own rules, the ones the send above goes through, so the
+ * button is not offered for a customer the send would refuse. Hidden entirely
+ * while the company has bill emails off.
+ */
+export async function billEmailOffer(
+  companyId: number,
+  customer: RecipientSource
+): Promise<{ shown: false } | { shown: true; blocked: string | null }> {
+  const caps = await getSchemaCapabilities()
+  if (!caps.emailBills || !caps.sms) return { shown: false }
+  const settings = await getSmsSettings(companyId)
+  if (!settings.billEmail) return { shown: false }
+  if (!settings.channelsAvailable) return { shown: true, blocked: 'Email needs migration 0022.' }
+
+  const email = adapterFor('email')
+  const ready = await email.tenantReady(companyId, settings)
+  if (!ready.ready) return { shown: true, blocked: ready.reason }
+  const verdict = email.recipientFor(customer, settings)
+  return { shown: true, blocked: verdict.ok ? null : verdict.reason }
 }

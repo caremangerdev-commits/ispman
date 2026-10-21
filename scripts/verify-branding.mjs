@@ -1,23 +1,26 @@
-// Branding verification: runs the REAL logo pipeline, the REAL letterhead and
-// the REAL email shell, and checks what comes out.
+// Branding verification: runs the REAL logo pipeline, the REAL bill renderer
+// and the REAL email shell, and checks what comes out.
 //
 //   node scripts/verify-branding.mjs <output-dir>
 //
 // What it proves, and how:
 //   1. lib/logo.ts turns awkward uploads (transparent, greyscale, oversized,
 //      16-bit) into the one stored shape, and refuses what is not an image.
-//   2. lib/letterhead-pdf.ts writes a PDF whose xref offsets are right and
-//      whose embedded image DECODES TO THE SAME PIXELS as the PNG it came
-//      from — the passthrough of IDAT data is checked, not trusted.
-//   3. The right-aligned contact block really ends at the right margin: the
-//      Helvetica width tables have 95 entries and known strings measure what
-//      the AFM says.
+//   2. lib/bill/pdf.ts, on lib/pdf-writer.ts, draws all three bill templates
+//      for every brand as PDFs whose xref offsets are right, whose text never
+//      overprints or runs past the margin, and whose embedded logo DECODES TO
+//      THE SAME PIXELS as the PNG it came from — the passthrough of IDAT data
+//      is checked, not trusted. (This drew a separate "letterhead sample" page
+//      until 2026-10-21; that renderer is gone, and the bill is what is drawn.)
+//   3. The Helvetica width tables have 95 entries and known strings measure
+//      what the AFM says: right-aligned text depends on them.
 //   4. The email shell renders for a logo, for no logo, and for a colour too
 //      light to read, in every block type, with HTML and text parts that say
-//      the same thing.
+//      the same thing — and an emailed bill's cover note (lib/bill/email.ts)
+//      carries the bill's own number and figures.
 //
-// It writes the sample pages and emails to <output-dir> so they can be LOOKED
-// AT, which is the other half of checking a letterhead.
+// It writes the bills and emails to <output-dir> so they can be LOOKED AT,
+// which is the other half of checking a document.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { registerHooks } from 'node:module'
@@ -50,7 +53,10 @@ registerHooks({
 
 const { brandPalette, contrast, isStoredLogoShape, readPngHeader } = await import('../lib/brand.ts')
 const { normaliseLogo } = await import('../lib/logo.ts')
-const { letterheadSamplePdf, pngToPdfImage, textWidth, A4, PAGE_MARGIN } = await import('../lib/letterhead-pdf.ts')
+const { pngToPdfImage, textWidth, A4 } = await import('../lib/pdf-writer.ts')
+const { buildBillDocument } = await import('../lib/bill/document.ts')
+const { billPdf } = await import('../lib/bill/pdf.ts')
+const { billEmail } = await import('../lib/bill/email.ts')
 const { blocksFromText, renderEmailHtml, renderEmailText, LOGO_CID } = await import('../lib/messaging/email-shell.ts')
 const { DEFAULT_EMAIL_BODIES } = await import('../lib/sms/templates.ts')
 
@@ -106,7 +112,7 @@ check('over 512 KB refused', !tooBig.ok, tooBig.ok ? '' : tooBig.error)
 // ---------------------------------------------------------------------------
 // 2. The letterhead PDF
 // ---------------------------------------------------------------------------
-console.log('\n2. lib/letterhead-pdf.ts — structure, and the image decodes to the same pixels')
+console.log('\n2. lib/bill/pdf.ts — every template, every brand: structure, text, and the logo decodes to the same pixels')
 
 const contact = {
   address: '14 Great George Street\nSavanna-la-Mar\nWestmoreland, Jamaica',
@@ -159,12 +165,12 @@ const brands = {
 /** Every text run in a content stream, as a box. Strings are un-escaped to measure them. */
 function textBoxes(pdfText) {
   const boxes = []
-  const re = /BT \/(F[12]) ([\d.]+) Tf [\d. ]+ rg 1 0 0 1 ([\d.]+) ([\d.]+) Tm \(((?:\\.|[^\\)])*)\) Tj ET/g
+  const re = /BT \/(F[123]) ([\d.]+) Tf [\d. ]+ rg 1 0 0 1 ([\d.]+) ([\d.]+) Tm \(((?:\\.|[^\\)])*)\) Tj ET/g
   for (const m of pdfText.matchAll(re)) {
     const size = Number(m[2])
     const str = m[5].replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8))).replace(/\\(.)/g, '$1')
     const x = Number(m[3]), y = Number(m[4])
-    boxes.push({ str, x0: x, x1: x + textWidth(str, size, m[1] === 'F2'), y0: y - size * 0.22, y1: y + size * 0.72 })
+    boxes.push({ str, x0: x, x1: x + textWidth(str, size, m[1]), y0: y - size * 0.22, y1: y + size * 0.72 })
   }
   return boxes
 }
@@ -196,10 +202,46 @@ function unfilter(data, width, height, bpp) {
   return out
 }
 
-for (const [label, brand] of Object.entries(brands)) {
-  const pdf = Buffer.from(letterheadSamplePdf(brand))
-  writeFileSync(path.join(OUT, 'letterhead-' + label + '.pdf'), pdf)
+/** A bill for a made-up customer, in one template, under one brand — no database. */
+function billFor(brand, template) {
+  const charge = (d) => ({ date: d, periodStart: d, periodEnd: '2026-' + String(Number(d.slice(5, 7)) + 1).padStart(2, '0') + d.slice(7), amount: 3500, carriedBefore: 0, carriedAfter: 3500, creditApplied: 0 })
+  return buildBillDocument({
+    template,
+    today: '2026-10-21',
+    company: { name: brand.name, phone: brand.contact.phone, email: brand.contact.email },
+    settings: {
+      available: true, template, registeredAddress: null, address: brand.contact.address,
+      taxId: '123-456-789', taxIdLabel: 'TRN', taxRegistrationNumber: '0001234', taxRegistered: true,
+      taxLabel: 'GCT', taxLabelOverride: 'GCT', taxRate: 15, currency: 'JMD', currencySymbol: 'J$',
+      currencySymbolOverride: null, bankDetails: 'NCB 351-000-000\nWest Central Networks', paymentNote: 'Any office, 8 to 5',
+      letterheadPath: null, invoicePrefix: 'INV-',
+    },
+    brand,
+    letterhead: null,
+    customer: {
+      id: 10140, name: 'Shelley Mitchell', address: 'Barnstaple District\nSt Elizabeth', phone: '876 555 5555',
+      accountNumber: '10140', plan: { name: 'MAX P', downMbps: 10, upMbps: 10 }, monthlyCharge: 3500,
+      carried: 3500, credit: 0, expiry: '2026-11-05', billDay: 5,
+    },
+    payments: [
+      { id: 17418, date: '2026-08-14', amount: 3500, method: 'Cash', monthsPaid: 1, carriedBefore: 3500, carriedAfter: 0, runsTo: '2026-09-05' },
+      { id: 17419, date: '2026-09-14', amount: 3500, method: 'Card, online', monthsPaid: 1, carriedBefore: 3500, carriedAfter: 0, runsTo: '2026-10-05' },
+    ],
+    charges: [charge('2026-08-05'), charge('2026-09-05'), charge('2026-10-05')],
+    howToPay: { inPerson: 'Any office, 8 to 5', bank: 'NCB 351-000-000\nWest Central Networks', online: 'westcentral.pay.ispman.online' },
+  })
+}
+
+const MARGIN = 15 * 72 / 25.4
+const sampleBills = {}
+
+for (const [label, brand] of Object.entries(brands)) for (const template of ['statement', 'ledger', 'receipt']) {
+  const bill = billFor(brand, template)
+  sampleBills[label + '-' + template] = bill
+  const pdf = Buffer.from(billPdf(bill))
+  writeFileSync(path.join(OUT, 'bill-' + label + '-' + template + '.pdf'), pdf)
   const text = pdf.toString('latin1')
+  const name = label + ' ' + template
 
   // Every xref entry must point at the "N 0 obj" it claims to.
   const xrefAt = Number(text.slice(text.lastIndexOf('startxref') + 9).trim().split('\n')[0])
@@ -210,24 +252,34 @@ for (const [label, brand] of Object.entries(brands)) {
     const off = Number(xref[2 + i].slice(0, 10))
     if (!text.startsWith(i + ' 0 obj', off)) offsetsOk = false
   }
-  check(label + ': xref offsets (' + (count - 1) + ' objects)', offsetsOk)
+  check(name + ': xref offsets (' + (count - 1) + ' objects)', offsetsOk)
 
-  // No text over text, and nothing past the right margin. This is the check
-  // the first long-name sample page failed by eye.
+  // No text over text, and nothing past either margin. This is the check the
+  // first long-name sample page failed by eye.
   const boxes = textBoxes(text)
   const clashes = []
   for (let i = 0; i < boxes.length; i++) {
     for (let j = i + 1; j < boxes.length; j++) {
       const a = boxes[i], b = boxes[j]
-      if (a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1) clashes.push(a.str + ' / ' + b.str)
+      // Half a point of slack: runs of mixed weight on one line are set end to
+      // end, and positions are written to 0.01 pt, so neighbours touch.
+      if (a.x0 < b.x1 - 0.5 && b.x0 < a.x1 - 0.5 && a.y0 < b.y1 - 0.5 && b.y0 < a.y1 - 0.5) {
+        clashes.push(a.str + ' / ' + b.str)
+      }
     }
   }
-  const overflow = boxes.filter((b) => b.x1 > A4.width - PAGE_MARGIN + 0.5)
-  check(label + ': ' + boxes.length + ' text runs, none overlapping, none past the margin',
+  const overflow = boxes.filter((b) => b.x1 > A4.width - MARGIN + 0.5 || b.x0 < MARGIN - 0.5)
+  check(name + ': ' + boxes.length + ' text runs, none overlapping, none past the margins',
     boxes.length > 0 && clashes.length === 0 && overflow.length === 0,
     [...clashes, ...overflow.map((b) => 'past margin: ' + b.str)].join('; '))
 
-  if (brand.logo) {
+  // The figures a bill prints are the document's: the invoice number carries
+  // the company's prefix, and the total is printed in its symbol.
+  if (template === 'statement') {
+    check(name + ': prints its own number, with the invoice prefix', text.includes('INV-10140-202610') && bill.number === 'INV-10140-202610', bill.number)
+  }
+
+  if (brand.logo && text.includes('/Subtype /Image')) {
     const im = pngToPdfImage(brand.logo.png)
     const dict = text.indexOf('/Subtype /Image')
     const start = text.indexOf('stream\n', dict) + 7
@@ -246,17 +298,20 @@ for (const [label, brand] of Object.entries(brands)) {
     const ref = await (bpp === 1 ? decoder.toColourspace('b-w') : decoder).raw().toBuffer({ resolveWithObject: true })
     const same = ref.info.channels === bpp && Buffer.compare(pixels, ref.data) === 0
     check(
-      label + ': embedded image',
+      name + ': embedded logo',
       endsRight && sized && same,
       im.width + 'x' + im.height + ', ' + bpp + ' channel(s), ' + length + ' bytes, ' +
       (same ? 'pixels identical to the PNG' : 'PIXELS DIFFER')
     )
+  } else if (brand.logo) {
+    // The Statement heads the page with the logo; the other two set the name.
+    check(name + ': logo drawn where the template draws one', template !== 'statement')
   } else {
-    check(label + ': no image object, wordmark drawn', !text.includes('/Subtype /Image') && text.includes('/F2'))
+    check(name + ': no logo, so no image object', !text.includes('/Subtype /Image'))
   }
 }
 
-console.log('\n3. Helvetica metrics — the right-aligned block depends on them')
+console.log('\n3. Helvetica metrics — right-aligned text depends on them')
 // Known values from the AFM: widths in 1/1000 em, so at size 1000 they read directly.
 check('Helvetica "Hello" = 2222', Math.round(textWidth('Hello', 1000)) === 722 + 556 + 222 + 222 + 556)
 check('Helvetica-Bold "Hello" = 2445', Math.round(textWidth('Hello', 1000, true)) === 722 + 556 + 278 + 278 + 611)
@@ -271,7 +326,7 @@ check('every printable ASCII character has a width', (() => {
   }
   return true
 })())
-check('A4 content width leaves room for both blocks', A4.width - PAGE_MARGIN * 2 > 400)
+check('A4 content width between the bill margins is the reference 180 mm', Math.abs((A4.width - MARGIN * 2) - 180 * 72 / 25.4) < 0.5)
 
 // ---------------------------------------------------------------------------
 // 4. The email shell
@@ -313,6 +368,23 @@ const emails = {
   'receipt-no-logo': { brand: brands['no-logo'], blocks: receiptBlocks },
   'all-blocks-with-logo': { brand: brands['with-logo'], blocks: everyBlock },
   'all-blocks-light-colour': { brand: brands['no-logo-long-name-light-colour'], blocks: everyBlock },
+}
+
+// An emailed bill's cover note (lib/bill/email.ts): written from the same
+// document the attached PDF is drawn from, so its number and figures are the
+// PDF's, and its "Label: value" lines become the shell's table.
+for (const template of ['statement', 'ledger', 'receipt']) {
+  const bill = sampleBills['with-logo-' + template]
+  const { subject, body } = billEmail(bill, { firstName: 'Shelley' })
+  const blocks = blocksFromText(body)
+  const table = blocks.find((b) => b.type === 'keyvalue')
+  check('bill email (' + template + '): subject names the document and its number',
+    subject.includes(bill.title) && subject.includes(bill.number), subject)
+  check('bill email (' + template + '): the facts are a table, led by the bill number',
+    Boolean(table) && table.rows[0].value === bill.number, JSON.stringify(table?.rows ?? null))
+  check('bill email (' + template + '): amounts in the bill\'s own symbol', body.includes(bill.symbol))
+  writeFileSync(path.join(OUT, 'bill-email-' + template + '.txt'), subject + '\n\n' + body)
+  emails['bill-' + template] = { brand: brands['with-logo'], blocks }
 }
 
 for (const [label, { brand, blocks }] of Object.entries(emails)) {

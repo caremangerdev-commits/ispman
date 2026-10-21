@@ -8,10 +8,10 @@ import { taxIdLabel } from '@/lib/tax-id'
 
 /**
  * What a company's bills say about it: the template, the tax line, the tax and
- * registration numbers, the currency symbol, and how to pay.
+ * registration numbers, the invoice prefix, the currency symbol, and how to pay.
  *
  * THE ONE READER. The bill renderers, the portal's "Where to pay" card and the
- * Settings > Bills form are all handed what this returns, so the portal cannot
+ * Settings > Bill Design form are all handed what this returns, so the portal cannot
  * tell a customer one bank account while their bill prints another.
  *
  * NEVER THROWS FOR A MISSING PIECE. Before migration 0038 every company reads
@@ -32,6 +32,7 @@ export async function getBillSettings(companyId: number): Promise<BillSettings> 
       ', bill_template, registered_address, company_tax_id, tax_registration_number, ' +
       'tax_registered, tax_label, currency_symbol, bank_details, letterhead_path'
   }
+  if (caps.invoicePrefix) cols += ', invoice_prefix'
 
   const [settingsRes, companyRes] = await Promise.all([
     db.from('settings').select(cols).eq('company_id', companyId).maybeSingle(),
@@ -56,6 +57,7 @@ export async function getBillSettings(companyId: number): Promise<BillSettings> 
     currency_symbol?: string | null
     bank_details?: string | null
     letterhead_path?: string | null
+    invoice_prefix?: string | null
   } | null) ?? {}
 
   const contactAddress = ((companyRes.data as { address?: string | null } | null)?.address ?? '').trim()
@@ -81,6 +83,7 @@ export async function getBillSettings(companyId: number): Promise<BillSettings> 
     bankDetails: trimmed(s.bank_details),
     paymentNote: trimmed(s.portal_payment_note),
     letterheadPath: trimmed(s.letterhead_path),
+    invoicePrefix: trimmed(s.invoice_prefix),
   }
 }
 

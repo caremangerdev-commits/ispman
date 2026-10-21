@@ -5,12 +5,16 @@ import {
 } from '@/lib/bill/document'
 import {
   A4, buildPdfDocument, pngToPdfImage, textOp, textWidth, wrapText, type PdfFont, type PdfImage,
-} from '@/lib/letterhead-pdf'
+} from '@/lib/pdf-writer'
 
 /**
  * The three bill templates, drawn from docs/designs/bill-designs.html.
  *
- * ON THE HAND-WRITTEN PDF WRITER (lib/letterhead-pdf.ts), not a library. The
+ * THE ONE BILL RENDERER. The portal's download, the staff "Bill (PDF)" link,
+ * the emailed bill's attachment (lib/messaging/attachments.ts) and the samples
+ * on Settings > Bill Design and the Branding card all come from billPdf below.
+ *
+ * ON THE HAND-WRITTEN PDF WRITER (lib/pdf-writer.ts), not a library. The
  * one thing that might have forced a library — an uploaded raster letterhead —
  * does not: lib/logo.ts#normaliseLetterhead stores it as an 8-bit opaque PNG,
  * whose scanlines PDF reads as they are. Base-14 fonts stand in for the
@@ -341,8 +345,12 @@ function taxRowLabel(ctx: Ctx): string {
 }
 
 /** The how-to-pay columns, each only when the company has said how. */
-function payColumns(ctx: Ctx, compact: boolean): { title: string; lines: string[] }[] {
-  const b = ctx.bill
+/**
+ * The ways to pay a bill, in the words the bill prints them. Exported for the
+ * email a bill travels in (lib/bill/email.ts), so its cover note says what the
+ * attached PDF says rather than a second wording of the same facts.
+ */
+export function payColumns(b: BillDocument, compact: boolean): { title: string; lines: string[] }[] {
   const cols: { title: string; lines: string[] }[] = []
   if (b.howToPay.inPerson) cols.push({ title: 'In person', lines: [b.howToPay.inPerson] })
   if (b.howToPay.bank) {
@@ -363,7 +371,7 @@ function payColumns(ctx: Ctx, compact: boolean): { title: string; lines: string[
 }
 
 function payBlock(ctx: Ctx, top: number, title: string, compact: boolean): number {
-  const cols = payColumns(ctx, compact)
+  const cols = payColumns(ctx.bill, compact)
   if (cols.length === 0) return top
   const page = ctx.doc.page
   let y = top + 10 * MM
@@ -392,9 +400,49 @@ function payBlock(ctx: Ctx, top: number, title: string, compact: boolean): numbe
   return bottom + lead * 0.3
 }
 
-/** The legal line, 9 mm off the foot of every page. */
+/**
+ * Text set as large as it fits: at `size` if it fits in `maxLines` lines of
+ * `width`, else at the largest size down to `floor` that does, else at `floor`
+ * with the last line cut short and an ellipsis.
+ *
+ * FOR THE COMPANY'S NAME, which is the one thing at the top of a bill whose
+ * length nobody controls. Without it a long name was printed over the fields
+ * beside it and past the margin (found by scripts/verify-branding.mjs, which
+ * draws every template for a 74-character name and an absurd one). A shortened
+ * name is a blemish; text printed over text is a defect. The letterhead this
+ * replaced had the same rule; the templates had not.
+ */
+function fitText(
+  text: string, font: PdfFont, size: number, floor: number, width: number, maxLines: number
+): { size: number; lines: string[] } {
+  const fits = (lines: string[], s: number) =>
+    lines.length <= maxLines && lines.every((l) => textWidth(l, s, font) <= width)
+  for (let s = size; s >= floor; s -= 0.5) {
+    const lines = wrapText(text, s, font, width)
+    if (fits(lines, s)) return { size: s, lines }
+  }
+  const all = wrapText(text, floor, font, width)
+  const lines = all.slice(0, maxLines)
+  const cut = (line: string, always: boolean) => {
+    if (!always && textWidth(line, floor, font) <= width) return line
+    let l = line
+    while (l.length > 1 && textWidth(l + '…', floor, font) > width) l = l.slice(0, -1)
+    return l.trimEnd() + '…'
+  }
+  return {
+    size: floor,
+    lines: lines.map((l, i) => cut(l, i === lines.length - 1 && all.length > maxLines)),
+  }
+}
+
+/**
+ * The legal line, 9 mm off the foot of every page. Shrunk to stay on one line
+ * where it can, because the Statement's tear-off stub sits just above it; at
+ * the floor it wraps rather than being cut, since it carries the tax numbers.
+ */
 function legal(ctx: Ctx, page: Page) {
-  const size = px(10.5)
+  let size = px(10.5)
+  while (size > px(8) && textWidth(ctx.bill.legal, size, 'F1') > CONTENT) size -= 0.25
   const lead = size * 1.6
   const parts = wrapText(ctx.bill.legal, size, false, CONTENT).slice(0, 3)
   const bottom = H - 9 * MM
@@ -433,11 +481,12 @@ function statement(ctx: Ctx) {
       page.text(initial, LEFT + s / 2, left + s / 2 + px(20) * 0.36, px(20), { font: 'F2', colour: ctx.onAccent, align: 'center' })
       left += s + 4 * MM
     }
-    const nameSize = px(19)
     const nameW = CONTENT * 0.55
-    for (const part of wrapText(bill.company.name, nameSize, true, nameW).slice(0, 2)) {
-      left += nameSize * 1.2
-      page.text(part, LEFT, left - nameSize * 0.2, nameSize, { font: 'F3' })
+    // Measured in the serif it is set in, and fitted: see fitText.
+    const name = fitText(bill.company.name, 'F3', px(19), px(13), nameW, 2)
+    for (const part of name.lines) {
+      left += name.size * 1.2
+      page.text(part, LEFT, left - name.size * 0.2, name.size, { font: 'F3' })
     }
     left += 2 * MM
     const meta = px(12.5)
@@ -539,9 +588,12 @@ function ledger(ctx: Ctx) {
   if (lh !== null) {
     y = titleRow(ctx, lh, 'F2')
   } else {
-    const nameSize = px(16)
-    page.text(bill.company.name, LEFT, top + nameSize * 0.8, nameSize, { font: 'F2' })
-    let left = top + nameSize
+    // Fitted beside "Statement of account" and its fields: see fitText.
+    const name = fitText(bill.company.name, 'F2', px(16), px(11), CONTENT * 0.55, 2)
+    name.lines.forEach((part, i) => {
+      page.text(part, LEFT, top + name.size * 0.8 + i * name.size * 1.2, name.size, { font: 'F2' })
+    })
+    let left = top + name.size + (name.lines.length - 1) * name.size * 1.2
     const meta = px(12.5)
     for (const l of metaLines(bill, true)) {
       for (const part of wrapText(l, meta, false, CONTENT * 0.55)) {
@@ -688,16 +740,19 @@ function receipt(ctx: Ctx) {
     y = titleRow(ctx, lh, 'F2')
   } else {
     const soft = mix(ctx.onAccent, ctx.accent, 0.8)
-    const nameSize = px(17)
+    // Fitted beside "Receipt" and its fields: see fitText.
+    const name = fitText(bill.company.name, 'F2', px(17), px(11), CONTENT * 0.6, 2)
     const meta = px(12.5)
     const metas = metaLines(bill, true).flatMap((l) => wrapText(l, meta, false, CONTENT * 0.6))
     const kind = px(22)
     const fieldsH = px(12.5) * 1.7 * 2
-    const inner = Math.max(nameSize * 1.2 + metas.length * meta * 1.65 + 2 * MM, kind + 3 * MM + fieldsH)
+    const inner = Math.max(name.lines.length * name.size * 1.2 + metas.length * meta * 1.65 + 2 * MM, kind + 3 * MM + fieldsH)
     const bandH = 11 * MM + inner + 9 * MM
     page.rect(0, 0, W, bandH, ctx.accent)
-    let left = 11 * MM + nameSize
-    page.text(bill.company.name, LEFT, left - nameSize * 0.2, nameSize, { font: 'F2', colour: ctx.onAccent })
+    name.lines.forEach((part, i) => {
+      page.text(part, LEFT, 11 * MM + name.size * 0.8 + i * name.size * 1.2, name.size, { font: 'F2', colour: ctx.onAccent })
+    })
+    let left = 11 * MM + name.size + (name.lines.length - 1) * name.size * 1.2
     left += 2 * MM
     for (const l of metas) {
       left += meta * 1.65

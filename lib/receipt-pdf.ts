@@ -42,7 +42,7 @@ const DESCENT = 3
  * outside WinAnsi's printable range becomes an octal escape rather than raw
  * bytes, so a company name with an accent cannot corrupt the stream.
  *
- * Exported for lib/letterhead-pdf.ts: one escaper for every PDF this app
+ * Exported for lib/pdf-writer.ts: one escaper for every PDF this app
  * writes, because this is precisely the kind of function that goes wrong when
  * it exists twice.
  */

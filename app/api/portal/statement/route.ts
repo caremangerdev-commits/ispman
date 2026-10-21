@@ -7,7 +7,7 @@ import { getPortalSession } from '@/lib/portal/session'
 
 /**
  * The signed-in customer's bill, as a PDF, in the template their company chose
- * under Settings > Bills (Statement, Ledger or Receipt).
+ * under Settings > Bill Design (Statement, Ledger or Receipt).
  *
  *   /api/portal/statement                 the current bill
  *   /api/portal/statement?month=YYYY-MM   that calendar month

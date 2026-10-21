@@ -6,7 +6,7 @@
 -- Until it is applied the app behaves exactly as before it existed (see
 -- lib/schema.ts#billDocuments): every bill uses the Statement template, the
 -- tax line is omitted, the currency symbol comes from settings.currency, and
--- Settings > Bills and the letterhead upload say this migration is needed.
+-- Settings > Bill Design and the letterhead upload say this migration is needed.
 --
 -- Deploy order: code, then this file. Either order is safe.
 --

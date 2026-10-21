@@ -3,6 +3,7 @@
 import { normalisePrefix } from '@/lib/account-number'
 import { revalidatePath } from 'next/cache'
 
+import { CURRENCY_SYMBOL_MAX } from '@/lib/bill/settings'
 import { CURRENCIES, DATE_FORMATS, TIMEZONES } from '@/lib/data/company'
 import { logEvent } from '@/lib/audit'
 import { chargesConnectionMonth, prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
@@ -118,6 +119,15 @@ export async function saveCompanyProfile(
     return { ok: false, error: 'Expiry warning must be 1 to 14 days.' }
   }
 
+  // The symbol before every amount, on bills AND in the portal (0038), so it is
+  // the company's, beside the currency it stands for — not Bill Design's. Moved
+  // here from Settings > Bill Design on 2026-10-21. Blank is "derive it from the
+  // currency".
+  const currencySymbol = str(formData, 'currency_symbol')
+  if (caps.billDocuments && currencySymbol.length > CURRENCY_SYMBOL_MAX) {
+    return { ok: false, error: 'Currency symbol must be ' + CURRENCY_SYMBOL_MAX + ' characters or fewer.' }
+  }
+
   const db = tenantClient()
 
   const { error: companyError } = await db
@@ -169,12 +179,16 @@ export async function saveCompanyProfile(
     patch.portal_payment_note = str(formData, 'portal_payment_note').slice(0, 300) || null
   }
 
+  if (caps.billDocuments) patch.currency_symbol = currencySymbol || null
+
   const settingsError = await writeSettings(company.id, patch)
   if (settingsError) {
     return { ok: false, error: 'Company saved but settings failed: ' + settingsError }
   }
 
   revalidatePath('/dashboard/settings/company')
+  // The currency symbol is set here and quoted on Bill Design.
+  revalidatePath('/dashboard/settings/bill-design')
   revalidatePath('/dashboard')
   return { ok: true }
 }
@@ -243,7 +257,7 @@ export async function saveBillingSettings(
   }
 
   // Only write the 0007 columns once they exist; PostgREST rejects the whole
-  // update otherwise. NOT tax_rate: it moved to Settings > Bills on 2026-10-19
+  // update otherwise. NOT tax_rate: it moved to Settings > Bill Design on 2026-10-19
   // (app/actions/bill-settings.ts), and writing it here from a form that no
   // longer has the field would zero it on every billing save.
   if (caps.generalSettings) {

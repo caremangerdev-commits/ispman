@@ -315,13 +315,13 @@ export function BillingSettingsForm({
           </p>
         </Card>
 
-        {/* ---- 4. Rates. The tax rate moved to Settings > Bills on
+        {/* ---- 4. Rates. The tax rate moved to Settings > Bill Design on
             2026-10-19: rates are tax-inclusive, so the rate only ever prints,
             and it sits beside the switch that says whether it does. ---- */}
         <Card title="Rates">
           <p className="text-[11px] text-gray-600">
             Tax rate and the tax line are under{' '}
-            <a href="/dashboard/settings/bills" className="text-blue-400 hover:text-blue-300">Bills</a>.
+            <a href="/dashboard/settings/bill-design" className="text-blue-400 hover:text-blue-300">Bill Design</a>.
           </p>
 
           <Field

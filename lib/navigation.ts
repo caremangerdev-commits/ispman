@@ -125,6 +125,7 @@ const TITLES: { match: RegExp; title: string }[] = [
   // title above it should not disagree with it.
   { match: /^\/dashboard\/settings\/company$/, title: 'General Settings' },
   { match: /^\/dashboard\/settings\/billing$/, title: 'Billing' },
+  { match: /^\/dashboard\/settings\/bill-design$/, title: 'Bill Design' },
   { match: /^\/dashboard\/settings\/service-plans$/, title: 'Service Plans' },
   { match: /^\/dashboard\/settings\/additional-services$/, title: 'Additional Services' },
   { match: /^\/dashboard\/settings\/misc-categories$/, title: 'Misc Categories' },

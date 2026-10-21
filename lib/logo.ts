@@ -20,7 +20,7 @@ import {
  * on its bills.
  *
  * WHY FLATTENED ONTO WHITE.
- *   - The PDF writer (lib/letterhead-pdf.ts) is written by hand and embeds the
+ *   - The PDF writer (lib/pdf-writer.ts) is written by hand and embeds the
  *     PNG's scanlines as they are. PDF has no alpha in an image stream; alpha
  *     would mean decoding, splitting out a soft mask and re-encoding.
  *   - A transparent logo with dark lettering disappears when Gmail or Outlook

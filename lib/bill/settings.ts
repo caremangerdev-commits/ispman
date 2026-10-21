@@ -1,7 +1,7 @@
 /**
  * The bill's company settings as a type, and the words for its choices.
  *
- * CLIENT-SAFE: Settings > Bills renders the template names and help text from
+ * CLIENT-SAFE: Settings > Bill Design renders the template names and help text from
  * here, and the server reads the same constants (lib/data/bill-settings.ts).
  */
 
@@ -40,6 +40,21 @@ export const CURRENCY_SYMBOL_MAX = 8
 export const BANK_DETAILS_MAX = 300
 export const REGISTERED_ADDRESS_MAX = 300
 export const TAX_NUMBER_MAX = 40
+export const INVOICE_PREFIX_MAX = 10
+
+/**
+ * An invoice prefix as stored: trimmed, and only letters, digits and - / . so
+ * it reads aloud, prints in any font and survives as a file name. Null for none.
+ * Returns an Error for anything else rather than quietly dropping characters
+ * the company typed.
+ */
+export function normaliseInvoicePrefix(raw: string): string | null | Error {
+  const v = raw.trim()
+  if (!v) return null
+  if (v.length > INVOICE_PREFIX_MAX) return new Error('Invoice prefix must be ' + INVOICE_PREFIX_MAX + ' characters or fewer.')
+  if (!/^[A-Za-z0-9./-]+$/.test(v)) return new Error('Invoice prefix may use only letters, digits, - / and .')
+  return v
+}
 
 export type BillSettings = {
   /** Migration 0038 applied. False: everything below is the fallback. */
@@ -72,6 +87,8 @@ export type BillSettings = {
   /** settings.portal_payment_note (0036): where and how to pay in person. */
   paymentNote: string | null
   letterheadPath: string | null
+  /** settings.invoice_prefix (0042): put in front of every invoice number, or null. */
+  invoicePrefix: string | null
 }
 
 /** Whether a tax line is printed: registered AND a rate to print. */
