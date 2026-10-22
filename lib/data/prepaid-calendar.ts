@@ -72,6 +72,23 @@ export async function chargesConnectionMonth(companyId: number): Promise<boolean
 }
 
 /**
+ * settings.flex_month (migration 0043): whether this company's billing periods
+ * run from each customer's own bill day to the day before the next one, rather
+ * than the calendar month. False before 0043, which is how every company
+ * billed until it was applied.
+ */
+export async function flexMonthFor(companyId: number): Promise<boolean> {
+  if (!(await getSchemaCapabilities()).flexMonth) return false
+  const { data, error } = await tenantClient()
+    .from('settings')
+    .select('flex_month')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error) throw new Error('Could not read the flex-month setting: ' + error.message)
+  return Boolean((data as { flex_month: boolean | null } | null)?.flex_month)
+}
+
+/**
  * customers.connected_on for a company (migration 0032): the day each customer
  * was first provisioned. Only those that have one; empty before 0032.
  */

@@ -6,7 +6,7 @@ import { revalidatePath } from 'next/cache'
 import { CURRENCY_SYMBOL_MAX } from '@/lib/bill/settings'
 import { CURRENCIES, DATE_FORMATS, TIMEZONES } from '@/lib/data/company'
 import { logEvent } from '@/lib/audit'
-import { chargesConnectionMonth, prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
+import { chargesConnectionMonth, flexMonthFor, prepaidCalendarFor } from '@/lib/data/prepaid-calendar'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
@@ -330,6 +330,17 @@ export async function saveBillingSettings(
     patch.reconnection_fee = fee ?? 0
   }
 
+  // Migration 0043: the period shape. Logged for the same reason as the
+  // connection month — it changes what every customer of the company is
+  // charged for, and when.
+  let flexChanged: boolean | null = null
+  if (caps.flexMonth) {
+    const on = bool(formData, 'flex_month')
+    const before = await flexMonthFor(company.id)
+    if (on !== before) flexChanged = on
+    patch.flex_month = on
+  }
+
   const settingsError = await writeSettings(company.id, patch)
   if (settingsError) {
     return { ok: false, error: 'Could not save billing settings: ' + settingsError }
@@ -342,6 +353,18 @@ export async function saveBillingSettings(
         'Connection month ' + (connectionChanged ? 'CHARGED' : 'NOT charged') +
         ' from now: a customer connected partway through a month ' +
         (connectionChanged ? 'is charged from the connection day to month end' : 'starts on the 1st of the next month') +
+        ' | by=' + profile.email,
+    })
+  }
+  if (flexChanged !== null) {
+    await logEvent({
+      type: 'flex_month_changed',
+      tag: '[billing]',
+      details:
+        'Billing period is now ' +
+        (flexChanged
+          ? 'BILL DAY TO BILL DAY: a period runs from each customer’s own bill day to the day before the next'
+          : 'THE CALENDAR MONTH: 1st to last day, charged on the bill day of that month') +
         ' | by=' + profile.email,
     })
   }

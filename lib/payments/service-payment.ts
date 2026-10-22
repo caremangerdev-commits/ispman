@@ -25,7 +25,7 @@ import {
 import { legacyPaymentType, type PaymentMethod } from '@/lib/data/checkoff'
 import { formatCurrencyExact, paymentInstant } from '@/lib/format'
 import {
-  billedThroughOf, PREPAID_CALENDAR_OFF, prepaidCalendarFor, readMonthCharges,
+  billedThroughOf, flexMonthFor, PREPAID_CALENDAR_OFF, prepaidCalendarFor, readMonthCharges,
 } from '@/lib/data/prepaid-calendar'
 import {
   calendarExpiry, forwardLines, laterYmd, monthLabel, round100, tillBreakdown,
@@ -535,10 +535,16 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
   // Prepaid or postpaid alike once the engine bills the company by calendar
   // month (calendar.calendarMonths).
   const byMonth = calendar.calendarMonths
-  const periodBillDay = byMonth
+  // FLEX MONTH (0043). The engine opens each customer's period on their OWN
+  // bill day, so the till has to name it the same way or the key this guard
+  // compares is not the key the charge was raised under. That is why the
+  // calendar-month branch below deliberately ignores the customer's day and
+  // this one must not.
+  const flex = await flexMonthFor(company.id)
+  const periodBillDay = byMonth && !flex
     ? effectiveBillDay(null, companySettings?.bill_date)
     : effectiveBillDay(customer.bill_date, companySettings?.bill_date)
-  const period = billingPeriod(paymentDate, periodBillDay, carriedBefore, byMonth)
+  const period = billingPeriod(paymentDate, periodBillDay, carriedBefore, byMonth, flex)
 
   // Not for a returning calendar-month customer either: their month was just
   // recomputed from the days they had, and paying it is what brings them back.
@@ -550,7 +556,9 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
     periodAlreadyGranted({
       periodStart: period?.start ?? null,
       carriedBefore,
-      grant: byMonth ? { ...grant, periodStart: calendarMonthSettled(grant.paidOn, periodBillDay) } : grant,
+      grant: byMonth
+        ? { ...grant, periodStart: calendarMonthSettled(grant.paidOn, periodBillDay, flex) }
+        : grant,
     })
 
   // Where a guarded payment may complete an open month to, or null: the

@@ -88,10 +88,32 @@ export function daysToMonthEnd(ymd: string): number {
  * off on the 8th keeps 8; a month already reduced and since resumed keeps its
  * earlier days plus the days from its return to the new end.
  */
-export function daysAfterServiceEnds(current: number | null, endedOn: string): number {
+export function daysAfterServiceEnds(
+  current: number | null,
+  endedOn: string,
+  /**
+   * FLEX MONTH (0043). The charge's own period, when it is not the calendar
+   * month: the days taken off are the ones from the end of service to the end
+   * of THAT period. Absent, the calendar month containing `endedOn` is used,
+   * which is what every caller meant before flex existed.
+   */
+  period?: { start: string; end: string }
+): number {
+  if (period) {
+    const span = daysBetweenInclusive(period.start, period.end)
+    const after = daysBetweenInclusive(endedOn, period.end) - 1
+    return Math.max(0, (current ?? span) - Math.max(0, after))
+  }
   const [y, m, d] = ymdParts(endedOn)
   const dim = daysInMonth(y, m)
   return Math.max(0, (current ?? dim) - (dim - d))
+}
+
+/** Whole days from `from` to `to`, both counted. 1 Oct to 1 Oct is 1. */
+function daysBetweenInclusive(from: string, to: string): number {
+  const [ay, am, ad] = ymdParts(from)
+  const [by, bm, bd] = ymdParts(to)
+  return Math.round((Date.UTC(by, bm - 1, bd) - Date.UTC(ay, am - 1, ad)) / 86_400_000) + 1
 }
 
 /**
@@ -122,13 +144,32 @@ export function daysNotBilled(periodStart: string, billedThrough: string | null)
 export function daysAfterServiceResumes(
   current: number | null | 'none',
   resumedOn: string,
-  billedThrough: string | null = null
+  billedThrough: string | null = null,
+  /** FLEX MONTH (0043). The charge's own period; absent, the calendar month. */
+  period?: { start: string; end: string }
 ): number {
-  const [y, m] = ymdParts(resumedOn)
-  const dim = daysInMonth(y, m)
-  const open = daysNotBilled(monthOf(resumedOn).start, billedThrough) ?? dim
+  const span = period
+    ? daysBetweenInclusive(period.start, period.end)
+    : daysInMonth(ymdParts(resumedOn)[0], ymdParts(resumedOn)[1])
+  const periodStart = period ? period.start : monthOf(resumedOn).start
+  const toEnd = period
+    ? daysBetweenInclusive(resumedOn, period.end)
+    : daysToMonthEnd(resumedOn)
+  const open = (period
+    ? daysNotBilledIn(period, billedThrough)
+    : daysNotBilled(periodStart, billedThrough)) ?? span
   const already = current === 'none' ? 0 : current ?? open
-  return Math.min(open, already + Math.min(daysToMonthEnd(resumedOn), open))
+  return Math.min(open, already + Math.min(toEnd, open))
+}
+
+/** daysNotBilled against an explicit period rather than the calendar month. */
+function daysNotBilledIn(
+  period: { start: string; end: string },
+  billedThrough: string | null
+): number | null {
+  if (!billedThrough || billedThrough < period.start) return null
+  if (billedThrough >= period.end) return 0
+  return daysBetweenInclusive(billedThrough, period.end) - 1
 }
 
 /**

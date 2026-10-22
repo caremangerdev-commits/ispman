@@ -210,6 +210,11 @@ export type SchemaCapabilities = {
   emailBills: boolean
   /** Migration 0042: settings.invoice_prefix. Absent, invoices carry no prefix. */
   invoicePrefix: boolean
+  /**
+   * Migration 0043: settings.flex_month. Absent, every billing period is the
+   * calendar month and Settings > Billing says the switch needs the migration.
+   */
+  flexMonth: boolean
 }
 
 /**
@@ -247,7 +252,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     ticketMessagesRes, incidentsRes, outageSwitchRes,
     paymentGatewaysRes,
     billDocumentsRes, anniversaryRes,
-    ticketNotesRes, emailBillsRes, invoicePrefixRes,
+    ticketNotesRes, emailBillsRes, invoicePrefixRes, flexMonthRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -351,6 +356,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     // 0042: the per-company switch for emailing bills, and the invoice prefix.
     db.from('settings').select('notify_bill_enabled').limit(1),
     db.from('settings').select('invoice_prefix').limit(1),
+    // 0043: bill-day-to-bill-day billing periods.
+    db.from('settings').select('flex_month').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -644,6 +651,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for settings.invoice_prefix: ' + invoicePrefixRes.error.message)
   }
 
+  // 0043: one column. Absent, every period is the calendar month.
+  const missingFlexMonth = flexMonthRes.error?.code === '42703'
+  if (flexMonthRes.error && !missingFlexMonth) {
+    throw new Error('Schema probe failed for settings.flex_month: ' + flexMonthRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -683,6 +696,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     ticketNotes: !missingTicketNotes,
     emailBills: !missingEmailBills,
     invoicePrefix: !missingInvoicePrefix,
+    flexMonth: !missingFlexMonth,
   }
 })
 

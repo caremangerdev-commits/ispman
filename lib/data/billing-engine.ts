@@ -59,6 +59,12 @@ export type EngineCompany = EngineSettings & {
   timezone: string
   /** `settings.bill_date`. Postpaid's charge day; prepaid's fallback. */
   companyBillDay: number | null
+  /**
+   * `settings.flex_month` (migration 0043). False, and absent the migration:
+   * periods are calendar months. True: a period runs from the customer's own
+   * bill day to the day before the next one.
+   */
+  flexMonth: boolean
 }
 
 /**
@@ -100,23 +106,29 @@ export async function isEngineLive(companyId: number): Promise<boolean> {
 /** Every company with its engine settings. The tick's worklist. */
 export async function listEngineCompanies(): Promise<EngineCompany[]> {
   const db = tenantClient()
+  // flex_month arrives with 0043. PostgREST rejects the whole query for one
+  // unknown column, so a database without it has to ask for less — the same
+  // rule as every other optional column in this repo.
+  const caps = await getSchemaCapabilities()
+  const settingsColumns =
+    'company_id, timezone, bill_date, billing_type, billing_engine_mode, billing_engine_start_date'
+    + (caps.flexMonth ? ', flex_month' : '')
   const [companiesRes, settingsRes] = await Promise.all([
     db.from('companies').select('id, name').order('id'),
-    db
-      .from('settings')
-      .select('company_id, timezone, bill_date, billing_type, billing_engine_mode, billing_engine_start_date'),
+    db.from('settings').select(settingsColumns),
   ])
   if (companiesRes.error) throw new Error('Could not list companies: ' + companiesRes.error.message)
   if (settingsRes.error) throw new Error('Could not read settings: ' + settingsRes.error.message)
 
   const settings = new Map(
-    ((settingsRes.data ?? []) as {
+    ((settingsRes.data ?? []) as unknown as {
       company_id: number
       timezone: string | null
       bill_date: number | null
       billing_type: string | null
       billing_engine_mode: string | null
       billing_engine_start_date: string | null
+      flex_month?: boolean | null
     }[]).map((s) => [s.company_id, s])
   )
 
@@ -130,6 +142,7 @@ export async function listEngineCompanies(): Promise<EngineCompany[]> {
       billingType: toCompanyBillingType(s?.billing_type),
       mode: toEngineMode(s?.billing_engine_mode),
       startDate: s?.billing_engine_start_date ?? null,
+      flexMonth: s?.flex_month === true,
     }
   })
 }
@@ -220,12 +233,14 @@ export async function decideCompany(
       companyBillDay: company.companyBillDay,
       customer: {
         id: c.id, dateAdded: c.dateAdded, monthlyCharge: customer.monthlyCharge,
+        billDate: c.billDate,
         billedThrough: billedThrough.get(c.id) ?? null,
         connectedOn: connectedOn.get(c.id) ?? null,
         breaks: breaks ? breaks.get(c.id) ?? [] : undefined,
       },
       service: service.get(c.id),
       chargeConnectionMonth,
+      flexMonth: company.flexMonth,
     })
     return { customer, decision, service: service.get(c.id) }
   })

@@ -31,6 +31,7 @@
  * neither substitutes for the other.
  */
 
+import { flexPeriod } from '@/lib/bill-period'
 import { addMonths, advanceCutOff } from '@/lib/expiry'
 
 /** `customers.billing_type`. */
@@ -124,7 +125,21 @@ export function daysBetween(from: Date, to: Date): number {
  * stamps the period end there and is the only writer of it, but it is stamped
  * per RUN rather than per customer-month, so bill_date is the stabler anchor.
  */
-function settledMonthStart(from: Date, billDay: number, calendarMonth = false): Date {
+function settledMonthStart(
+  from: Date,
+  billDay: number,
+  calendarMonth = false,
+  flexMonth = false
+): Date {
+  // FLEX MONTH (0043). The period opens on the bill day and its charge is
+  // raised then, so by the time anyone pays, the period containing the payment
+  // IS the one being settled. Same rule as the calendar-month model below —
+  // this month once the bill day has come, the previous one before it — but
+  // landing on the bill day rather than the 1st.
+  if (flexMonth) {
+    const [y, m, d] = flexPeriod(ymd(from), billDay).start.split('-').map(Number)
+    return new Date(y, m - 1, d)
+  }
   // THE CALENDAR-MONTH MODEL (0028; owner 11 Oct 2026: "describe every charge
   // by the calendar month it covers"). The bill day raises the charge for the
   // month it falls in, so the latest month charged by `from` is THIS month once
@@ -141,9 +156,13 @@ function settledMonthStart(from: Date, billDay: number, calendarMonth = false): 
  * stamped with under the arrears rule. The one-month-per-period guard compares
  * like with like through this.
  */
-export function calendarMonthSettled(paidOn: string, billDay: number): string | null {
+export function calendarMonthSettled(
+  paidOn: string,
+  billDay: number,
+  flexMonth = false
+): string | null {
   const d = parseYmd(paidOn)
-  return d ? ymd(settledMonthStart(d, billDay, true)) : null
+  return d ? ymd(settledMonthStart(d, billDay, true, flexMonth)) : null
 }
 
 /**
@@ -200,9 +219,17 @@ export function billingPeriod(
   billDay: number,
   carriedBalance: number,
   /** The company is on the calendar-month model: name the month as it charges it. */
-  calendarMonth = false
+  calendarMonth = false,
+  /** The company is on flex month (0043): the period runs bill day to bill day. */
+  flexMonth = false
 ): { start: string; end: string } | null {
   if (settledMonths(carriedBalance) === 0) return null
+  // Flex takes both ends from the one definition the engine charges by, so the
+  // period stamped on a payment is the period its charge was raised for.
+  if (flexMonth) {
+    const p = flexPeriod(ymd(from), billDay)
+    return { start: p.start, end: p.end }
+  }
   const start = settledMonthStart(from, billDay, calendarMonth)
   const end = new Date(start.getFullYear(), start.getMonth() + 1, 0)
   return { start: ymd(start), end: ymd(end) }
@@ -217,9 +244,21 @@ export function billingPeriodLabel(
   /** From effectiveBillDay — never a raw, possibly-null column. */
   billDay: number,
   carriedBalance: number,
-  calendarMonth = false
+  calendarMonth = false,
+  flexMonth = false
 ): string | null {
   if (settledMonths(carriedBalance) === 0) return null
+  // A flex period straddles two calendar months, so naming it by one of them
+  // would be a lie. It is labelled by its own dates instead.
+  if (flexMonth) {
+    const p = flexPeriod(ymd(from), billDay)
+    const fmt = (s: string) => {
+      const [y, m, d] = s.split('-').map(Number)
+      return new Date(y, m - 1, d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+    }
+    const [endYear] = p.end.split('-')
+    return fmt(p.start) + ' – ' + fmt(p.end) + ' ' + endYear
+  }
   return settledMonthStart(from, billDay, calendarMonth)
     .toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
 }

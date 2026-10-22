@@ -53,6 +53,7 @@ export function BillingSettingsForm({
   billingEngineAvailable,
   prepaidCalendar,
   connectionMonth,
+  flexMonth,
 }: {
   settings: GeneralSettings
   expiryModeAvailable: boolean
@@ -71,6 +72,8 @@ export function BillingSettingsForm({
   prepaidCalendar: PrepaidCalendar
   /** Migration 0032 — whether the connection month is charged. */
   connectionMonth: { available: boolean; on: boolean }
+  /** Migration 0043 — whether periods run bill day to bill day. */
+  flexMonth: { available: boolean; on: boolean }
 }) {
   const [state, action] = useActionState<CompanyResult | null, FormData>(saveBillingSettings, null)
 
@@ -82,6 +85,8 @@ export function BillingSettingsForm({
   const [firstExpiryRule, setFirstExpiryRule] = useState(settings.firstExpiryRuleEnabled)
   // Migration 0032: the connection month, per company, prepaid and postpaid.
   const [chargeConnection, setChargeConnection] = useState(connectionMonth.on)
+  // Migration 0043: the period shape, per company.
+  const [flex, setFlex] = useState(flexMonth.on)
 
   const lockedHint = generalAvailable ? undefined : 'Needs migration 0007.'
   const thresholdHint = thresholdsAvailable ? undefined : 'Needs migration 0012.'
@@ -162,6 +167,38 @@ export function BillingSettingsForm({
               className={settingsInput + (generalAvailable ? '' : ' cursor-not-allowed opacity-50')}
             />
           </Field>
+
+          {/* Migration 0043: the period shape. */}
+          <div className="space-y-1.5 border-t border-gray-800 pt-3">
+            {!flexMonth.available ? (
+              <p className="text-[11px] text-amber-400/90">Needs migration 0043.</p>
+            ) : null}
+            <Toggle
+              name="flex_month"
+              label="Flex month: bill day to bill day"
+              checked={flex}
+              onChange={setFlex}
+              disabled={!flexMonth.available}
+            />
+            <ul className="list-disc space-y-1 pl-4 text-[11px] leading-relaxed text-gray-500">
+              <li>
+                Off: a billing period is the calendar month, 1st to last day, charged on the bill
+                day of that month. This is how every company bills today.
+              </li>
+              <li>
+                On: a period runs from a customer’s own bill day to the day before the next one —
+                bill day 20 gives 20 Oct to 19 Nov — and the charge is raised on the day it opens.
+              </li>
+              <li>
+                A customer billing on the 1st gets the calendar month either way, so a company whose
+                customers all bill on the 1st sees no change.
+              </li>
+              <li>
+                The cut-off day is untouched. It stays a few days after the bill day, which under
+                flex sits inside the period as a grace window.
+              </li>
+            </ul>
+          </div>
         </Card>
 
         {/* ---- 2. Billing model and the daily engine (migration 0024) ---- */}

@@ -44,9 +44,17 @@
  * payment preview once made.
  */
 
+import {
+  daysNotBilledInPeriod, daysToPeriodEnd, periodDays, periodFor, type BillPeriod,
+} from '@/lib/bill-period'
 import { effectiveBillDay } from '@/lib/billing'
-import { daysNotBilled, daysToMonthEnd, monthFigure, monthOf, round100 } from '@/lib/prepaid-calendar'
+import { monthFigure, round100 } from '@/lib/prepaid-calendar'
 import { postpaidMonthCharge, type ServiceBreak } from '@/lib/service-days'
+
+// The period shapes live in lib/bill-period.ts so the payment path can use the
+// same arithmetic without a cycle. Re-exported here because this is where
+// every caller already looks for them.
+export { flexPeriod, monthPeriod, periodDays, type BillPeriod } from '@/lib/bill-period'
 
 /** `settings.billing_type`. No per-customer override exists. */
 export type CompanyBillingType = 'prepaid' | 'postpaid'
@@ -62,72 +70,11 @@ export function toEngineMode(value: string | null | undefined): EngineMode {
   return value === 'live' || value === 'dry_run' ? value : 'off'
 }
 
-/**
- * A period and the date its charge is raised.
- *
- * `start` and `end` are what bill_charges stores. `end` is the last day of the
- * month, inclusive, as Run Bills and last_billed_date already mean it. (Rows the
- * old prepaid shape wrote end on the 1st of the next month instead; nothing
- * reads period_end to decide anything — the unique key is period_start.)
- */
-export type BillPeriod = {
-  start: string
-  end: string
-  /** The company-local date on which this period's charge is raised. */
-  chargeDate: string
-}
+// The period shapes, the date helpers and the period-relative day counts all
+// live in lib/bill-period.ts now (migration 0043), so the payment path can use
+// the same arithmetic. They are imported and re-exported above.
 
-// ---------------------------------------------------------------------------
-// Date helpers, private. Whole-day arithmetic on (year, month, day) triples so
-// no Date ever carries a time or a zone.
-// ---------------------------------------------------------------------------
 
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
-}
-
-function toYmd(y: number, m: number, d: number): string {
-  return y + '-' + pad(m) + '-' + pad(d)
-}
-
-/** [year, month 1-12, day] from `YYYY-MM-DD`. Throws on anything else. */
-function parts(ymd: string): [number, number, number] {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd)
-  if (!m) throw new Error('"' + ymd + '" is not a YYYY-MM-DD date.')
-  return [Number(m[1]), Number(m[2]), Number(m[3])]
-}
-
-/** Days in a month. Month is 1-12. */
-function daysIn(y: number, m: number): number {
-  return new Date(y, m, 0).getDate()
-}
-
-/** A day of month clamped to the month's length: 31 in September is the 30th. */
-function clampDay(y: number, m: number, day: number): number {
-  return Math.min(Math.max(1, day), daysIn(y, m))
-}
-
-// ---------------------------------------------------------------------------
-// The shape
-// ---------------------------------------------------------------------------
-
-/**
- * The calendar month containing `today`, charged on the company's bill day of
- * that month. Prepaid and postpaid alike.
- *
- * The bill day does not shape the period. A company billing on the 26th
- * charges 1 Sep to 30 Sep on 26 Sep, while September is still running. A bill
- * day longer than the month is clamped to its last day, so a bill day of 31
- * charges September on the 30th rather than never.
- */
-export function monthPeriod(today: string, companyBillDay: number): BillPeriod {
-  const [y, m] = parts(today)
-  return {
-    start: toYmd(y, m, 1),
-    end: toYmd(y, m, daysIn(y, m)),
-    chargeDate: toYmd(y, m, clampDay(y, m, companyBillDay)),
-  }
-}
 
 // ---------------------------------------------------------------------------
 // The verdict
@@ -161,6 +108,14 @@ export type EngineVerdict =
 
 export type EngineCustomer = {
   id: number
+  /**
+   * `customers.bill_date`: the day of the month THIS customer is billed on,
+   * resolved through effectiveBillDay against the company's day. Most
+   * customers have none and fall back to the company's. Read on both shapes —
+   * on a calendar month it moves the charge date, on a flex month it also
+   * opens the period.
+   */
+  billDate?: number | null
   /** `customers.date_added`. Null reads as "always been here". */
   dateAdded: string | null
   /**
@@ -244,14 +199,21 @@ export function engineVerdict(opts: {
    * Off: that month is not charged at all. Prepaid and postpaid alike.
    */
   chargeConnectionMonth?: boolean
+  /**
+   * `settings.flex_month`. Off (the default): the period is the calendar
+   * month, exactly as before. On: the period runs from the customer's bill day
+   * to the day before the next one.
+   */
+  flexMonth?: boolean
 }): EngineDecision {
   const { customer } = opts
 
-  // Only the company's day is consulted, and a missing one reads as the 1st
-  // through the same function the rest of the app uses.
-  const billDay = effectiveBillDay(null, opts.companyBillDay)
-  const period = monthPeriod(opts.today, billDay)
-  const month = monthOf(period.start)
+  // The customer's own day, falling back to the company's, through the same
+  // function the till and the payment path already use — so a charge and the
+  // payment that clears it can never be worked out from different days.
+  const billDay = effectiveBillDay(customer.billDate ?? null, opts.companyBillDay)
+  const period = periodFor(opts.today, billDay, opts.flexMonth === true)
+  const span = periodDays(period)
 
   const exact = Math.round((Number.isFinite(customer.monthlyCharge) ? customer.monthlyCharge : 0) * 100) / 100
   const prepaid = opts.billingType === 'prepaid'
@@ -284,19 +246,22 @@ export function engineVerdict(opts: {
     if (p.days === 0) return outDays('no_service')
     return outDays('charge')
   }
-  // Connected partway through this month: the connection month.
-  const connectionMonth = joined !== null && joined > period.start && joined <= month.end
+  // Connected partway through this period: the connection month.
+  const connectionMonth = joined !== null && joined > period.start && joined <= period.end
 
-  // Days of the month to charge; null for all of them.
+  // Days of the period to charge; null for all of them.
   //   THE HAND-OVER (0030, owner 8 Oct 2026): only the days after the last day
   //   charged by hand.
   //   THE CONNECTION MONTH (0032, owner 11 Oct 2026): from the connection day.
-  const handover = prepaid ? daysNotBilled(period.start, customer.billedThrough ?? null) : null
-  const fromConnection = connectionMonth ? daysToMonthEnd(joined) : null
+  // Both are measured against the PERIOD, which is the calendar month unless
+  // flex is on — so these give the same answers as before for every company
+  // that has not turned it on.
+  const handover = prepaid ? daysNotBilledInPeriod(period, customer.billedThrough ?? null) : null
+  const fromConnection = connectionMonth ? daysToPeriodEnd(joined, period) : null
   const open = handover === null ? fromConnection
     : fromConnection === null ? handover
       : Math.min(handover, fromConnection)
-  const amount = open === null ? fullAmount : monthFigure(exact, open, month.days)
+  const amount = open === null ? fullAmount : monthFigure(exact, open, span)
   const out = (verdict: EngineVerdict): EngineDecision =>
     ({ verdict, period, billDay, amount, serviceDays: open, fullAmount })
 
