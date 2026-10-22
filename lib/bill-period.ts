@@ -109,13 +109,19 @@ export function periodFor(today: string, billDay: number, flexMonth: boolean): B
   return flexMonth ? flexPeriod(today, billDay) : monthPeriod(today, billDay)
 }
 
-/** The period's length in days. A calendar month gives its own length. */
-export function periodDays(period: BillPeriod): number {
+/**
+ * The period's length in days. A calendar month gives its own length.
+ *
+ * Takes the two ends rather than a whole BillPeriod so a charge row's stored
+ * period_start/period_end can be passed straight in — those carry no charge
+ * date, and the length does not need one.
+ */
+export function periodDays(period: { start: string; end: string }): number {
   return daysInclusive(period.start, period.end)
 }
 
 /** Days from `from` to the END OF THE PERIOD, both counted. */
-export function daysToPeriodEnd(from: string, period: BillPeriod): number {
+export function daysToPeriodEnd(from: string, period: { start: string; end: string }): number {
   if (from > period.end) return 0
   return Math.max(0, daysInclusive(from, period.end))
 }

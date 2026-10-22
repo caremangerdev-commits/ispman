@@ -3,10 +3,12 @@ import 'server-only'
 import { logSystemEvent, type SystemActor } from '@/lib/audit'
 import { addonTotals } from '@/lib/data/addon-totals'
 import { readBillableCustomers } from '@/lib/data/bulk'
-import { readBilledThrough } from '@/lib/data/prepaid-calendar'
+import { periodDays, periodFor } from '@/lib/bill-period'
+import { effectiveBillDay } from '@/lib/billing'
+import { flexMonthFor, readBilledThrough } from '@/lib/data/prepaid-calendar'
 import { formatCurrencyExact, instantToDateOnly, localDateOnly } from '@/lib/format'
 import {
-  daysAfterServiceEnds, daysAfterServiceResumes, daysInMonth, monthFigure, monthLabel, monthOf,
+  daysAfterServiceEnds, daysAfterServiceResumes, daysInMonth, monthFigure, monthLabel,
   round100, ymdParts,
 } from '@/lib/prepaid-calendar'
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
@@ -105,7 +107,32 @@ export async function planServicePass(company: { id: number; timezone: string })
       .eq('company_id', company.id).gte('period_start', since).order('id').range(from, to),
     'month charges'
   ) as ChargeRow[]
-  const chargeOf = new Map(chargeRows.map((r) => [r.customer_id + '|' + r.period_start, r]))
+
+  // FLEX MONTH (0043). A charge is found by the period it COVERS, not by the
+  // calendar month it starts in: under flex a period opens on the customer's
+  // own bill day, so keying by month start would miss every charge and a
+  // cut-off customer would keep a full month they did not have.
+  const chargesOf = new Map<number, ChargeRow[]>()
+  for (const r of chargeRows) {
+    const list = chargesOf.get(r.customer_id)
+    if (list) list.push(r)
+    else chargesOf.set(r.customer_id, [r])
+  }
+  const covering = (customerId: number, date: string): ChargeRow | null =>
+    (chargesOf.get(customerId) ?? []).find(
+      (r) => r.period_start <= date && date <= r.period_end
+    ) ?? null
+
+  const flex = await flexMonthFor(company.id)
+  const { data: billRow } = await db
+    .from('settings')
+    .select('bill_date')
+    .eq('company_id', company.id)
+    .maybeSingle()
+  const companyBillDay = (billRow as { bill_date: number | null } | null)?.bill_date ?? null
+  /** The period containing `date` for this customer, under whichever shape. */
+  const periodOf = (billDate: number | null, date: string) =>
+    periodFor(date, effectiveBillDay(billDate, companyBillDay), flex)
 
   const changes: ServiceChange[] = []
   for (const c of customers) {
@@ -123,15 +150,16 @@ export async function planServicePass(company: { id: number; timezone: string })
       // disconnect stamped "06 Oct 2026 18:06" is the 6th.
       let endedOn = localDateOnly(record.expiry)
       if (endedOn > today) endedOn = today
-      const month = monthOf(endedOn)
-      const row = chargeOf.get(c.id + '|' + month.start)
+      const row = covering(c.id, endedOn)
       if (row) {
-        const days = daysAfterServiceEnds(row.service_days, endedOn)
+        // The charge's OWN period is authoritative — it is what was billed.
+        const period = { start: row.period_start, end: row.period_end }
+        const days = daysAfterServiceEnds(row.service_days, endedOn, period)
         changes.push({
           customerId: c.id, name: c.name, kind: 'ended', on: endedOn,
           periodStart: row.period_start, periodEnd: row.period_end,
           from: { amount: Number(row.amount), days: row.service_days },
-          to: { amount: monthFigure(monthlyCharge, days, month.days), days },
+          to: { amount: monthFigure(monthlyCharge, days, periodDays(period)), days },
           fullAmount: round100(monthlyCharge),
         })
       } else {
@@ -144,16 +172,27 @@ export async function planServicePass(company: { id: number; timezone: string })
     }
 
     if (on && mark !== null) {
-      const month = monthOf(today)
-      const row = chargeOf.get(c.id + '|' + month.start)
+      // A returning customer may have no charge at all — disconnected on the
+      // bill date, so the period was never charged — hence the period is
+      // computed rather than read off a row.
+      const row = covering(c.id, today)
+      const period = row
+        ? { start: row.period_start, end: row.period_end }
+        : periodOf(c.billDate, today)
       // Never into days a hand-billed period already charged (0030).
-      const days = daysAfterServiceResumes(row ? row.service_days : 'none', today, billedThrough.get(c.id) ?? null)
-      const [y, m] = ymdParts(today)
+      const days = daysAfterServiceResumes(
+        row ? row.service_days : 'none',
+        today,
+        billedThrough.get(c.id) ?? null,
+        period
+      )
       changes.push({
         customerId: c.id, name: c.name, kind: 'resumed', on: today,
-        periodStart: month.start, periodEnd: month.end,
+        periodStart: period.start, periodEnd: period.end,
         from: row ? { amount: Number(row.amount), days: row.service_days } : null,
-        to: monthlyCharge > 0 ? { amount: monthFigure(monthlyCharge, days, daysInMonth(y, m)), days } : null,
+        to: monthlyCharge > 0
+          ? { amount: monthFigure(monthlyCharge, days, periodDays(period)), days }
+          : null,
         fullAmount: round100(monthlyCharge),
       })
     }
