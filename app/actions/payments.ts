@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation'
 import {
   outstandingBalance, parseYmd, prepaymentCredit, reverseCredit, ymd, type PriorGrant,
 } from '@/lib/billing'
+import { backdateError, needsBackdateReason } from '@/lib/payments/backdate'
 import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
 import { instantToDateOnly, paymentInstant } from '@/lib/format'
 import {
@@ -273,14 +274,21 @@ async function recordOtherPayment(
   }
 
   // --- Date ----------------------------------------------------------------
-  // Defaults to today and may not be in the future. No lower limit: a payment
-  // may legitimately be entered days after it was taken.
+  // Defaults to today and may not be in the future. Days back are free, so
+  // yesterday's takings key normally; past the limit the cashier has to mean
+  // it and say why (lib/payments/backdate.ts).
   const paidOnRaw = str(formData, 'paid_on')
   const paidOn = paidOnRaw ? parseYmd(paidOnRaw) : new Date()
   if (!paidOn) {
     fieldErrors.paid_on = 'Enter a valid date.'
   } else if (ymd(paidOn) > ymd(new Date())) {
     fieldErrors.paid_on = 'The date cannot be in the future.'
+  } else if (needsBackdateReason(ymd(paidOn), ymd(new Date()))) {
+    if (str(formData, 'backdate_ack') !== 'on') {
+      fieldErrors.paid_on = backdateError(ymd(paidOn), ymd(new Date()))
+    } else if (!notes) {
+      fieldErrors.notes = 'Say why this payment is being backdated.'
+    }
   }
 
   // --- Purpose -------------------------------------------------------------
@@ -532,9 +540,18 @@ export async function recordPayment(
   if (!Number.isFinite(paymentDate.getTime())) {
     fieldErrors.paid_on = 'Enter a valid date.'
   } else if (ymd(paymentDate) > ymd(new Date())) {
-    // No lower limit — a payment may be entered days after it was taken — but
-    // it cannot be dated forward.
+    // A payment may be entered days after it was taken, but never dated
+    // forward.
     fieldErrors.paid_on = 'The date cannot be in the future.'
+  } else if (needsBackdateReason(ymd(paymentDate), ymd(new Date()))) {
+    // Past the free window the cashier confirms and explains, because this is
+    // the check that was missing when Vernon's #17432 was keyed a month back
+    // and settled the wrong period in silence (lib/payments/backdate.ts).
+    if (str(formData, 'backdate_ack') !== 'on') {
+      fieldErrors.paid_on = backdateError(ymd(paymentDate), ymd(new Date()))
+    } else if (!notes) {
+      fieldErrors.notes = 'Say why this payment is being backdated.'
+    }
   }
 
   if (Object.keys(fieldErrors).length > 0) {

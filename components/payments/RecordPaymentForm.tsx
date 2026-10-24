@@ -24,6 +24,9 @@ import {
   calendarExpiry, forwardLines, laterYmd, round100, tillBreakdown,
 } from '@/lib/prepaid-calendar'
 import {
+  backdateNotice, BACKDATE_FREE_DAYS, isBackdated, needsBackdateReason,
+} from '@/lib/payments/backdate'
+import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type PaymentMethod,
 } from '@/lib/data/checkoff'
 import {
@@ -67,6 +70,64 @@ const DOTS = STATUS_DOT
 
 const fmtDate = (d: Date) =>
   d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' })
+
+/**
+ * THE DATE, SAID OUT LOUD WHEN IT IS NOT TODAY.
+ *
+ * The form already showed the resolved bill period — Vernon's #17432 carried
+ * "Billed July 2026" on screen while the cashier typed September into a date
+ * field and saved. Small grey text among a dozen fields is information, not a
+ * warning, and it did not stop a J$9,000 payment landing in the wrong month.
+ *
+ * So a date that is not today becomes a coloured block that names the date,
+ * how far back it is, and the period it will settle. Past the free window it
+ * also carries the confirmation the server demands, with the same threshold
+ * from the same module — the cashier is never refused by a rule the screen
+ * did not show them first.
+ *
+ * ONE COMPONENT, BOTH LAYOUTS. The phone and desk date fields are two render
+ * sites; a warning written twice is a warning that will differ.
+ */
+function BackdateNotice({
+  paidOn, today, periodLabel,
+}: {
+  paidOn: string
+  today: string
+  periodLabel: string | null
+}) {
+  // `today` is empty on the server render, where the clock is not yet known.
+  if (!today || !isBackdated(paidOn, today)) return null
+  const mustConfirm = needsBackdateReason(paidOn, today)
+
+  return (
+    <div
+      className={
+        'rounded-lg border px-3 py-2 text-xs leading-relaxed ' +
+        (mustConfirm
+          ? 'border-amber-500/70 bg-amber-500/15 text-amber-100'
+          : 'border-amber-500/30 bg-amber-500/5 text-amber-200/90')
+      }
+    >
+      <p>
+        {backdateNotice(paidOn, today)}
+        {periodLabel ? ' It will settle ' + periodLabel + '.' : ''}
+      </p>
+      {mustConfirm ? (
+        <label className="mt-2 flex items-start gap-2 text-amber-100">
+          <input
+            type="checkbox"
+            name="backdate_ack"
+            className="mt-0.5 h-4 w-4 shrink-0 accent-amber-500"
+          />
+          <span>
+            {'I mean to backdate this, more than ' + BACKDATE_FREE_DAYS +
+              ' days back. Say why in the notes.'}
+          </span>
+        </label>
+      ) : null}
+    </div>
+  )
+}
 
 /** `date`, or `limit` when that is earlier. No limit, no cap. */
 const capAt = (date: Date, limit: Date | null) =>
@@ -1285,6 +1346,11 @@ export function RecordPaymentForm({
                   {errors.paid_on ? (
                     <p role="alert" className="text-xs text-red-400">{errors.paid_on}</p>
                   ) : null}
+                  <BackdateNotice
+                    paidOn={paidOn}
+                    today={todayYmd}
+                    periodLabel={billPeriodLabel}
+                  />
                 </div>
               </div>
 
@@ -1416,6 +1482,11 @@ export function RecordPaymentForm({
               {errors.paid_on ? (
                 <p role="alert" className="text-xs text-red-400">{errors.paid_on}</p>
               ) : null}
+              <BackdateNotice
+                paidOn={paidOn}
+                today={todayYmd}
+                periodLabel={billPeriodLabel}
+              />
             </div>
 
             {/* The amount is the figure the cashier and the customer both
