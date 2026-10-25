@@ -4,13 +4,15 @@ import {
   CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 
-import { formatCompactCurrency, formatCurrency } from '@/lib/format'
+import { formatCompactCurrency } from '@/lib/format'
+import { useMoney } from '@/components/money/Currency'
 import type { RevenuePoint } from '@/lib/data/dashboard'
 
 const RECURRING = '#3b82f6'
 const COLLECTED = '#22c55e'
 
 export function RevenueChart({ data }: { data: RevenuePoint[] }) {
+  const { money, symbol } = useMoney()
   return (
     <div className="h-72 w-full">
       <ResponsiveContainer width="100%" height="100%">
@@ -28,7 +30,7 @@ export function RevenueChart({ data }: { data: RevenuePoint[] }) {
             fontSize={12}
             tickLine={false}
             axisLine={false}
-            tickFormatter={formatCompactCurrency}
+            tickFormatter={(value) => formatCompactCurrency(Number(value), symbol)}
           />
           <Tooltip
             cursor={{ stroke: '#374151', strokeWidth: 1 }}
@@ -39,7 +41,7 @@ export function RevenueChart({ data }: { data: RevenuePoint[] }) {
               fontSize: 12,
             }}
             labelStyle={{ color: '#f9fafb', fontWeight: 600, marginBottom: 4 }}
-            formatter={(value, name) => [formatCurrency(Number(value)), String(name)]}
+            formatter={(value, name) => [money(Number(value)), String(name)]}
           />
           {/* "Total Billed" until it was found to be nothing of the kind: it is
               the recurring value of the customer book, and no bill run feeds

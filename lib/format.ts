@@ -10,18 +10,29 @@ const EDIT_SUMMARY_MAX = 3
 const LOCALE = 'en-US'
 
 /**
+ * THE FALLBACK SYMBOL, not the symbol.
+ *
+ * Every money formatter below takes the company's own symbol and uses this
+ * only when none is given. It stays J$ because every tenant on the platform
+ * when this was written billed in Jamaican dollars, so a call site not yet
+ * carrying a symbol keeps printing exactly what it printed before.
+ *
+ * The symbol a company actually uses is resolved in ONE place —
+ * lib/data/bill-settings.ts#getBillSettings, as `currency_symbol` falling back
+ * to the code (JMD -> J$) — which is what its bills and its customer portal
+ * have always used. lib/data/currency.ts hands the same value to the staff
+ * screens, so a company cannot have its bills in US$ and its dashboard in J$.
+ *
  * Jamaican dollars are conventionally written "J$". Intl offers no such form
  * for JMD — narrowSymbol collapses to a bare "$" (ambiguous against USD) and
  * symbol/code both give "JMD 51,000" — so the prefix is applied by hand.
- *
- * TODO: drive this from settings.currency once more than one tenant exists.
  */
 const SYMBOL = 'J$'
 
 /**
- * The same symbol, for the few places that need it without a number attached —
- * a placeholder in an input, a column heading. Exported rather than re-typed so
- * the TODO above stays a one-line change.
+ * The fallback symbol without a number attached — a placeholder in an input, a
+ * column heading. A screen that knows its company should use that company's
+ * symbol here too (components/money/Currency.tsx#useMoney gives it).
  */
 export const CURRENCY_SYMBOL = SYMBOL
 
@@ -39,14 +50,23 @@ export function currencySymbol(code: string): string {
   return CURRENCY_SYMBOLS[code] ?? code
 }
 
-/** "J$2,500" — whole units, since ISP billing here has no cents in practice. */
-export function formatCurrency(value: number | string | null | undefined): string {
+/**
+ * "J$2,500" — whole units, since ISP billing has no cents in practice.
+ *
+ * `symbol` is the company's own (lib/data/currency.ts on the server,
+ * useMoney() in a client component). Omitted, it falls back to J$ and the
+ * output is what it has always been.
+ */
+export function formatCurrency(
+  value: number | string | null | undefined,
+  symbol: string = SYMBOL
+): string {
   const n = Number(value ?? 0)
   const safe = Number.isFinite(n) ? n : 0
   const digits = new Intl.NumberFormat(LOCALE, { maximumFractionDigits: 0 }).format(
     Math.abs(safe)
   )
-  return (safe < 0 ? '-' : '') + SYMBOL + digits
+  return (safe < 0 ? '-' : '') + symbol + digits
 }
 
 /**
@@ -55,13 +75,16 @@ export function formatCurrency(value: number | string | null | undefined): strin
  * For a balance someone is reading or setting by hand, where formatCurrency's
  * whole dollars would hide what is actually stored (J$0.67 printed as J$1).
  */
-export function formatCurrencyExact(value: number | string | null | undefined): string {
+export function formatCurrencyExact(
+  value: number | string | null | undefined,
+  symbol: string = SYMBOL
+): string {
   const n = Number(value ?? 0)
   const safe = Number.isFinite(n) ? n : 0
   const digits = new Intl.NumberFormat(LOCALE, {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   }).format(Math.abs(safe))
-  return (safe < 0 ? '-' : '') + SYMBOL + digits
+  return (safe < 0 ? '-' : '') + symbol + digits
 }
 
 /**
@@ -88,9 +111,9 @@ export function formatMoney(
 }
 
 /** Compact form for chart axes: "J$120k". */
-export function formatCompactCurrency(value: number): string {
-  if (Math.abs(value) >= 1000) return SYMBOL + Math.round(value / 1000) + 'k'
-  return SYMBOL + Math.round(value)
+export function formatCompactCurrency(value: number, symbol: string = SYMBOL): string {
+  if (Math.abs(value) >= 1000) return symbol + Math.round(value / 1000) + 'k'
+  return symbol + Math.round(value)
 }
 
 const MINUTE = 60_000

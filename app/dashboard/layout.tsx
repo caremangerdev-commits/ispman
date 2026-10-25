@@ -2,6 +2,8 @@ import { cookies } from 'next/headers'
 import { Suspense, type ReactNode } from 'react'
 
 import { ActingBanner, ACTING_BANNER_OFFSET } from '@/components/platform/ActingBanner'
+import { CurrencyProvider } from '@/components/money/Currency'
+import { companySymbol } from '@/lib/data/currency'
 import { MobileTabBar, type TabBarItem } from '@/components/ui/MobileTabBar'
 import { Navbar } from '@/components/ui/Navbar'
 import { PageHeading } from '@/components/ui/PageHeading'
@@ -26,10 +28,14 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   // settings, every page — follows it. `profile` is untouched by the switch, so
   // the operator is still themselves, with their own role and their own user id.
   const { profile, company, authUser, actingAs } = await getSession()
-  const [{ items, unread }, settings, cookieStore] = await Promise.all([
+  const [{ items, unread }, settings, symbol, cookieStore] = await Promise.all([
     // No online-payment alerts for a role that may not see a customer's money.
     getNotifications(company.id, { money: can(profile.role, 'view_customer_billing_history') }),
     getGeneralSettings(company.id),
+    // The ACTING company's money symbol, read once here and given to every
+    // client component below through CurrencyProvider. Resolved from the same
+    // settings its bills use, so the screen and the invoice always agree.
+    companySymbol(company.id),
     // Read here rather than in the client so the first paint is already at the
     // right width — see lib/shell.ts. The layout was already dynamic; the
     // Supabase server client reads cookies to resolve the session above.
@@ -52,6 +58,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
   ]
 
   return (
+    <CurrencyProvider symbol={symbol}>
     <ShellProvider defaultCollapsed={collapsed}>
     <div className="min-h-screen bg-gray-950">
       {/* In the layout, so it is on every dashboard page rather than only the
@@ -100,5 +107,6 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       </Suspense>
     </div>
     </ShellProvider>
+    </CurrencyProvider>
   )
 }
