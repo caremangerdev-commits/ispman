@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="ISPMan">
+  <!--
+    The ISPMan mark: the monogram M with the node above it.
+
+    Option B from the logo canvas (project/Favicon.dc.html, 6 Oct 2026), in the
+    proportions that artboard drew for the 32px tile rather than the 64px one:
+    stroke 9 on a 64 grid, node r 6. The small-size drawing is the one that
+    matters, because a browser tab is where this lives.
+
+    The tile carries its own near-black ground so the mark reads the same on a
+    light tab strip and a dark one, which a favicon cannot decide with a media
+    query.
+
+    Ink #0A1222 and node #2D7FF9 are the canvas's own values. The tenant brand
+    colour is a per-company setting on the CUSTOMER PORTAL; this is ISPMan's
+    own mark and does not follow it.
+  -->
+  <rect width="64" height="64" rx="13" fill="#0A1222"/>
+  <g transform="translate(9 9) scale(0.71875)">
+    <path
+      d="M10 53 L10 23 L32 43 L54 23 L54 53"
+      fill="none"
+      stroke="#FFFFFF"
+      stroke-width="9"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    />
+    <circle cx="32" cy="13" r="6" fill="#2D7FF9"/>
+  </g>
+</svg>
