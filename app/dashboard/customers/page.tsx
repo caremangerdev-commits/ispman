@@ -11,9 +11,10 @@ import { disconnectCustomer, reconnectCustomer } from '@/app/actions/customers'
 import { requirePermission } from '@/lib/session'
 import { filtersFromParams, filtersToParams, hasAnyFilter } from '@/lib/customer-filter'
 import { listMiscCategories, listServicePlans } from '@/lib/data/catalog'
+import { companySymbol } from '@/lib/data/currency'
 import { FILTERS, listCustomers, type CustomerFilter } from '@/lib/data/customers'
 import {
-  CURRENCY_SYMBOL, daysUntilDateOnly, formatCurrency, formatDateOnly, fullName,
+  daysUntilDateOnly, formatCurrency, formatDateOnly, fullName,
 } from '@/lib/format'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -58,10 +59,11 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
   const address = filters.address
 
   const caps = await getSchemaCapabilities()
-  const [list, miscCategories, servicePlans] = await Promise.all([
+  const [list, miscCategories, servicePlans, symbol] = await Promise.all([
     listCustomers({ companyId: company.id, filters, page, perPage: PER_PAGE }),
     caps.catalog ? listMiscCategories(company.id) : Promise.resolve([]),
     caps.catalog ? listServicePlans(company.id) : Promise.resolve([]),
+    companySymbol(company.id),
   ])
   const {
     rows, total, pageCount, counts, addresses, accessPoints, cutOffDates,
@@ -161,7 +163,7 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
           expiring: base.expiring ?? '',
           owing: base.owing ?? '',
         }}
-        currencySymbol={CURRENCY_SYMBOL}
+        currencySymbol={symbol}
       />
 
       <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
@@ -202,7 +204,7 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
                 </span>
 
                 <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500">
-                  <Balance carried={c.carried_balance} credit={c.account_credit} />
+                  <Balance carried={c.carried_balance} credit={c.account_credit} symbol={symbol} />
                   <span className="text-gray-700">|</span>
                   <span className="text-gray-400">{formatDateOnly(c.radiusExpiryDate)}</span>
                   <ExpiryHint days={daysUntilDateOnly(c.radiusExpiryDate)} />
@@ -281,7 +283,7 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
                     {c.mac_address ?? '—'}
                   </td>
                   <td className="px-4 py-2.5 text-right tabular-nums">
-                    <Balance carried={c.carried_balance} credit={c.account_credit} />
+                    <Balance carried={c.carried_balance} credit={c.account_credit} symbol={symbol} />
                   </td>
                   <td className="px-4 py-2.5">
                     <StatusBadge status={c.radiusStatus ?? 'unknown'} />
@@ -423,18 +425,25 @@ function NetworkActions({
  * credit instead, marked as such, so a prepaid customer does not read as
  * merely "0" — that is the difference between "paid up" and "paid ahead".
  */
-function Balance({ carried, credit }: { carried: number; credit: number }) {
+function Balance({
+  carried, credit, symbol,
+}: {
+  carried: number
+  credit: number
+  /** The company's own money symbol, resolved once by the page above. */
+  symbol: string
+}) {
   if (carried > 0) {
-    return <span className="tabular-nums font-medium text-orange-400">{formatCurrency(carried)}</span>
+    return <span className="tabular-nums font-medium text-orange-400">{formatCurrency(carried, symbol)}</span>
   }
   if (credit > 0) {
     return (
       <span className="tabular-nums text-green-400" title="Credit on account">
-        {formatCurrency(credit)} cr
+        {formatCurrency(credit, symbol)} cr
       </span>
     )
   }
-  return <span className="tabular-nums text-gray-500">{formatCurrency(0)}</span>
+  return <span className="tabular-nums text-gray-500">{formatCurrency(0, symbol)}</span>
 }
 
 function PageLink({

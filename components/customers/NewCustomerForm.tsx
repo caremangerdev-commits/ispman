@@ -7,8 +7,8 @@ import { useFormStatus } from 'react-dom'
 
 import { createCustomer, type ActionResult } from '@/app/actions/customers'
 import { MacHolderLinks } from '@/components/customers/MacHolderLinks'
+import { useMoney } from '@/components/money/Currency'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
-import { formatCurrency } from '@/lib/format'
 import {
   CONNECTION_TYPES, CONNECTION_TYPE_LABELS, CUSTOMER_CATEGORIES,
   CUSTOMER_CATEGORY_LABELS, CUSTOMER_TYPES, CUSTOMER_TYPE_LABELS, describePlan,
@@ -116,6 +116,7 @@ export function NewCustomerForm({
    */
   showMoney: boolean
 }) {
+  const { money } = useMoney()
   const [state, formAction] = useActionState<ActionResult | null, FormData>(createCustomer, null)
 
   const prior = state && !state.ok ? (state.values ?? {}) : {}
@@ -416,7 +417,7 @@ export function NewCustomerForm({
                 </span>
                 {showMoney ? (
                   <span className="shrink-0 text-sm tabular-nums text-gray-300">
-                    {formatCurrency(a.monthly_price ?? 0)}
+                    {money(a.monthly_price ?? 0)}
                   </span>
                 ) : null}
               </label>
@@ -427,7 +428,7 @@ export function NewCustomerForm({
             <div className="mt-3 flex items-center justify-between border-t border-gray-800 pt-3">
               <span className="text-xs text-gray-500">Total additional services</span>
               <span className="text-sm font-semibold tabular-nums text-white">
-                {formatCurrency(addonTotal)}/mo
+                {money(addonTotal)}/mo
               </span>
             </div>
           ) : null}

@@ -5,6 +5,7 @@ import { ArrowLeft, Building2, DollarSign, SlidersHorizontal, Users } from 'luci
 
 import { CompanyUsers } from '@/components/platform/CompanyUsers'
 import { EnterCompanyButton } from '@/components/platform/EnterCompanyButton'
+import { companySymbol } from '@/lib/data/currency'
 import { getCompanyDetail } from '@/lib/data/platform'
 import { formatCurrency } from '@/lib/format'
 import { getSession } from '@/lib/session'
@@ -71,7 +72,12 @@ export default async function CompanyDetailPage({
   const companyId = Number(id)
   if (!Number.isInteger(companyId)) notFound()
 
-  const [detail, session] = await Promise.all([getCompanyDetail(companyId), getSession()])
+  // THE VIEWED TENANT'S OWN SYMBOL, not the operator's. The revenue below is
+  // that company's money — getCompanyDetail sums payments filtered on its
+  // company_id — so it is printed in the currency that company bills in.
+  const [detail, session, symbol] = await Promise.all([
+    getCompanyDetail(companyId), getSession(), companySymbol(companyId),
+  ])
   if (!detail) notFound()
 
   const { company, settings, counts, users } = detail
@@ -117,7 +123,7 @@ export default async function CompanyDetailPage({
         <Stat label="Users" value={String(counts.users)} icon={Building2} tone="bg-amber-500/10 text-amber-400" />
         <Stat
           label={'Payments This Month' + (counts.paymentsThisMonth ? ' (' + counts.paymentsThisMonth + ')' : '')}
-          value={formatCurrency(counts.revenueThisMonth)}
+          value={formatCurrency(counts.revenueThisMonth, symbol)}
           icon={DollarSign}
           tone="bg-green-500/10 text-green-400"
         />

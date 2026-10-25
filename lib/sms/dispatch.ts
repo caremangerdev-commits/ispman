@@ -6,6 +6,7 @@ import { loadEnrichedCustomers } from '@/lib/data/customers'
 import { portalUrlForCompany } from '@/lib/data/portal'
 import { getSmsSettings, type MessagingSettings } from '@/lib/data/sms'
 import { daysUntilDateOnly, formatCurrency } from '@/lib/format'
+import { companySymbol } from '@/lib/data/currency'
 import type { ChannelAdapter, OutboundMessage } from '@/lib/messaging/adapter'
 import { parseAttachmentRef, renderAttachment } from '@/lib/messaging/attachments'
 import { channelReadiness, enqueueForRoute, type Readiness } from '@/lib/messaging/enqueue'
@@ -113,9 +114,12 @@ async function sweepExpiryWarnings(
   if (hour < QUIET_START_HOUR || hour >= QUIET_END_HOUR) return 0
 
   const today = localDate(timezone)
-  const [customers, portalUrl] = await Promise.all([
+  const [customers, portalUrl, symbol] = await Promise.all([
     loadEnrichedCustomers(companyId),
     portalUrlForCompany(companyId),
+    // "{{balance}}" is a figure the customer is being asked to pay, so it goes
+    // out in the company's own currency, not the platform's J$ fallback.
+    companySymbol(companyId),
   ])
 
   let queued = 0
@@ -143,7 +147,7 @@ async function sweepExpiryWarnings(
         '{{name}}': [c.first_name, c.last_name].filter(Boolean).join(' '),
         '{{first_name}}': c.first_name ?? '',
         '{{account}}': c.account_number ?? '',
-        '{{balance}}': formatCurrency(c.carried_balance ?? 0),
+        '{{balance}}': formatCurrency(c.carried_balance ?? 0, symbol),
         '{{expiry}}': c.radiusExpiryDate ?? '',
         '{{days}}': String(days),
         '{{portal}}': portalUrl ?? '',

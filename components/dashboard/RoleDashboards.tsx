@@ -89,7 +89,7 @@ function SearchForm({ defaultValue, placeholder }: { defaultValue: string; place
  * technician's hits are CustomerHits (lib/data/customer-search.ts), with no
  * balance in them to draw.
  */
-function HitList({ hits }: { hits: (CustomerHit | SearchHit)[] }) {
+function HitList({ hits, symbol }: { hits: (CustomerHit | SearchHit)[]; symbol: string }) {
   if (hits.length === 0) return <EmptyState message="No customers matched that search." />
   return (
     <ul className="divide-y divide-gray-800">
@@ -106,7 +106,7 @@ function HitList({ hits }: { hits: (CustomerHit | SearchHit)[] }) {
                 // reads 0 for everybody who actually owes.
                 'carried_balance' in h ? (
                   <span className={'shrink-0 text-sm tabular-nums ' + (h.carried_balance > 0 ? 'text-orange-400' : 'text-gray-400')}>
-                    {formatCurrency(h.carried_balance)}
+                    {formatCurrency(h.carried_balance, symbol)}
                   </span>
                 ) : null
               }
@@ -121,11 +121,13 @@ function HitList({ hits }: { hits: (CustomerHit | SearchHit)[] }) {
 // ---------------------------------------------------------------------------
 
 export function CsrDashboard({
-  data, query, hits,
+  data, query, hits, symbol,
 }: {
   data: CsrData
   query: string
   hits: SearchHit[]
+  /** The company's own money symbol — a server component gets no context. */
+  symbol: string
 }) {
   return (
     <div className="space-y-5">
@@ -147,7 +149,7 @@ export function CsrDashboard({
 
       {query ? (
         <Panel title="Search Results" subtitle={hits.length + ' found'} href={'/dashboard/customers?q=' + encodeURIComponent(query)} linkLabel="Open in full list">
-          <HitList hits={hits} />
+          <HitList hits={hits} symbol={symbol} />
         </Panel>
       ) : null}
 
@@ -182,11 +184,13 @@ export function CsrDashboard({
 // ---------------------------------------------------------------------------
 
 export function CashierDashboard({
-  data, query, hits,
+  data, query, hits, symbol,
 }: {
   data: CashierData
   query: string
   hits: SearchHit[]
+  /** The company's own money symbol — a server component gets no context. */
+  symbol: string
 }) {
   return (
     <div className="space-y-5">
@@ -196,7 +200,7 @@ export function CashierDashboard({
 
       {query ? (
         <Panel title="Search Results" subtitle={hits.length + ' found'}>
-          <HitList hits={hits} />
+          <HitList hits={hits} symbol={symbol} />
         </Panel>
       ) : null}
 
@@ -213,7 +217,7 @@ export function CashierDashboard({
         <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
           <p className="text-xs font-medium text-gray-400">My Collections Today</p>
           <p className="mt-2 text-3xl font-semibold tracking-tight text-white">
-            {formatCurrency(data.collectedToday)}
+            {formatCurrency(data.collectedToday, symbol)}
           </p>
           <p className="mt-1 text-xs text-gray-600">
             {data.paymentCount} {data.paymentCount === 1 ? 'payment' : 'payments'} recorded
@@ -240,7 +244,7 @@ export function CashierDashboard({
                   {p.payment_type ?? 'other'}
                 </span>
                 <span className="shrink-0 text-sm font-semibold tabular-nums text-white">
-                  {formatCurrency(p.amount)}
+                  {formatCurrency(p.amount, symbol)}
                 </span>
               </li>
             ))}
@@ -254,12 +258,14 @@ export function CashierDashboard({
 // ---------------------------------------------------------------------------
 
 export function TechnicianDashboard({
-  data, query, hits,
+  data, query, hits, symbol,
 }: {
   data: TechData
   query: string
   /** CustomerHit, not SearchHit: a technician is sent no customer's money. */
   hits: CustomerHit[]
+  /** Nothing here draws money, but HitList is shared and takes the company's. */
+  symbol: string
 }) {
   return (
     <div className="space-y-5">
@@ -271,7 +277,7 @@ export function TechnicianDashboard({
 
       {query ? (
         <Panel title="Search Results" subtitle={hits.length + ' found'}>
-          <HitList hits={hits} />
+          <HitList hits={hits} symbol={symbol} />
         </Panel>
       ) : null}
 

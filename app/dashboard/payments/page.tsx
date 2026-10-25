@@ -6,6 +6,7 @@ import { IncomeBySegment } from '@/components/payments/IncomeBySegment'
 import { PaymentFilters } from '@/components/payments/PaymentFilters'
 import { ReceiptButton } from '@/components/payments/ReceiptModal'
 import { listMiscCategories } from '@/lib/data/catalog'
+import { companySymbol } from '@/lib/data/currency'
 import { listPayments } from '@/lib/data/payments'
 import {
   PAYMENT_METHOD_LABELS, listAgents,
@@ -55,7 +56,7 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
   const category = one(sp.category) ?? ''
   const page = Math.max(1, Number(one(sp.page) ?? '1') || 1)
 
-  const [result, caps, agentList, miscCategories] = await Promise.all([
+  const [result, caps, agentList, miscCategories, symbol] = await Promise.all([
     listPayments({
       companyId: company.id,
       from, to, type, query, agent, checked, category, page, perPage: PER_PAGE,
@@ -63,6 +64,7 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
     getSchemaCapabilities(),
     listAgents(company.id),
     listMiscCategories(company.id),
+    companySymbol(company.id),
   ])
 
   const agentNames = [...new Set(agentList.map((a) => a.name))].sort()
@@ -102,18 +104,18 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
       <div className="grid gap-4 sm:grid-cols-3">
         <Summary
           label="Total Collected"
-          value={formatCurrency(result.totalCollected)}
+          value={formatCurrency(result.totalCollected, symbol)}
           // Service and one-off money under the one figure, so an owner can
           // see what came in for service without subtracting installations.
           detail={
             caps.otherPayments
-              ? 'Service ' + formatCurrency(result.collectedSplit.service) +
-                ' · One-off ' + formatCurrency(result.collectedSplit.oneOff)
+              ? 'Service ' + formatCurrency(result.collectedSplit.service, symbol) +
+                ' · One-off ' + formatCurrency(result.collectedSplit.oneOff, symbol)
               : undefined
           }
         />
         <Summary label="Number of Payments" value={String(result.total)} />
-        <Summary label="Average Payment" value={formatCurrency(result.averagePayment)} />
+        <Summary label="Average Payment" value={formatCurrency(result.averagePayment, symbol)} />
       </div>
 
       {/* Income by owner, for a company that splits its base with misc
@@ -133,6 +135,7 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
           segments={result.categories}
           totalCollected={result.totalCollected}
           showOther={caps.otherPayments}
+          symbol={symbol}
         />
       )}
 
@@ -205,7 +208,7 @@ export default async function PaymentsPage({ searchParams }: PageProps<'/dashboa
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-100">
-                    {formatCurrency(p.amount)}
+                    {formatCurrency(p.amount, symbol)}
                   </td>
                   <td className="px-4 py-2.5 text-right tabular-nums text-gray-400">
                     {p.months_paid ?? '—'}

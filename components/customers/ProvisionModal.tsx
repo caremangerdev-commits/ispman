@@ -5,9 +5,10 @@ import { useState } from 'react'
 import { createPortal, useFormStatus } from 'react-dom'
 
 import { provisionCustomer } from '@/app/actions/customers'
+import { useMoney } from '@/components/money/Currency'
 import { Modal } from '@/components/settings/Modal'
 import type { ProvisionPlan } from '@/lib/data/provision'
-import { formatCurrencyExact, formatDateOnly } from '@/lib/format'
+import { formatDateOnly } from '@/lib/format'
 import { daysBetween } from '@/lib/prepaid-calendar'
 
 function ConfirmButton({ disabled }: { disabled: boolean }) {
@@ -41,6 +42,7 @@ export function ProvisionModal({
   customerName: string
   plan: ProvisionPlan
 }) {
+  const { moneyExact } = useMoney()
   const [open, setOpen] = useState(false)
   const [picked, setPicked] = useState(plan.preselect ?? '')
 
@@ -119,7 +121,7 @@ export function ProvisionModal({
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-xs text-gray-500">{plan.firstCharge.label}</span>
                   <span className="font-semibold tabular-nums text-gray-100">
-                    {formatCurrencyExact(plan.firstCharge.amount)}
+                    {moneyExact(plan.firstCharge.amount)}
                   </span>
                 </div>
                 <p className="text-xs text-gray-500">

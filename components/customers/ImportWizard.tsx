@@ -12,7 +12,7 @@ import {
   createImportPlans, findExistingMacs, importCustomerBatch, logCustomerImport,
   type NewPlanInput, type RowFailure, type WithheldMac,
 } from '@/app/actions/import'
-import { formatCurrency } from '@/lib/format'
+import { useMoney } from '@/components/money/Currency'
 import {
   BATCH_SIZE, classifyRow, extractRow, guessMapping, isImportable,
   matchExistingPlan, MAX_ROWS, resolveRow, splitFullName, summariseCutOffDays,
@@ -115,6 +115,7 @@ export function ImportWizard({
   existingPlans: ServicePlan[]
   catalogAvailable: boolean
 }) {
+  const { money } = useMoney()
   const [step, setStep] = useState<Step>(1)
   const [parsed, setParsed] = useState<Parsed | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -694,7 +695,7 @@ export function ImportWizard({
                           {plan.customerCount}{' '}
                           {plan.customerCount === 1 ? 'customer' : 'customers'} · most common rate{' '}
                           <span className="tabular-nums text-gray-300">
-                            {plan.commonRate === null ? 'none' : formatCurrency(plan.commonRate)}
+                            {plan.commonRate === null ? 'none' : money(plan.commonRate)}
                           </span>
                         </p>
                       </div>

@@ -4,6 +4,7 @@ import { notFound, redirect } from 'next/navigation'
 import { ArrowLeft } from 'lucide-react'
 
 import { getBillRun, listRunCharges } from '@/lib/data/billing-engine'
+import { companySymbol } from '@/lib/data/currency'
 import { formatCurrency, formatDateOnly, formatDateTime } from '@/lib/format'
 import { monthLabel } from '@/lib/prepaid-calendar'
 import { can } from '@/lib/permissions'
@@ -48,6 +49,7 @@ export default async function BillingRunPage({
 
   const charges = run.mode === 'live' ? await listRunCharges(company.id, run.id) : []
   const preview = run.mode === 'dry_run' ? (run.preview ?? []) : []
+  const symbol = await companySymbol(company.id)
 
   return (
     <div className="space-y-5">
@@ -74,8 +76,8 @@ export default async function BillingRunPage({
 
       <dl className="grid grid-cols-1 gap-x-8 gap-y-1.5 rounded-xl border border-gray-800 bg-gray-900 p-5 sm:grid-cols-2">
         <Line label={run.mode === 'live' ? 'Charged' : 'Would charge'} value={run.charged.toLocaleString()} />
-        <Line label="Total" value={formatCurrency(run.totalAmount)} />
-        <Line label="Taken from standing credit" value={formatCurrency(run.creditApplied)} />
+        <Line label="Total" value={formatCurrency(run.totalAmount, symbol)} />
+        <Line label="Taken from standing credit" value={formatCurrency(run.creditApplied, symbol)} />
         <Line label="Considered" value={run.considered.toLocaleString()} />
         <Line label="Already charged for the period" value={run.skippedAlready.toLocaleString()} />
         <Line label="Not yet due" value={run.skippedNotDue.toLocaleString()} />
@@ -126,10 +128,10 @@ export default async function BillingRunPage({
                     <span className="ml-1 text-gray-600">#{c.customerId}</span>
                   </td>
                   <td className="px-4 py-2">{monthLabel(c.periodStart)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(c.amount)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-gray-500">{c.creditApplied ? formatCurrency(c.creditApplied) : '—'}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-gray-500">{formatCurrency(c.carriedBefore)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(c.carriedAfter)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(c.amount, symbol)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-gray-500">{c.creditApplied ? formatCurrency(c.creditApplied, symbol) : '—'}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-gray-500">{formatCurrency(c.carriedBefore, symbol)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(c.carriedAfter, symbol)}</td>
                 </tr>
               ))}
             </tbody>
@@ -159,9 +161,9 @@ export default async function BillingRunPage({
                   </td>
                   <td className="px-4 py-2 text-gray-500">{p.bill_day}</td>
                   <td className="px-4 py-2">{monthLabel(p.period_start)}{p.service_days != null ? ', ' + p.service_days + ' days' : ''}</td>
-                  <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(p.amount)}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-gray-500">{p.addons ? formatCurrency(p.addons) : '—'}</td>
-                  <td className="px-4 py-2 text-right tabular-nums text-gray-500">{p.credit_applied ? formatCurrency(p.credit_applied) : '—'}</td>
+                  <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(p.amount, symbol)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-gray-500">{p.addons ? formatCurrency(p.addons, symbol) : '—'}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-gray-500">{p.credit_applied ? formatCurrency(p.credit_applied, symbol) : '—'}</td>
                 </tr>
               ))}
             </tbody>

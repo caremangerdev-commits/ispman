@@ -5,6 +5,7 @@ import { loadBill } from '@/lib/data/bill'
 import { portalUrlForCompany } from '@/lib/data/portal'
 import { getSmsSettings } from '@/lib/data/sms'
 import { formatCurrency } from '@/lib/format'
+import { companySymbol } from '@/lib/data/currency'
 import type { RecipientSource } from '@/lib/messaging/adapter'
 import { channelReadiness, enqueueForRoute } from '@/lib/messaging/enqueue'
 import { adapterFor } from '@/lib/messaging/registry'
@@ -72,15 +73,20 @@ async function prepare(companyId: number, customerId: number) {
   const caps = await getSchemaCapabilities()
   if (!caps.sms) return null
 
-  const [settings, customer, portalUrl] = await Promise.all([
+  const [settings, customer, portalUrl, symbol] = await Promise.all([
     getSmsSettings(companyId),
     loadCustomerBits(companyId, customerId),
     portalUrlForCompany(companyId),
+    // The money in a message goes out in the COMPANY'S currency, from the same
+    // setting its bills use. A customer reading "J$3,500" from a company that
+    // charges US$ has been told the wrong amount, not merely shown an odd
+    // symbol.
+    companySymbol(companyId),
   ])
   if (!customer) return null
 
   const readiness = await channelReadiness(companyId, settings)
-  return { settings, readiness, customer, portalUrl }
+  return { settings, readiness, customer, portalUrl, symbol }
 }
 
 /** "17 Oct 2026", or empty for null — safe to drop straight into a template. */
@@ -89,12 +95,17 @@ function formatDay(d: Date | null): string {
   return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(d)
 }
 
-function baseValues(customer: CustomerBits, companyName: string, portalUrl: string | null) {
+function baseValues(
+  customer: CustomerBits,
+  companyName: string,
+  portalUrl: string | null,
+  symbol: string
+) {
   return {
     '{{name}}': [customer.first_name, customer.last_name].filter(Boolean).join(' '),
     '{{first_name}}': customer.first_name ?? '',
     '{{account}}': customer.account_number ?? '',
-    '{{balance}}': formatCurrency(customer.carried_balance ?? 0),
+    '{{balance}}': formatCurrency(customer.carried_balance ?? 0, symbol),
     '{{portal}}': portalUrl ?? '',
     '{{company}}': companyName,
   }
@@ -122,7 +133,7 @@ export async function notifyPaymentReceipt(opts: {
   try {
     const ready = await prepare(opts.companyId, opts.customerId)
     if (!ready) return
-    const { settings, readiness, customer, portalUrl } = ready
+    const { settings, readiness, customer, portalUrl, symbol } = ready
     if (!settings.paymentReceipt) return
 
     await enqueueForRoute({
@@ -132,8 +143,8 @@ export async function notifyPaymentReceipt(opts: {
       readiness,
       customer,
       values: {
-        ...baseValues(customer, opts.companyName, portalUrl),
-        '{{amount}}': formatCurrency(opts.amount),
+        ...baseValues(customer, opts.companyName, portalUrl, symbol),
+        '{{amount}}': formatCurrency(opts.amount, symbol),
         '{{date}}': formatDay(opts.paidOn ?? new Date()),
         '{{expiry}}': formatDay(opts.expiry ?? null),
       },
@@ -165,7 +176,7 @@ export async function notifyServiceRestored(opts: {
   try {
     const ready = await prepare(opts.companyId, opts.customerId)
     if (!ready) return
-    const { settings, readiness, customer, portalUrl } = ready
+    const { settings, readiness, customer, portalUrl, symbol } = ready
     if (!settings.paymentReceipt) return
 
     await enqueueForRoute({
@@ -175,7 +186,7 @@ export async function notifyServiceRestored(opts: {
       readiness,
       customer,
       values: {
-        ...baseValues(customer, opts.companyName, portalUrl),
+        ...baseValues(customer, opts.companyName, portalUrl, symbol),
         '{{expiry}}': formatDay(opts.expiry ?? null),
       },
       text: { sms: SERVICE_RESTORED_SMS, email: SERVICE_RESTORED_EMAIL },
@@ -203,7 +214,7 @@ export async function notifyDisconnection(opts: {
   try {
     const ready = await prepare(opts.companyId, opts.customerId)
     if (!ready) return
-    const { settings, readiness, customer, portalUrl } = ready
+    const { settings, readiness, customer, portalUrl, symbol } = ready
     if (!settings.disconnection) return
 
     const today = new Intl.DateTimeFormat('en-CA', {
@@ -217,7 +228,7 @@ export async function notifyDisconnection(opts: {
       settings,
       readiness,
       customer,
-      values: baseValues(customer, opts.companyName, portalUrl),
+      values: baseValues(customer, opts.companyName, portalUrl, symbol),
       text: { sms: settings.smsTemplates.disconnection_notice, email: settings.emailTemplates.disconnection_notice },
       dedupeKey: 'disconnect:' + opts.customerId + ':' + today,
     })
@@ -255,7 +266,7 @@ export async function emailBill(opts: {
 
     const ready = await prepare(opts.companyId, opts.customerId)
     if (!ready) return { ok: false, error: 'That customer could not be found, or messaging is not set up.' }
-    const { settings, readiness, customer, portalUrl } = ready
+    const { settings, readiness, customer, portalUrl, symbol } = ready
     if (!settings.billEmail) {
       return { ok: false, error: 'Emailing bills is switched off. A manager can turn it on under Settings > Bill Design.' }
     }
@@ -272,7 +283,7 @@ export async function emailBill(opts: {
       customer,
       // The wording is already final; these fill nothing in it, and are here so
       // a placeholder typed into a company name is left as typed.
-      values: baseValues(customer, bill.company.name, portalUrl),
+      values: baseValues(customer, bill.company.name, portalUrl, symbol),
       text: { sms: '', email: text },
       dedupeKey: 'bill:' + bill.number + ':' + Math.floor(Date.now() / 60_000),
       attachment: { kind: 'bill', id: opts.customerId, template: bill.template },

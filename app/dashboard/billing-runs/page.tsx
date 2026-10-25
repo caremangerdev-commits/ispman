@@ -5,6 +5,7 @@ import { redirect } from 'next/navigation'
 import {
   engineSettingsFor, listBillRuns, previewCompanyNow, type BillRunRow,
 } from '@/lib/data/billing-engine'
+import { companySymbol } from '@/lib/data/currency'
 import { formatCurrency, formatDateOnly, timeAgo } from '@/lib/format'
 import { can } from '@/lib/permissions'
 import { BILLING_ENGINE_HINT, getSchemaCapabilities } from '@/lib/schema'
@@ -64,9 +65,10 @@ export default async function BillingRunsPage() {
     )
   }
 
-  const [settings, runs] = await Promise.all([
+  const [settings, runs, symbol] = await Promise.all([
     engineSettingsFor(company.id),
     listBillRuns(company.id),
+    companySymbol(company.id),
   ])
 
   // The preview reads radcheck, which may be unreachable from here. That is a
@@ -133,8 +135,8 @@ export default async function BillingRunsPage() {
             </p>
             <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Stat label="Would charge" value={preview.decision.charges.length.toLocaleString()} />
-              <Stat label="Total" value={formatCurrency(preview.decision.totalAmount)} />
-              <Stat label="From credit" value={formatCurrency(preview.decision.creditApplied)} muted={preview.decision.creditApplied === 0} />
+              <Stat label="Total" value={formatCurrency(preview.decision.totalAmount, symbol)} />
+              <Stat label="From credit" value={formatCurrency(preview.decision.creditApplied, symbol)} muted={preview.decision.creditApplied === 0} />
               <Stat label="Considered" value={preview.decision.considered.toLocaleString()} muted />
             </div>
             <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-4">
@@ -203,8 +205,8 @@ export default async function BillingRunsPage() {
                       {r.attempts > 1 ? <span className="ml-1 text-gray-600">×{r.attempts}</span> : null}
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums">{r.charged.toLocaleString()}</td>
-                    <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(r.totalAmount)}</td>
-                    <td className="px-4 py-2 text-right tabular-nums text-gray-500">{r.creditApplied ? formatCurrency(r.creditApplied) : '—'}</td>
+                    <td className="px-4 py-2 text-right tabular-nums">{formatCurrency(r.totalAmount, symbol)}</td>
+                    <td className="px-4 py-2 text-right tabular-nums text-gray-500">{r.creditApplied ? formatCurrency(r.creditApplied, symbol) : '—'}</td>
                     <td className="px-4 py-2 text-right tabular-nums text-gray-500">{r.skippedAlready.toLocaleString()}</td>
                     <td className="px-4 py-2 text-right tabular-nums text-gray-500">{r.skippedNotDue.toLocaleString()}</td>
                     <td className="px-4 py-2 text-right tabular-nums text-gray-500">{skipped.toLocaleString()}</td>

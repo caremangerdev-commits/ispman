@@ -22,12 +22,15 @@ export function IncomeBySegment({
   segments,
   totalCollected,
   showOther,
+  symbol,
 }: {
   segments: SegmentTotal[]
   /** The page's own headline figure. The rows must sum to it — see below. */
   totalCollected: number
   /** False before migration 0013, when no payment can be an "other" payment. */
   showOther: boolean
+  /** The company's own money symbol — a server component gets no context. */
+  symbol: string
 }) {
   if (segments.length === 0) return null
 
@@ -89,15 +92,15 @@ export function IncomeBySegment({
                 {showOther ? (
                   <>
                     <td className="px-4 py-2.5 text-right tabular-nums text-gray-400">
-                      {formatCurrency(s.service)}
+                      {formatCurrency(s.service, symbol)}
                     </td>
                     <td className="px-4 py-2.5 text-right tabular-nums text-gray-400">
-                      {formatCurrency(s.other)}
+                      {formatCurrency(s.other, symbol)}
                     </td>
                   </>
                 ) : null}
                 <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-white">
-                  {formatCurrency(s.total)}
+                  {formatCurrency(s.total, symbol)}
                 </td>
               </tr>
             ))}
@@ -115,7 +118,7 @@ export function IncomeBySegment({
                 </>
               ) : null}
               <td className="px-4 py-2.5 text-right font-semibold tabular-nums text-white">
-                {formatCurrency(totalCollected)}
+                {formatCurrency(totalCollected, symbol)}
               </td>
             </tr>
           </tfoot>
@@ -126,8 +129,8 @@ export function IncomeBySegment({
           the normal state; a warning is a bug report, not a disclaimer. */}
       {!reconciles ? (
         <p role="alert" className="border-t border-amber-900/60 bg-amber-950/30 px-4 py-2 text-xs text-amber-300">
-          These rows come to {formatCurrency(summed)}, which does not match the{' '}
-          {formatCurrency(totalCollected)} collected. Do not divide income on this
+          These rows come to {formatCurrency(summed, symbol)}, which does not match the{' '}
+          {formatCurrency(totalCollected, symbol)} collected. Do not divide income on this
           until it is explained.
         </p>
       ) : null}

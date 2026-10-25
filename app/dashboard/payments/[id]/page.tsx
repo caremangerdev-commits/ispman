@@ -5,6 +5,7 @@ import { ArrowLeft, ArrowRight, Mail, MapPin, Phone } from 'lucide-react'
 
 import { PaymentActions } from '@/components/payments/PaymentActions'
 import { ReceiptButton } from '@/components/payments/ReceiptModal'
+import { companySymbol } from '@/lib/data/currency'
 import { planExpiryUndo } from '@/lib/data/payment-expiry'
 import { getPayment, getReversalSubject } from '@/lib/data/payments'
 import { getRadiusStatus } from '@/lib/radius/client'
@@ -46,6 +47,8 @@ export default async function PaymentDetailPage({
   const payment = await getPayment(company.id, paymentId)
   if (!payment) notFound()
 
+  const symbol = await companySymbol(company.id)
+
   const customer = payment.customer
   const customerName = customer ? fullName(customer) : 'Unknown customer'
 
@@ -85,7 +88,7 @@ export default async function PaymentDetailPage({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-white">
-            {formatCurrency(payment.amount)}
+            {formatCurrency(payment.amount, symbol)}
             <span className="ml-2 align-middle text-sm font-normal text-gray-500">
               Payment #{payment.id}
             </span>
@@ -140,7 +143,7 @@ export default async function PaymentDetailPage({
           <dl className="divide-y divide-gray-800">
             <Row label="Amount">
               <span className="text-base font-semibold tabular-nums text-white">
-                {formatCurrency(payment.amount)}
+                {formatCurrency(payment.amount, symbol)}
               </span>
             </Row>
 
@@ -160,7 +163,7 @@ export default async function PaymentDetailPage({
                 {months} {months === 1 ? 'month' : 'months'}
               </span>
               <span className="ml-2 text-xs text-gray-500">
-                ({formatCurrency(perMonth)}/month)
+                ({formatCurrency(perMonth, symbol)}/month)
               </span>
             </Row>
 
@@ -217,7 +220,7 @@ export default async function PaymentDetailPage({
                 <div>
                   <p className="text-[11px] text-gray-500">Monthly Rate</p>
                   <p className="mt-0.5 text-sm font-semibold tabular-nums text-gray-200">
-                    {formatCurrency(customer.monthly_rate)}
+                    {formatCurrency(customer.monthly_rate, symbol)}
                   </p>
                 </div>
                 <div>
@@ -228,7 +231,7 @@ export default async function PaymentDetailPage({
                       (customer.balance > 0 ? 'text-orange-400' : 'text-gray-200')
                     }
                   >
-                    {formatCurrency(customer.balance)}
+                    {formatCurrency(customer.balance, symbol)}
                   </p>
                 </div>
               </div>

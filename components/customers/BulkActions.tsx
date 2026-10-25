@@ -9,10 +9,10 @@ import {
   MoreHorizontal, RadioTower, Receipt, Upload, Zap,
 } from 'lucide-react'
 
+import { useMoney } from '@/components/money/Currency'
 import { Modal, settingsInput } from '@/components/settings/Modal'
 import type { CustomerFilters } from '@/lib/customer-filter'
 import type { BillScope } from '@/lib/billing'
-import { formatCurrency } from '@/lib/format'
 import {
   billBatch, loadAccessPointPlan, loadBillAllPlan, loadBillDatePlan, loadCutOffPlan,
   loadProvisionPlan, logBulkBill, logBulkProvision, provisionBatch, setAccessPoint,
@@ -1280,6 +1280,7 @@ function SummaryLine({ label, value }: { label: string; value: string }) {
  * confirmation, because the count it was typed against is no longer the count.
  */
 function BillAllModal({ onClose }: { onClose: () => void }) {
+  const { money } = useMoney()
   const router = useRouter()
   const months = useMemo(() => recentMonths(), [])
   // months[0] is the current month; months[1] is the month just ended.
@@ -1460,7 +1461,7 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
               value={
                 summary.billed.toLocaleString() +
                 (summary.billed === 1 ? ' customer' : ' customers') +
-                ' · ' + formatCurrency(summary.totalAmount)
+                ' · ' + money(summary.totalAmount)
               }
             />
             <Row
@@ -1681,11 +1682,11 @@ function BillAllModal({ onClose }: { onClose: () => void }) {
               />
             ) : null}
             <SummaryLine label="Will be billed" value={targets.length.toLocaleString()} />
-            <SummaryLine label="Total to bill" value={formatCurrency(plan.totalAmount)} />
+            <SummaryLine label="Total to bill" value={money(plan.totalAmount)} />
             {plan.creditApplied > 0 ? (
               <SummaryLine
                 label="Covered by credit"
-                value={formatCurrency(plan.creditApplied)}
+                value={money(plan.creditApplied)}
               />
             ) : null}
           </dl>

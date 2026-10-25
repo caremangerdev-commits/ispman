@@ -18,6 +18,7 @@ import { listPaymentCategories } from '@/lib/data/payment-categories'
 import { TicketPriorityBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges'
 import { lastBalanceAdjustment } from '@/lib/data/balance-adjustments'
 import { lastChargeFor } from '@/lib/data/billing-engine'
+import { companySymbol } from '@/lib/data/currency'
 import { listCustomerChanges } from '@/lib/data/customer-changes'
 import { listNetworkHistory } from '@/lib/data/network-events'
 import { provisionPlan } from '@/lib/data/provision'
@@ -61,7 +62,7 @@ export default async function CustomerDetailPage({
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
     balanceAdjustment, changeHistory, settings, caps, lastCharge, charges, paymentCategories,
-    calendar,
+    calendar, symbol,
   ] = await Promise.all([
       money ? getCustomerPayments(company.id, customerId) : none([]),
       getCustomerTickets(company.id, customerId),
@@ -99,6 +100,7 @@ export default async function CustomerDetailPage({
       // Whether the prepaid calendar model applies, which makes the expiry
       // rule (0039) inert — the same test the payment path makes.
       prepaidCalendarFor(company.id),
+      companySymbol(company.id),
     ])
 
   // "Email bill" beside "Bill (PDF)": shown when the company has bill emails
@@ -300,7 +302,7 @@ export default async function CustomerDetailPage({
                     })}
                   </span>
                   <span className="font-semibold tabular-nums text-gray-100">
-                    {formatCurrency(p.amount)}
+                    {formatCurrency(p.amount, symbol)}
                   </span>
                 </div>
 
@@ -324,7 +326,7 @@ export default async function CustomerDetailPage({
                 Total Paid
               </span>
               <span className="text-sm font-semibold tabular-nums text-white">
-                {formatCurrency(totalPaid)}
+                {formatCurrency(totalPaid, symbol)}
               </span>
             </li>
           </ul>
@@ -350,7 +352,7 @@ export default async function CustomerDetailPage({
                       })}
                     </td>
                     <td className="px-5 py-2 text-right font-medium tabular-nums text-gray-100">
-                      {formatCurrency(p.amount)}
+                      {formatCurrency(p.amount, symbol)}
                     </td>
                     <td className="px-5 py-2 text-right tabular-nums text-gray-400">
                       {p.months_paid ?? '—'}
@@ -371,7 +373,7 @@ export default async function CustomerDetailPage({
                     Total Paid
                   </td>
                   <td className="px-5 py-2.5 text-right text-sm font-semibold tabular-nums text-white">
-                    {formatCurrency(totalPaid)}
+                    {formatCurrency(totalPaid, symbol)}
                   </td>
                   <td colSpan={4} />
                 </tr>

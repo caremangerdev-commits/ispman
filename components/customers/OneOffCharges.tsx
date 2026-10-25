@@ -5,10 +5,11 @@ import { useState } from 'react'
 import { createPortal, useFormStatus } from 'react-dom'
 
 import { addCharge, voidCharge } from '@/app/actions/charges'
+import { useMoney } from '@/components/money/Currency'
 import { Modal } from '@/components/settings/Modal'
 import type { CustomerCharge } from '@/lib/data/charges'
 import { CATEGORY_NAME_MAX, type PaymentCategory } from '@/lib/data/payment-categories'
-import { formatCurrency, formatDateOnly } from '@/lib/format'
+import { formatDateOnly } from '@/lib/format'
 
 /** What the category select submits for its "+ Add new category" row. */
 const NEW_CATEGORY = '__new__'
@@ -59,6 +60,7 @@ export function OneOffCharges({
   categories: PaymentCategory[]
   canManage: boolean
 }) {
+  const { money } = useMoney()
   const [adding, setAdding] = useState(false)
   const [voiding, setVoiding] = useState<CustomerCharge | null>(null)
 
@@ -71,7 +73,7 @@ export function OneOffCharges({
           <h2 className="text-sm font-semibold text-white">One-off Charges</h2>
           <p className="mt-0.5 text-xs text-gray-500">
             {outstanding > 0
-              ? formatCurrency(outstanding) + ' outstanding · separate from the service balance'
+              ? money(outstanding) + ' outstanding · separate from the service balance'
               : 'Nothing outstanding · separate from the service balance'}
           </p>
         </div>
@@ -114,7 +116,7 @@ export function OneOffCharges({
                 {c.status === 'voided' ? (
                   <p className="mt-0.5 text-xs text-gray-500">
                     Voided{c.voidedByName ? ' by ' + c.voidedByName : ''}
-                    {c.writtenOff > 0 ? ', ' + formatCurrency(c.writtenOff) + ' written off' : ''}
+                    {c.writtenOff > 0 ? ', ' + money(c.writtenOff) + ' written off' : ''}
                     {c.voidReason ? ': ' + c.voidReason : ''}
                   </p>
                 ) : null}
@@ -124,11 +126,11 @@ export function OneOffCharges({
                 <dl className="text-right text-xs">
                   <div className="flex justify-end gap-2">
                     <dt className="text-gray-500">Charged</dt>
-                    <dd className="tabular-nums text-gray-300">{formatCurrency(c.amount)}</dd>
+                    <dd className="tabular-nums text-gray-300">{money(c.amount)}</dd>
                   </div>
                   <div className="flex justify-end gap-2">
                     <dt className="text-gray-500">Paid</dt>
-                    <dd className="tabular-nums text-gray-300">{formatCurrency(c.paid)}</dd>
+                    <dd className="tabular-nums text-gray-300">{money(c.paid)}</dd>
                   </div>
                   <div className="flex justify-end gap-2">
                     <dt className="text-gray-500">Owing</dt>
@@ -138,7 +140,7 @@ export function OneOffCharges({
                         (c.outstanding > 0 ? 'text-orange-400' : 'text-gray-300')
                       }
                     >
-                      {formatCurrency(c.outstanding)}
+                      {money(c.outstanding)}
                     </dd>
                   </div>
                 </dl>
@@ -332,6 +334,7 @@ function VoidChargeModal({
   charge: CustomerCharge
   onClose: () => void
 }) {
+  const { money } = useMoney()
   const [reason, setReason] = useState('')
 
   return (
@@ -343,16 +346,16 @@ function VoidChargeModal({
         <dl className="space-y-1.5 rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2.5 text-sm">
           <div className="flex justify-between gap-3">
             <dt className="text-xs text-gray-500">Charged</dt>
-            <dd className="tabular-nums text-gray-300">{formatCurrency(charge.amount)}</dd>
+            <dd className="tabular-nums text-gray-300">{money(charge.amount)}</dd>
           </div>
           <div className="flex justify-between gap-3">
             <dt className="text-xs text-gray-500">Paid (stands)</dt>
-            <dd className="tabular-nums text-gray-300">{formatCurrency(charge.paid)}</dd>
+            <dd className="tabular-nums text-gray-300">{money(charge.paid)}</dd>
           </div>
           <div className="flex justify-between gap-3">
             <dt className="text-xs text-gray-500">Written off</dt>
             <dd className="tabular-nums font-semibold text-red-300">
-              {formatCurrency(charge.outstanding)}
+              {money(charge.outstanding)}
             </dd>
           </div>
         </dl>

@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { createPortal, useFormStatus } from 'react-dom'
 
 import { adjustCarriedBalance } from '@/app/actions/customers'
-import { formatCurrencyExact } from '@/lib/format'
+import { useMoney } from '@/components/money/Currency'
 import { Modal } from '@/components/settings/Modal'
 
 function ConfirmButton() {
@@ -43,6 +43,7 @@ export function AdjustBalanceModal({
   customerName: string
   currentBalance: number
 }) {
+  const { moneyExact } = useMoney()
   const [open, setOpen] = useState(false)
   const [value, setValue] = useState(String(currentBalance))
   const [reason, setReason] = useState('')
@@ -81,7 +82,7 @@ export function AdjustBalanceModal({
                 <div className="flex items-baseline justify-between gap-3">
                   <span className="text-xs text-gray-500">Current balance</span>
                   <span className={'font-mono ' + (currentBalance < 0 ? 'text-emerald-400' : 'text-gray-300')}>
-                    {formatCurrencyExact(currentBalance)}
+                    {moneyExact(currentBalance)}
                   </span>
                 </div>
               </div>
@@ -115,8 +116,8 @@ export function AdjustBalanceModal({
                   </p>
                 ) : (
                   <p className="text-xs text-gray-500">
-                    New balance {formatCurrencyExact(parsed)}
-                    {' '}({delta > 0 ? '+' : '-'}{formatCurrencyExact(Math.abs(delta))}).
+                    New balance {moneyExact(parsed)}
+                    {' '}({delta > 0 ? '+' : '-'}{moneyExact(Math.abs(delta))}).
                     {parsed < 0 ? ' The customer will be owed money; the next bill is taken from it first.' : ''}
                   </p>
                 )}

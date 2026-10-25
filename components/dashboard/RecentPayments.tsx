@@ -8,7 +8,14 @@ const TYPE_STYLES: Record<string, string> = {
   online: 'bg-violet-500/10 text-violet-400',
 }
 
-export function RecentPayments({ payments }: { payments: PaymentRow[] }) {
+export function RecentPayments({
+  payments,
+  symbol,
+}: {
+  payments: PaymentRow[]
+  /** The company's own money symbol — a server component gets no context. */
+  symbol: string
+}) {
   return (
     <Panel
       title="Recent Payments"
@@ -42,7 +49,7 @@ export function RecentPayments({ payments }: { payments: PaymentRow[] }) {
               </span>
 
               <span className="shrink-0 text-sm font-semibold tabular-nums text-white">
-                {formatCurrency(p.amount)}
+                {formatCurrency(p.amount, symbol)}
               </span>
             </li>
           ))}

@@ -15,6 +15,7 @@ import {
 } from '@/components/dashboard/RoleDashboards'
 import { AccessDenied } from '@/components/ui/AccessDenied'
 import { StatCard } from '@/components/ui/StatCard'
+import { companySymbol } from '@/lib/data/currency'
 import { searchCustomers, toCustomerHit } from '@/lib/data/customer-search'
 import { getDashboardData } from '@/lib/data/dashboard'
 import {
@@ -50,6 +51,12 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
     <AccessDenied permission={denied} role={ROLE_LABELS[role]} />
   ) : null
 
+  // The acting company's own money symbol, for every figure below — the role
+  // dashboards included. Resolved after the redirect above so a cashier's
+  // bounce costs nothing, and cached per request, so the one read serves the
+  // whole page.
+  const symbol = await companySymbol(company.id)
+
   // Roles without KPI access get a task-focused home instead of the full
   // analytics dashboard. Each variant re-checks its own data permissions.
   if (!can(role, 'view_dashboard_kpis')) {
@@ -65,7 +72,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
       return (
         <div className="space-y-4">
           {banner}
-          <CashierDashboard data={data} query={query} hits={hits} />
+          <CashierDashboard data={data} query={query} hits={hits} symbol={symbol} />
         </div>
       )
     }
@@ -76,7 +83,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
         <div className="space-y-4">
           {banner}
           {/* No money in a technician's hits, not just none drawn. */}
-          <TechnicianDashboard data={data} query={query} hits={hits.map(toCustomerHit)} />
+          <TechnicianDashboard data={data} query={query} hits={hits.map(toCustomerHit)} symbol={symbol} />
         </div>
       )
     }
@@ -86,7 +93,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
     return (
       <div className="space-y-4">
         {banner}
-        <CsrDashboard data={data} query={query} hits={hits} />
+        <CsrDashboard data={data} query={query} hits={hits} symbol={symbol} />
       </div>
     )
   }
@@ -135,10 +142,10 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
         <StatCard label="Expired" value={String(stats.expiredCustomers)} icon={XCircle} accent="red" hint="Lapsed within 3 months" />
         <StatCard label="Inactive" value={String(stats.inactiveCustomers)} icon={Clock} accent="orange" hint="Lapsed over 3 months ago" />
         <StatCard label="Not Activated" value={String(stats.unprovisionedCustomers)} icon={WifiOff} accent="amber" hint="Not on the network yet" />
-        <StatCard label="Revenue This Month" value={formatCurrency(stats.revenueThisMonth)} icon={DollarSign} accent="emerald" trend={stats.revenueTrend} />
+        <StatCard label="Revenue This Month" value={formatCurrency(stats.revenueThisMonth, symbol)} icon={DollarSign} accent="emerald" trend={stats.revenueTrend} />
         <StatCard
           label="Collected Today"
-          value={formatCurrency(stats.collectedToday)}
+          value={formatCurrency(stats.collectedToday, symbol)}
           icon={Banknote}
           accent="emerald"
           hint={
@@ -147,7 +154,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
               : stats.paymentsToday + (stats.paymentsToday === 1 ? ' payment' : ' payments')
           }
         />
-        <StatCard label="Outstanding Balance" value={formatCurrency(stats.outstandingBalance)} icon={AlertCircle} accent="orange" hint={'Across ' + stats.accountsInArrears + ' accounts'} />
+        <StatCard label="Outstanding Balance" value={formatCurrency(stats.outstandingBalance, symbol)} icon={AlertCircle} accent="orange" hint={'Across ' + stats.accountsInArrears + ' accounts'} />
       </div>
 
       {/* Row 2 — charts. Revenue is gated: it is a reporting view. */}
@@ -187,7 +194,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
 
       {/* Row 3 */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {can(role, 'view_all_payments') ? <RecentPayments payments={recentPayments} /> : null}
+        {can(role, 'view_all_payments') ? <RecentPayments payments={recentPayments} symbol={symbol} /> : null}
         <ExpiringCustomers customers={urgentCustomers} />
       </div>
 

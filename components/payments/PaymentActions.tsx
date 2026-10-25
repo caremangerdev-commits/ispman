@@ -5,9 +5,9 @@ import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import { deletePayment, updatePayment, type PaymentResult } from '@/app/actions/payments'
+import { useMoney } from '@/components/money/Currency'
 import { Modal } from '@/components/settings/Modal'
 import { PREPAY_MONTH_OPTIONS } from '@/lib/billing'
-import { formatCurrency } from '@/lib/format'
 
 const PAYMENT_TYPES = ['cash', 'card', 'online'] as const
 
@@ -306,6 +306,8 @@ function ConfirmDelete({
   payment: EditablePayment
   onCancel: () => void
 }) {
+  const { money } = useMoney()
+
   return (
     <form action={deletePayment} className="space-y-4">
       <input type="hidden" name="payment_id" value={payment.id} />
@@ -314,11 +316,11 @@ function ConfirmDelete({
         <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-400" aria-hidden />
         <div className="space-y-1.5 text-sm text-red-200">
           <p>
-            This permanently removes the {formatCurrency(payment.amount)} payment recorded for{' '}
+            This permanently removes the {money(payment.amount)} payment recorded for{' '}
             <span className="font-semibold">{payment.customerName}</span>. It cannot be undone.
           </p>
           <p className="text-xs text-red-300/80">
-            {formatCurrency(payment.amount)} will be added back to their balance.
+            {money(payment.amount)} will be added back to their balance.
           </p>
         </div>
       </div>

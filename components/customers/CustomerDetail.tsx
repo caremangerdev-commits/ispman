@@ -21,11 +21,12 @@ import { MacHolderLinks } from '@/components/customers/MacHolderLinks'
 import { ProvisionModal } from '@/components/customers/ProvisionModal'
 import type { ProvisionPlan } from '@/lib/data/provision'
 import { StatusBadge } from '@/components/customers/StatusBadge'
+import { useMoney } from '@/components/money/Currency'
 import { GpsField } from '@/components/ui/GpsField'
 import { GpsLink } from '@/components/ui/GpsLink'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
 import {
-  daysUntilDateOnly, formatCurrency, formatCurrencyExact, formatDateOnly, timeAgo,
+  daysUntilDateOnly, formatDateOnly, timeAgo,
 } from '@/lib/format'
 import { can, type Role } from '@/lib/permissions'
 import { ChannelOptOut, SmsOptOut } from '@/components/customers/SmsOptOut'
@@ -279,6 +280,9 @@ export function CustomerDetail({
   /** The two dates Provision offers; null when Provision is not shown. */
   provisionPlan?: ProvisionPlan | null
 }) {
+  // Renamed: `money` above is this customer's figures, not the formatters.
+  const { money: fmtMoney, moneyExact: fmtMoneyExact } = useMoney()
+
   const c = customer
   const balanceAdjustment = money?.balanceAdjustment ?? null
   const paymentCount = money?.paymentCount ?? 0
@@ -505,7 +509,7 @@ export function CustomerDetail({
                     const toll =
                       paymentCount > 0
                         ? paymentCount + (paymentCount === 1 ? ' payment' : ' payments') +
-                          ' worth ' + formatCurrency(paymentsValue) +
+                          ' worth ' + fmtMoney(paymentsValue) +
                           ', along with their tickets and their entire history'
                         : 'their tickets and their entire history'
 
@@ -768,7 +772,7 @@ export function CustomerDetail({
           <ControlRow
             label="Monthly Rate"
             editing={editing}
-            value={formatCurrency(money.monthly_rate)}
+            value={fmtMoney(money.monthly_rate)}
             control={
               <input
                 name="monthly_rate"
@@ -789,11 +793,11 @@ export function CustomerDetail({
                 <span
                   className={owed > 0 ? 'text-orange-400' : owed < 0 ? 'text-emerald-400' : 'text-gray-200'}
                 >
-                  {formatCurrencyExact(owed)}
+                  {fmtMoneyExact(owed)}
                 </span>
                 {credit > 0 ? (
                   <span className="text-[11px] text-gray-500">
-                    + {formatCurrencyExact(credit)} credit
+                    + {fmtMoneyExact(credit)} credit
                   </span>
                 ) : null}
 
@@ -1145,7 +1149,7 @@ export function CustomerDetail({
                       ) : null}
                     </span>
                     <span className="shrink-0 text-sm tabular-nums text-gray-300">
-                      {formatCurrency(a.monthly_price ?? 0)}
+                      {fmtMoney(a.monthly_price ?? 0)}
                     </span>
                   </label>
                 ))}
@@ -1161,7 +1165,7 @@ export function CustomerDetail({
                   >
                     {a.name}
                     {money ? (
-                      <span className="text-green-500/70">{formatCurrency(a.monthly_price ?? 0)}</span>
+                      <span className="text-green-500/70">{fmtMoney(a.monthly_price ?? 0)}</span>
                     ) : null}
                   </span>
                 ))}
@@ -1172,7 +1176,7 @@ export function CustomerDetail({
               <div className="mt-3 flex items-center justify-between border-t border-gray-800 pt-3">
                 <span className="text-xs text-gray-500">Total additional services</span>
                 <span className="text-sm font-semibold tabular-nums text-white">
-                  {formatCurrency(addonTotal)}/mo
+                  {fmtMoney(addonTotal)}/mo
                 </span>
               </div>
             ) : null}
