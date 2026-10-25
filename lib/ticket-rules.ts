@@ -24,6 +24,21 @@ export type TicketRights = {
   resolve: boolean
   /** Put a resolved ticket back into play. */
   reopen: boolean
+  /**
+   * Take an UNASSIGNED ticket, putting your own name on it.
+   *
+   * WHY THIS EXISTS (Ezmze, 25 October 2026). A technician may open a ticket
+   * and leave it for the office to assign (app/actions/tickets.ts), and may
+   * resolve a ticket only when it is assigned to them. They do not have
+   * assign_ticket, so they could not put their own name on it either — which
+   * made an unassigned ticket a dead end: they could do the work and reply on
+   * it, but never close it. Nineteen were sitting open that way, twelve of
+   * them Ezmze field jobs raised in the three days before this was found.
+   *
+   * Taking is not assigning. It only ever writes YOUR id, only onto a ticket
+   * nobody holds, and never moves work off somebody else.
+   */
+  claim: boolean
 }
 
 export function ticketRights(
@@ -41,6 +56,14 @@ export function ticketRights(
       !resolved &&
       (can(role, 'resolve_any_ticket') || (theirs && can(role, 'resolve_ticket'))),
     reopen: resolved && can(role, 'reopen_ticket'),
+    // Only ever an open ticket nobody holds, and only for somebody who could
+    // then finish it. A role with assign_ticket already has the full control
+    // and does not need this one.
+    claim:
+      !resolved &&
+      ticket.assigned_to === null &&
+      can(role, 'resolve_ticket') &&
+      !can(role, 'assign_ticket'),
   }
 }
 

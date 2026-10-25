@@ -6,7 +6,7 @@ import { useFormStatus } from 'react-dom'
 import { CheckCircle2, MessageSquare, Pencil, RotateCcw, User, X } from 'lucide-react'
 
 import {
-  assignTicket, reopenTicket, resolveTicket, updateTicket, type ActionResult,
+  assignTicket, claimTicket, reopenTicket, resolveTicket, updateTicket, type ActionResult,
 } from '@/app/actions/tickets'
 import { TicketPriorityBadge, TicketStatusBadge } from '@/components/tickets/TicketBadges'
 import { GpsField } from '@/components/ui/GpsField'
@@ -366,6 +366,22 @@ export function TicketDetail({
                     pendingLabel="Saving…"
                     className="shrink-0 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-500"
                   />
+                </form>
+              ) : rights.claim ? (
+                // NOBODY HOLDS THIS ONE. Without this the ticket is a dead end
+                // for a technician: they can do the work and reply on it, but
+                // never close it, because resolving wants their name on it and
+                // they cannot put it there (lib/ticket-rules.ts, `claim`).
+                <form action={claimTicket} className="mt-3">
+                  <input type="hidden" name="id" value={ticket.id} />
+                  <SubmitButton
+                    label="Take this ticket"
+                    pendingLabel="Taking…"
+                    className="w-full rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-500"
+                  />
+                  <p className="mt-2 text-[11px] leading-snug text-gray-500">
+                    Take it to resolve it yourself, or leave it for the office to assign.
+                  </p>
                 </form>
               ) : !rights.resolve && status !== 'resolved' ? (
                 // Said once, here, rather than leaving a technician to wonder

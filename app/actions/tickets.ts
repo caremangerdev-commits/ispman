@@ -311,6 +311,72 @@ export async function updateTicket(
 // Assign
 // ---------------------------------------------------------------------------
 
+/**
+ * TAKING AN UNCLAIMED TICKET. The narrow door a technician needs to finish
+ * their own work.
+ *
+ * assign_ticket moves work between people and stays with the office. This
+ * writes nothing but the caller's OWN id, onto a ticket nobody holds, and
+ * refuses everything else — so a technician can pick up a job and close it
+ * without being able to take a ticket off a colleague.
+ *
+ * Authorized on resolve_ticket, deliberately: the point is to let somebody who
+ * could finish the ticket get into a position to do so. ticketRights() decides
+ * the rest, as it does for every other control (lib/ticket-rules.ts).
+ */
+export async function claimTicket(formData: FormData) {
+  const { company, profile } = await authorize('resolve_ticket')
+
+  const id = idOrNull(formData, 'id')
+  if (id === null) throw new Error('Missing ticket id.')
+
+  const existing = await loadTicket(company.id, id)
+  if (!existing) toast('/dashboard/tickets', 'That ticket no longer exists.', 'error')
+
+  if (!ticketRights(profile.role, profile.id, existing).claim) {
+    toast(
+      '/dashboard/tickets/' + id,
+      existing.assigned_to === null
+        ? 'This ticket cannot be taken.'
+        : 'Somebody already has this ticket. The office can reassign it.',
+      'error'
+    )
+  }
+
+  const db = tenantClient()
+  // Re-checked in the WHERE, not just above: two technicians opening the same
+  // ticket at once must not both come away holding it. The second update
+  // matches nothing.
+  const { data: taken, error } = await db
+    .from('support_tickets')
+    .update({ assigned_to: profile.id })
+    .eq('company_id', company.id)
+    .eq('id', id)
+    .is('assigned_to', null)
+    .select('id')
+    .maybeSingle()
+
+  if (error) toast('/dashboard/tickets/' + id, 'Could not take it: ' + error.message, 'error')
+  if (!taken) {
+    toast('/dashboard/tickets/' + id, 'Somebody else took this ticket first.', 'error')
+  }
+
+  await logTicketEvent({
+    companyId: company.id,
+    userId: profile.id,
+    customerId: existing.customer_id,
+    type: 'ticket_assigned',
+    details:
+      'Ticket ' + JSON.stringify(existing.title) + ' taken by ' + actor(profile) +
+      ', which nobody was assigned.',
+  })
+
+  revalidateTicket(id)
+  if (existing.customer_id) revalidatePath('/dashboard/customers/' + existing.customer_id)
+
+  toast('/dashboard/tickets/' + id, 'This ticket is yours. You can resolve it when the work is done.')
+}
+
 export async function assignTicket(formData: FormData) {
   const { company, profile } = await authorize('assign_ticket')
 
