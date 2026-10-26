@@ -16,6 +16,7 @@ import {
 import { addTicketMessage } from '@/lib/data/tickets'
 import { classifyPhone } from '@/lib/phone'
 import { getPortalCompany } from '@/lib/portal/context'
+import { NEEDS_SMS } from '@/lib/portal/messages'
 import { requestOtp, verifyOtp } from '@/lib/portal/otp'
 import {
   clearPortalSession, getPendingPick, getPortalSession, setPendingPick, setPortalSession,
@@ -206,13 +207,6 @@ export type PhoneChangeState =
   | { phase: 'enter'; error?: string }
   | { phase: 'code'; phone: string; error?: string }
   | { phase: 'done' }
-
-/**
- * Said the same way wherever the phone change is refused, so the page and the
- * two actions cannot drift into describing the rule differently.
- */
-export const NEEDS_SMS =
-  'To change the number on this account, sign in with a code sent by text.'
 
 export async function requestPhoneChange(
   _prev: PhoneChangeState | null,

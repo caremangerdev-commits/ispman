@@ -1,12 +1,12 @@
 import { notFound, redirect } from 'next/navigation'
 
-import { NEEDS_SMS } from '@/app/actions/portal'
 import { PhoneChangeForm } from '@/components/portal/PhoneChangeForm'
 import { BackLink, footerLine, PortalShell } from '@/components/portal/PortalShell'
 import styles from '@/components/portal/portal.module.css'
 import { portalFirstName } from '@/lib/data/portal'
 import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
+import { NEEDS_SMS } from '@/lib/portal/messages'
 import { getPortalSession } from '@/lib/portal/session'
 
 export const dynamic = 'force-dynamic'
