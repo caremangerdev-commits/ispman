@@ -595,6 +595,41 @@ textarea.input { font-size: 16px; resize: vertical; }
   text-align: center;
 }
 
+/* The two ways in, side by side on the sign-in card. Equal halves, because
+   neither is a fallback the customer should have to hunt for: a tenant whose
+   messaging is down needs the second one to be as findable as the first. */
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  margin-bottom: 18px;
+}
+
+.tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 8px;
+  border-radius: 9px;
+  cursor: pointer;
+  min-height: 40px;
+}
+
+.tab:hover { color: var(--ink); }
+
+.tabOn {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .root * { transition: none !important; animation: none !important; }
 }

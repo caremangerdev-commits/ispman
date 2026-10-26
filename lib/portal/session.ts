@@ -90,19 +90,52 @@ function cookieOptions(maxAge: number) {
   }
 }
 
-export type PortalSession = { companyId: number; customerId: number }
+/**
+ * HOW the customer proved who they are, carried in the session itself.
+ *
+ *   'sms'      a code texted to the number on the account. The number is
+ *              proven, because they had to receive on it.
+ *   'account'  their phone number and account number, both of which a
+ *              neighbour or a relative could know. Enough to see the account
+ *              and pay it; not enough to change where messages go.
+ *
+ * IN THE SIGNED COOKIE, not in a lookup: the level has to be as unforgeable as
+ * the customer id beside it, and it is the server that reads it on every
+ * action, so hiding a button is never what enforces this.
+ */
+export type PortalAuthLevel = 'sms' | 'account'
+
+export type PortalSession = {
+  companyId: number
+  customerId: number
+  level: PortalAuthLevel
+}
 
 /** The signed-in customer, scoped to the company the request resolved to. */
 export async function getPortalSession(companyId: number): Promise<PortalSession | null> {
   const jar = await cookies()
-  const payload = verify<{ c: number; u: number }>(jar.get(SESSION_COOKIE)?.value)
+  const payload = verify<{ c: number; u: number; v?: string }>(jar.get(SESSION_COOKIE)?.value)
   if (!payload || payload.c !== companyId) return null
-  return { companyId: payload.c, customerId: payload.u }
+  // A cookie issued before this field existed came from the SMS flow, which was
+  // the only way in, so no signed-in customer is demoted by the upgrade.
+  return {
+    companyId: payload.c,
+    customerId: payload.u,
+    level: payload.v === 'account' ? 'account' : 'sms',
+  }
 }
 
-export async function setPortalSession(companyId: number, customerId: number): Promise<void> {
+export async function setPortalSession(
+  companyId: number,
+  customerId: number,
+  level: PortalAuthLevel = 'sms'
+): Promise<void> {
   const jar = await cookies()
-  jar.set(SESSION_COOKIE, sign({ c: companyId, u: customerId }, SESSION_TTL), cookieOptions(SESSION_TTL))
+  jar.set(
+    SESSION_COOKIE,
+    sign({ c: companyId, u: customerId, v: level }, SESSION_TTL),
+    cookieOptions(SESSION_TTL)
+  )
   // Expire, not delete: a Domain-scoped cookie is only cleared by a Set-Cookie
   // carrying the same Domain and Path, which jar.delete(name) does not send.
   jar.set(PENDING_COOKIE, '', cookieOptions(0))

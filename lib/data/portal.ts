@@ -72,7 +72,17 @@ export function firstNameOf(name: string | null | undefined): string | null {
   return first || null
 }
 
-export type PortalMatch = { id: number; name: string }
+export type PortalMatch = {
+  id: number
+  name: string
+  /**
+   * customers.account_number, carried so the account-details login can check
+   * it against what was typed. The multi-account picker ignores it: showing
+   * one customer's account number to whoever holds the phone would hand out
+   * half of the other login's credentials.
+   */
+  accountNumber: string | null
+}
 
 /**
  * The customers in a company whose phone is `e164` (without the plus).
@@ -95,7 +105,7 @@ export async function matchCustomersByPhone(companyId: number, e164: string): Pr
   const db = tenantClient()
   const { data, error } = await db
     .from('customers')
-    .select('id, first_name, last_name, phone')
+    .select('id, first_name, last_name, phone, account_number')
     .eq('company_id', companyId)
     .ilike('phone', '%' + tail + '%')
     .limit(500)
@@ -106,6 +116,7 @@ export async function matchCustomersByPhone(companyId: number, e164: string): Pr
     first_name: string | null
     last_name: string | null
     phone: string | null
+    account_number: string | null
   }[]
 
   return rows
@@ -113,7 +124,48 @@ export async function matchCustomersByPhone(companyId: number, e164: string): Pr
     .map((r) => ({
       id: r.id,
       name: [r.first_name, r.last_name].filter(Boolean).join(' ') || 'Account #' + r.id,
+      accountNumber: r.account_number,
     }))
+}
+
+/**
+ * An account number as it is compared, never as it is displayed.
+ *
+ * Someone reading theirs off a bill types what they see — spaces, dashes, a
+ * lower-case letter — so the stored and the entered form are folded the same
+ * way before they meet. Everything that is not a letter or a digit goes.
+ */
+function foldAccount(value: string | null | undefined): string {
+  return (value ?? '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+}
+
+/**
+ * The one customer whose phone AND account number both match, or null.
+ *
+ * THE PHONE SIDE IS NOT RE-IMPLEMENTED. It goes through
+ * matchCustomersByPhone above, which is the single definition of what counts
+ * as the same number; a second normalisation here is how the two logins would
+ * drift into disagreeing about who owns a number.
+ *
+ * NULL FOR AMBIGUITY TOO. If the pair somehow matches more than one account —
+ * two customers sharing a number and an account number — nobody is signed in,
+ * rather than guessing at the first row. The SMS login offers a choice in that
+ * situation because the number is proven; here it is not.
+ *
+ * An empty stored account number never matches, so a customer who has not been
+ * given one cannot be signed in by leaving the box blank.
+ */
+export async function findCustomerByPhoneAndAccount(
+  companyId: number,
+  e164: string,
+  accountNumber: string
+): Promise<number | null> {
+  const wanted = foldAccount(accountNumber)
+  if (!wanted) return null
+
+  const matches = await matchCustomersByPhone(companyId, e164)
+  const hits = matches.filter((m) => foldAccount(m.accountNumber) === wanted)
+  return hits.length === 1 ? hits[0].id : null
 }
 
 export type PortalAccount = {

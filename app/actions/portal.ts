@@ -4,7 +4,12 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import { createGatewayCheckout } from '@/lib/data/payment-gateways'
-import { findCustomerIdByMac, matchCustomersByPhone } from '@/lib/data/portal'
+import {
+  findCustomerByPhoneAndAccount, findCustomerIdByMac, matchCustomersByPhone,
+} from '@/lib/data/portal'
+import {
+  clearPhoneAttempts, loginThrottled, noteLoginFailure,
+} from '@/lib/portal/login-throttle'
 import {
   createPortalTicket, getPortalTicket, readTicketPhoto, uploadTicketPhoto,
 } from '@/lib/data/portal-tickets'
@@ -30,6 +35,8 @@ import { tenantClient } from '@/lib/supabase/tenant'
 export type LoginState =
   | { phase: 'phone'; error?: string }
   | { phase: 'code'; phone: string; error?: string }
+  /** The account-details form, which never leaves its own tab. */
+  | { phase: 'account'; error?: string }
 
 /** Step 1: a phone number is entered; find the account(s) and text a code. */
 export async function requestCode(_prev: LoginState | null, formData: FormData): Promise<LoginState> {
@@ -84,6 +91,64 @@ export async function verifyCode(_prev: LoginState | null, formData: FormData): 
   // pending and let them pick which account.
   await setPendingPick(company.id, phone)
   redirect('/choose')
+}
+
+/**
+ * The second way in: the phone number on the account, plus the account number.
+ *
+ * WHY IT EXISTS (owner, 26 October 2026, from a tenant). The SMS code is the
+ * better proof, but it depends on that tenant's messaging being up. When it is
+ * not, every customer is locked out of their own account at exactly the moment
+ * they are trying to pay. This way in needs nothing but the bill in their hand.
+ *
+ * IT IS DELIBERATELY WEAKER, and the session says so. A neighbour or a
+ * relative could know both of these, so the session it issues is marked
+ * 'account' and the phone change refuses it (app/portal/phone). Everything
+ * else — the balance, the bills, paying — is open, because someone paying
+ * another person's bill does them no harm.
+ *
+ * ONE ERROR FOR EVERY FAILURE. Saying which half was wrong would turn this
+ * into a way of testing whether a number is on the system, or of hunting for
+ * an account number once a number is known.
+ */
+export async function signInWithAccount(
+  _prev: LoginState | null,
+  formData: FormData
+): Promise<LoginState> {
+  const company = await getPortalCompany()
+  if (!company) return { phase: 'account', error: 'This portal is not available.' }
+
+  const typedPhone = String(formData.get('phone') ?? '')
+  const account = String(formData.get('account_number') ?? '').trim()
+  const verdict = classifyPhone(typedPhone)
+  const e164 = verdict.kind === 'jamaica' ? verdict.e164 : null
+
+  const refuse = 'Those details do not match an account. Check them and try again.'
+
+  // The throttle is keyed on the number as typed when it will not normalise,
+  // so a run of malformed guesses still counts against the attempt.
+  const key = e164 ?? typedPhone.replace(/\D/g, '').slice(-10)
+  if (await loginThrottled(company.id, key)) {
+    return {
+      phase: 'account',
+      error: 'Too many attempts. Wait a few minutes, or sign in with a code instead.',
+    }
+  }
+
+  if (!e164 || !account) {
+    await noteLoginFailure(company.id, key, !e164 ? 'unreadable number' : 'no account number')
+    return { phase: 'account', error: refuse }
+  }
+
+  const customerId = await findCustomerByPhoneAndAccount(company.id, e164, account)
+  if (customerId === null) {
+    await noteLoginFailure(company.id, e164, 'no single match')
+    return { phase: 'account', error: refuse }
+  }
+
+  clearPhoneAttempts(company.id, e164)
+  await setPortalSession(company.id, customerId, 'account')
+  redirect('/')
 }
 
 /** The multi-account picker's submit: sign in as the chosen, verified account. */
@@ -142,6 +207,13 @@ export type PhoneChangeState =
   | { phase: 'code'; phone: string; error?: string }
   | { phase: 'done' }
 
+/**
+ * Said the same way wherever the phone change is refused, so the page and the
+ * two actions cannot drift into describing the rule differently.
+ */
+export const NEEDS_SMS =
+  'To change the number on this account, sign in with a code sent by text.'
+
 export async function requestPhoneChange(
   _prev: PhoneChangeState | null,
   formData: FormData
@@ -150,6 +222,10 @@ export async function requestPhoneChange(
   if (!company) return { phase: 'enter', error: 'This portal is not available.' }
   const session = await getPortalSession(company.id)
   if (!session) return { phase: 'enter', error: 'Please sign in again.' }
+  // CHECKED ON THE SERVER, not only by hiding the page. Whoever signed in with
+  // an account number has not proved they hold the number on the account, so
+  // they must not be able to move where that account's messages go.
+  if (session.level !== 'sms') return { phase: 'enter', error: NEEDS_SMS }
 
   const verdict = classifyPhone(fd(formData, 'phone'))
   const e164 = verdict.kind === 'jamaica' ? verdict.e164 : null
@@ -168,6 +244,9 @@ export async function confirmPhoneChange(
   if (!company) return { phase: 'enter', error: 'This portal is not available.' }
   const session = await getPortalSession(company.id)
   if (!session) return { phase: 'enter', error: 'Please sign in again.' }
+  // Re-checked here, not only at the request step: the two are separate posts
+  // and this is the one that writes.
+  if (session.level !== 'sms') return { phase: 'enter', error: NEEDS_SMS }
 
   const phone = fd(formData, 'phone')
   const code = fd(formData, 'code').replace(/\D/g, '')
