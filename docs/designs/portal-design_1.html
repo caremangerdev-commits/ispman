@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Portal Design</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* The only per-tenant value. Everything else is the system. */
+  --brand:#ff8000;
+  --brand-ink:#1a2027;        /* text on brand, flipped when brand is light */
+
+  --paper:#f4f6f8;
+  --card:#ffffff;
+  --ink:#1a2027;
+  --muted:#5a6775;
+  --line:#e2e7ec;
+
+  --ok:#1a7f4b;
+  --warn:#b26a00;
+  --bad:#b32b2b;
+  --ok-soft:#e6f3ec;
+  --warn-soft:#fdf1df;
+  --bad-soft:#fbeaea;
+
+  --r:14px;
+  --pad:22px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--paper);
+  color:var(--ink);
+  font-family:'Archivo',system-ui,-apple-system,sans-serif;
+  font-size:16px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ---- preview strip: NOT part of the design ---- */
+.preview{background:#11161c;color:#9fb0c0;padding:10px 16px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px}
+.preview span{margin-right:4px}
+.preview button{font:inherit;font-weight:500;background:#1e262f;color:#cfdae4;border:1px solid #2e3944;padding:6px 12px;border-radius:999px;cursor:pointer}
+.preview button[aria-pressed="true"]{background:#cfdae4;color:#11161c;border-color:#cfdae4}
+.preview button:focus-visible{outline:2px solid #7fb3ff;outline-offset:2px}
+
+/* ---- brand band ---- */
+.band{background:var(--brand);color:var(--brand-ink)}
+.band-in{max-width:1120px;margin:0 auto;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.mark{display:flex;align-items:center;gap:11px;min-width:0}
+.mark-badge{width:30px;height:30px;border-radius:7px;background:var(--brand-ink);color:var(--brand);display:grid;place-items:center;font-weight:700;font-size:14px;flex:none}
+.mark-name{font-weight:600;font-size:17px;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who{display:flex;align-items:center;gap:14px;font-size:14.5px;flex:none}
+.who a{color:inherit;opacity:.75;text-decoration:none;border-bottom:1px solid currentColor;padding-bottom:1px}
+.who a:hover{opacity:1}
+
+/* ---- shell ---- */
+.wrap{max-width:1120px;margin:0 auto;padding:24px 20px 56px}
+.grid{display:grid;gap:18px;grid-template-columns:1fr}
+@media(min-width:900px){
+  .grid{grid-template-columns:1.55fr 1fr;align-items:start}
+  .col{display:grid;gap:18px;align-content:start}
+}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:var(--pad)}
+.card--quiet{background:transparent;border-style:solid}
+h2{font-size:15px;font-weight:600;margin:0 0 16px;color:var(--muted);letter-spacing:.01em}
+
+/* ---- the service span: the one memorable element ---- */
+.status{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+.days{font-size:clamp(44px,9vw,60px);font-weight:700;line-height:.95;letter-spacing:-.035em;font-variant-numeric:tabular-nums}
+.days-unit{font-size:19px;font-weight:500;color:var(--muted)}
+.note{margin:10px 0 0;color:var(--muted);font-size:15px;max-width:52ch}
+
+.span{margin-top:22px}
+.track{height:12px;border-radius:999px;background:#eef1f4;position:relative;overflow:hidden}
+.fill{position:absolute;inset:0 auto 0 0;border-radius:999px;background:var(--ok)}
+.ticks{display:flex;justify-content:space-between;margin-top:9px;font-size:13.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+
+.state-ok .fill{background:var(--ok)}
+.state-warn .fill{background:var(--warn)}
+.state-bad .fill{background:var(--bad)}
+
+.flag{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:5px 12px;font-size:14px;font-weight:600;margin-top:20px}
+.state-ok .flag{background:var(--ok-soft);color:var(--ok)}
+.state-warn .flag{background:var(--warn-soft);color:var(--warn)}
+.state-bad .flag{background:var(--bad-soft);color:var(--bad)}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+
+.owed{margin-top:18px;font-size:27px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.owed small{display:block;font-size:14px;font-weight:500;color:var(--muted);letter-spacing:0;margin-top:2px}
+
+.btn{
+  display:block;width:100%;margin-top:18px;
+  background:var(--brand);color:var(--brand-ink);
+  font:inherit;font-weight:600;font-size:17px;
+  border:0;border-radius:11px;padding:15px 20px;cursor:pointer;text-align:center;
+}
+.btn:hover{filter:brightness(.94)}
+.btn:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+.btn--ghost{background:transparent;color:var(--ink);border:1.5px solid var(--line);font-size:16px}
+.btn--ghost:hover{background:#f6f8fa;filter:none}
+
+/* ---- account block ---- */
+.acct-no{font-size:36px;font-weight:700;letter-spacing:.01em;font-variant-numeric:tabular-nums;line-height:1.1}
+.acct-help{color:var(--muted);font-size:14px;margin:5px 0 0}
+.rows{margin-top:20px;border-top:1px solid var(--line)}
+.row{display:flex;justify-content:space-between;gap:16px;padding:11px 0;border-bottom:1px solid var(--line);font-size:15px}
+.row dt{color:var(--muted);margin:0}
+.row dd{margin:0;font-weight:600;text-align:right}
+.row dd.unset{font-weight:500;color:var(--muted)}
+
+.paynote{font-size:15px;color:var(--ink);margin:0}
+.paynote b{font-weight:600}
+
+/* ---- payments ---- */
+.pay-list{margin:0;padding:0;list-style:none}
+.pay-list li{display:flex;justify-content:space-between;align-items:baseline;gap:16px;padding:13px 0;border-bottom:1px solid var(--line)}
+.pay-list li:last-child{border-bottom:0;padding-bottom:0}
+.pay-date{color:var(--muted);font-size:15px}
+.pay-amt{font-weight:600;font-variant-numeric:tabular-nums;font-size:16px}
+.empty{color:var(--muted);font-size:15px;margin:0}
+
+/* ---- links list ---- */
+.links{margin:0;padding:0;list-style:none}
+.links li+li{border-top:1px solid var(--line)}
+.links a{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 0;color:var(--ink);text-decoration:none;font-weight:500;font-size:16px}
+.links a:hover{color:var(--brand)}
+.links a:focus-visible{outline:2px solid var(--ink);outline-offset:3px;border-radius:4px}
+.chev{color:var(--muted);flex:none}
+
+/* ---- outage ---- */
+.outage{background:#fdf1df;border:1px solid #f0d49e;border-radius:var(--r);padding:16px 18px;margin-bottom:18px}
+.outage p{margin:0;font-size:15px}
+.outage p+p{margin-top:6px;color:var(--muted);font-size:13.5px}
+.outage b{font-weight:600}
+.outage[hidden]{display:none}
+
+.foot{margin-top:28px;color:var(--muted);font-size:13.5px;text-align:center}
+
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<div class="preview">
+  <span>Preview state:</span>
+  <button type="button" data-state="ok" aria-pressed="true">Paid up</button>
+  <button type="button" data-state="warn" aria-pressed="false">Expiring soon</button>
+  <button type="button" data-state="bad" aria-pressed="false">Cut off</button>
+  <span style="margin-left:auto">Brand colour:</span>
+  <button type="button" data-brand="#ff8000" aria-pressed="true">West Central</button>
+  <button type="button" data-brand="#1d4ed8" aria-pressed="false">Blue tenant</button>
+  <button type="button" data-brand="#0f766e" aria-pressed="false">Teal tenant</button>
+</div>
+
+<header class="band">
+  <div class="band-in">
+    <div class="mark">
+      <div class="mark-badge">W</div>
+      <div class="mark-name">West Central Networks</div>
+    </div>
+    <div class="who">
+      <span>Hi, Shelley</span>
+      <a href="#">Log out</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <div class="outage" id="outage" hidden>
+    <p><b>We're working on a fault in your area.</b> Engineers are on site.</p>
+    <p>Updated 8:10 am · next update by 11:00 am</p>
+  </div>
+
+  <div class="grid">
+
+    <div class="col">
+      <section class="card state-ok" id="service">
+        <h2>Your service</h2>
+
+        <div class="status">
+          <div class="days" id="days">19</div>
+          <div class="days-unit" id="unit">days left</div>
+        </div>
+        <p class="note" id="note">Your internet stays on until 5 November. Pay before then to keep it running.</p>
+
+        <div class="span">
+          <div class="track"><div class="fill" id="fill" style="width:38%"></div></div>
+          <div class="ticks"><span id="from">5 Oct</span><span id="to">5 Nov</span></div>
+        </div>
+
+        <div class="flag" id="flag"><span class="dot"></span><span id="flagtext">Paid up</span></div>
+
+        <div class="owed" id="owed" hidden>J$3,500<small>due now</small></div>
+
+        <button class="btn" id="cta">Pay bill</button>
+      </section>
+
+      <section class="card">
+        <h2>Payments</h2>
+        <ul class="pay-list">
+          <li><span class="pay-date">17 Oct 2026</span><span class="pay-amt">J$3,500</span></li>
+          <li><span class="pay-date">14 Sep 2026</span><span class="pay-amt">J$3,500</span></li>
+          <li><span class="pay-date">11 Aug 2026</span><span class="pay-amt">J$3,500</span></li>
+        </ul>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card">
+        <h2>Account number</h2>
+        <div class="acct-no">10140</div>
+        <p class="acct-help">Give this number whenever you pay.</p>
+
+        <dl class="rows">
+          <div class="row"><dt>Plan</dt><dd>MAX P</dd></div>
+          <div class="row"><dt>Speed</dt><dd>10 / 10 Mbps</dd></div>
+          <div class="row"><dt>Phone</dt><dd>876 555 5555</dd></div>
+        </dl>
+      </section>
+
+      <section class="card">
+        <h2>Where to pay</h2>
+        <p class="paynote">Cash at the <b>Malvern office</b>, Monday to Friday, 9am–4pm. Bank transfer to NCB <b>351-000-000</b>. Or pay by card using the button above.</p>
+      </section>
+
+      <section class="card card--quiet">
+        <ul class="links">
+          <li><a href="#">Download a statement<span class="chev">›</span></a></li>
+          <li><a href="#">Report a problem<span class="chev">›</span></a></li>
+          <li><a href="#">Change my phone number<span class="chev">›</span></a></li>
+        </ul>
+      </section>
+    </div>
+
+  </div>
+
+  <p class="foot">West Central Networks · 876 555 5555</p>
+</main>
+
+<script>
+(function(){
+  var S = {
+    ok:{cls:'state-ok',days:'19',unit:'days left',fill:'38%',
+        note:'Your internet stays on until 5 November. Pay before then to keep it running.',
+        flag:'Paid up',cta:'Pay bill',owed:false,outage:false},
+    warn:{cls:'state-warn',days:'3',unit:'days left',fill:'90%',
+        note:'Your internet goes off on 5 November unless you pay before then.',
+        flag:'Expiring soon',cta:'Pay J$3,500 now',owed:true,outage:false},
+    bad:{cls:'state-bad',days:'6',unit:'days ago',fill:'100%',
+        note:'Your internet went off on 5 November. Pay now and you will be back online in a few minutes.',
+        flag:'Service off',cta:'Pay J$3,500 and reconnect',owed:true,outage:false}
+  };
+  var svc=document.getElementById('service');
+  function set(k){
+    var s=S[k];
+    svc.className='card '+s.cls;
+    document.getElementById('days').textContent=s.days;
+    document.getElementById('unit').textContent=s.unit;
+    document.getElementById('note').textContent=s.note;
+    document.getElementById('fill').style.width=s.fill;
+    document.getElementById('flagtext').textContent=s.flag;
+    document.getElementById('cta').textContent=s.cta;
+    document.getElementById('owed').hidden=!s.owed;
+    document.getElementById('outage').hidden=!s.outage;
+  }
+  function lum(h){
+    var r=parseInt(h.substr(1,2),16)/255,g=parseInt(h.substr(3,2),16)/255,b=parseInt(h.substr(5,2),16)/255;
+    function f(c){return c<=.03928?c/12.92:Math.pow((c+.055)/1.055,2.4)}
+    return .2126*f(r)+.7152*f(g)+.0722*f(b);
+  }
+  document.querySelectorAll('.preview button').forEach(function(b){
+    b.addEventListener('click',function(){
+      var grp=b.dataset.state?'[data-state]':'[data-brand]';
+      document.querySelectorAll('.preview '+grp).forEach(function(o){o.setAttribute('aria-pressed','false')});
+      b.setAttribute('aria-pressed','true');
+      if(b.dataset.state){set(b.dataset.state)}
+      else{
+        var c=b.dataset.brand;
+        document.documentElement.style.setProperty('--brand',c);
+        document.documentElement.style.setProperty('--brand-ink',lum(c)>0.45?'#1a2027':'#ffffff');
+      }
+    });
+  });
+})();
+</script>
+</body>
+</html>
