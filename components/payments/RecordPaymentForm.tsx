@@ -1464,6 +1464,29 @@ export function RecordPaymentForm({
                 ))}
               </select>
 
+              {/* The number the other side of the payment knows it by, so a
+                  line on a bank statement can be tied back to this payment.
+                  Under the method select and not beside it, for the same
+                  reason the note below is: a field that belongs to one method
+                  belongs under the control that chose it. Cash has no
+                  reference, and the column may not exist yet (0044). */}
+              {referenceLabel && hasReference ? (
+                <div className="space-y-1.5 pt-1.5">
+                  <label htmlFor="reference" className="block text-xs font-medium text-gray-400">
+                    {referenceLabel} <span className="text-gray-500">(optional)</span>
+                  </label>
+                  <input
+                    id="reference"
+                    name="reference"
+                    type="text"
+                    autoComplete="off"
+                    maxLength={PAYMENT_REFERENCE_MAX}
+                    placeholder="From the customer's receipt"
+                    className={inputBase + inputOk}
+                  />
+                </div>
+              ) : null}
+
               {/* "Other" says nothing on its own, so the note becomes the
                   record of what actually happened — and is required. Shown
                   here rather than as a permanent field so the form stays
