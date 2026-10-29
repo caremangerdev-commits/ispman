@@ -24,6 +24,14 @@ export type EditablePayment = {
   payment_date: string
   agent: string | null
   notes: string | null
+  /** The number off the customer's receipt; null for cash or if none was given. */
+  reference?: string | null
+  /**
+   * Whether the reference can be set at all — false until migration 0044 is
+   * applied, when the column does not exist and the field is hidden rather
+   * than offered and silently dropped.
+   */
+  canSetReference?: boolean
   customerName: string
   /**
    * The customer's standing radcheck expiry, raw as stored. Null when they are
@@ -251,6 +259,27 @@ function EditForm({ payment, onCancel }: { payment: EditablePayment; onCancel: (
             <p role="alert" className="text-xs text-red-400">{errors.agent}</p>
           ) : null}
         </div>
+
+        {/* Editable even when it is empty: the commonest correction is a
+            transfer that was taken without its reference being typed in, or
+            typed in wrong off the customer's phone screen. */}
+        {payment.canSetReference ? (
+          <div className="space-y-1.5 sm:col-span-2">
+            <label htmlFor="edit-reference" className="block text-xs font-medium text-gray-400">
+              Reference <span className="text-gray-500">(optional)</span>
+            </label>
+            <input
+              id="edit-reference"
+              name="reference"
+              type="text"
+              autoComplete="off"
+              maxLength={64}
+              defaultValue={payment.reference ?? ''}
+              placeholder="From the customer's receipt"
+              className={inputBase + inputOk}
+            />
+          </div>
+        ) : null}
 
         <div className="space-y-1.5 sm:col-span-2">
           <label htmlFor="edit-notes" className="block text-xs font-medium text-gray-400">

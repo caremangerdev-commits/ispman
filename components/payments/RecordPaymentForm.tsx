@@ -27,7 +27,8 @@ import {
   backdateNotice, BACKDATE_FREE_DAYS, isBackdated, needsBackdateReason,
 } from '@/lib/payments/backdate'
 import {
-  PAYMENT_METHODS, PAYMENT_METHOD_LABELS, type PaymentMethod,
+  PAYMENT_METHODS, PAYMENT_METHOD_LABELS, PAYMENT_REFERENCE_LABELS,
+  PAYMENT_REFERENCE_MAX, type PaymentMethod,
 } from '@/lib/data/checkoff'
 import {
   CATEGORY_NAME_MAX, type PaymentCategory,
@@ -225,6 +226,7 @@ export function RecordPaymentForm({
   companyBillDate,
   paymentCategories,
   otherPaymentsAvailable,
+  hasReference,
   onCustomerChange,
 }: {
   initialCustomer: SearchHit | null
@@ -237,6 +239,9 @@ export function RecordPaymentForm({
   /** False until migration 0013 is applied; the type toggle is then not shown
    *  at all and the form behaves exactly as it did before. */
   otherPaymentsAvailable: boolean
+  /** False until migration 0044 is applied; the reference field is then not
+   *  shown at all and the cashier goes on using the notes. */
+  hasReference: boolean
   /** Fires whenever the picked customer changes, so the page can switch
    *  between the browsing and focused layouts. */
   onCustomerChange?: (hit: SearchHit | null) => void
@@ -284,6 +289,9 @@ export function RecordPaymentForm({
   const [amount, setAmount] = useState(seedAmount(initialCustomer, 1))
   const [method, setMethod] = useState<PaymentMethod>('cash')
   const [notes, setNotes] = useState('')
+
+  // Named for the method chosen, and absent for cash, which has no reference.
+  const referenceLabel = PAYMENT_REFERENCE_LABELS[method] ?? null
 
   // --- payment kind ---
   // Service is the default and is what the form has always done. Everything
@@ -1352,6 +1360,26 @@ export function RecordPaymentForm({
                     periodLabel={billPeriodLabel}
                   />
                 </div>
+
+                {/* The number the other side of the payment knows it by, so a
+                    line on a bank statement can be tied back to this payment.
+                    Cash has none, and the column may not exist yet (0044). */}
+                {referenceLabel && hasReference ? (
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <label htmlFor="reference" className="block text-xs font-medium text-gray-400">
+                      {referenceLabel} <span className="text-gray-500">(optional)</span>
+                    </label>
+                    <input
+                      id="reference"
+                      name="reference"
+                      type="text"
+                      autoComplete="off"
+                      maxLength={PAYMENT_REFERENCE_MAX}
+                      placeholder="From the customer's receipt"
+                      className={inputBase + inputOk}
+                    />
+                  </div>
+                ) : null}
               </div>
 
               <div className="space-y-1.5">

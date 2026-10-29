@@ -89,6 +89,20 @@ export type Receipt = {
   paidLabel: string
   paid: number
   /**
+   * The number off the customer's own receipt, when the money arrived with one
+   * — a bank transfer reference, a cheque number, a card authorisation code.
+   *
+   * Printed under the amount paid as "Ref", because that is the field a
+   * customer disputing a transfer points at: it is the one string that ties
+   * their bank's record to this piece of paper. Null for cash, and for every
+   * payment taken before migration 0044, where the receipt omits the line
+   * rather than printing an empty one.
+   *
+   * Labelled "Ref" and not "Transfer reference" on purpose: the label column is
+   * 11 characters and the longer wording is 18, so the grid would eat it.
+   */
+  reference: string | null
+  /**
    * Where the money went, when one visit paid more than one thing: "to service",
    * "to Installation". Null for a payment that settled one thing, where the
    * line above already says so. Migration 0025.
@@ -301,6 +315,11 @@ export function renderReceipt(r: Receipt): string[] {
   for (const line of r.allocations ?? []) {
     out.push(columns('  ' + line.label, receiptMoney(line.amount)))
   }
+
+  // Under the amount paid, where it belongs: it says HOW that money arrived.
+  // Wrapped rather than truncated, for the same reason the header fields are —
+  // half a transfer reference is no use to anyone tracing the payment.
+  if (r.reference) out.push(...field('Ref', r.reference))
 
   // Service only. Printed even at zero — "Balance 0.00" is the line the
   // customer is looking for, and omitting it reads as an oversight.

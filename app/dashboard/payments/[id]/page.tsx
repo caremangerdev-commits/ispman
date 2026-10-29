@@ -11,6 +11,7 @@ import { getPayment, getReversalSubject } from '@/lib/data/payments'
 import { getRadiusStatus } from '@/lib/radius/client'
 import { formatCurrency, fullName, timeAgo } from '@/lib/format'
 import { can } from '@/lib/permissions'
+import { getSchemaCapabilities } from '@/lib/schema'
 import { requirePermission } from '@/lib/session'
 
 export const metadata: Metadata = { title: 'Payment · ISPMan' }
@@ -47,7 +48,10 @@ export default async function PaymentDetailPage({
   const payment = await getPayment(company.id, paymentId)
   if (!payment) notFound()
 
-  const symbol = await companySymbol(company.id)
+  const [symbol, caps] = await Promise.all([
+    companySymbol(company.id),
+    getSchemaCapabilities(),
+  ])
 
   const customer = payment.customer
   const customerName = customer ? fullName(customer) : 'Unknown customer'
@@ -117,6 +121,8 @@ export default async function PaymentDetailPage({
             payment_date: payment.payment_date,
             agent: payment.agent,
             notes: payment.notes,
+            reference: payment.reference,
+            canSetReference: caps.paymentReference,
             customerName,
             serviceExpiry,
             expiryUndo: expiryUndo
@@ -177,6 +183,17 @@ export default async function PaymentDetailPage({
             <Row label="Agent">
               <span className="text-gray-200">{payment.agent ?? '—'}</span>
             </Row>
+
+            {/* Only when there is one. A Reference row reading "—" on every
+                cash payment would be a column of dashes down the page, and
+                this row exists to be looked up, not to be filled in. */}
+            {payment.reference ? (
+              <Row label="Reference">
+                <span className="font-mono text-sm break-all text-gray-200">
+                  {payment.reference}
+                </span>
+              </Row>
+            ) : null}
 
             <Row label="Notes">
               <span className="text-gray-300">{payment.notes || '—'}</span>

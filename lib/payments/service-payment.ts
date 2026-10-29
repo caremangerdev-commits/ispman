@@ -114,6 +114,13 @@ export function chargePaymentRows(opts: {
   notes: string
   userId: number | null
   segmentId: number | null
+  /**
+   * The number off the customer's receipt — a transfer reference, a cheque
+   * number, an authorisation code. Stamped on every row of the visit, so
+   * looking the reference up finds the whole transfer rather than one line of
+   * it. Ignored until migration 0044 is applied.
+   */
+  reference?: string | null
   caps: SchemaCapabilities
 }): Record<string, unknown>[] {
   return opts.checked.map((a) => {
@@ -140,6 +147,7 @@ export function chargePaymentRows(opts: {
       row.user_id = opts.userId
     }
     if (opts.caps.paymentSegment) row.customer_misc_category_id = opts.segmentId
+    if (opts.caps.paymentReference && opts.reference) row.reference = opts.reference
     return row
   })
 }
@@ -206,6 +214,13 @@ export type ServicePaymentInput = {
   paymentDate: Date
   method: PaymentMethod
   notes: string
+  /**
+   * The number off the customer's receipt, for money that arrives with one —
+   * a transfer reference, a cheque number, a card authorisation code. Null for
+   * cash, and for an online payment, which carries its own processor record.
+   * Ignored until migration 0044 is applied.
+   */
+  reference?: string | null
   /** The cashier's access choice for a short payment; '' (none) for an online payment. */
   accessDecisionRaw: string
   /** A cashier-picked access date; null for an online payment. */
@@ -241,6 +256,7 @@ export type ServicePaymentInput = {
 export async function recordServicePayment(input: ServicePaymentInput): Promise<PaymentResult> {
   const {
     company, caps, actor, customerId, paidAmount, paymentDate, method, notes,
+    reference = null,
     accessDecisionRaw, chosenDate, checked, chargeFee, checkedOff = false, log,
   } = input
   const agent = actor.agent
@@ -792,6 +808,13 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
   if (caps.paymentSegment) {
     insertRow.customer_misc_category_id = customer.misc_category_id ?? null
   }
+
+  // THE NUMBER OFF THE CUSTOMER'S RECEIPT (0044). Every row of the visit gets
+  // it, including the reconnection fee and the charge rows below, so searching
+  // a transfer reference turns up everything that one transfer paid for rather
+  // than whichever line happens to carry it.
+  if (caps.paymentReference && reference) insertRow.reference = reference
+
   if (caps.firstPeriod) {
     // WHAT THE CUSTOMER WAS ASKED FOR, so the receipt can restate it rather
     // than reassembling it from parts. See migration 0017 and
@@ -865,6 +888,7 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
       feeRow.user_id = actor.userId
     }
     if (caps.paymentSegment) feeRow.customer_misc_category_id = customer.misc_category_id ?? null
+    if (caps.paymentReference && reference) feeRow.reference = reference
   }
   const feeAmount = feeRow ? calendar.reconnectionFee : 0
 
@@ -889,6 +913,7 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
         notes,
         userId: actor.userId,
         segmentId: customer.misc_category_id ?? null,
+        reference,
         caps,
       })
     : []

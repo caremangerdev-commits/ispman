@@ -1,5 +1,6 @@
 import {
-  PAYMENT_METHODS, splitByKind, toPaymentMethod, type KindSplit, type PaymentMethod,
+  foldReference, PAYMENT_METHODS, splitByKind, toPaymentMethod,
+  type KindSplit, type PaymentMethod,
 } from '@/lib/data/checkoff'
 import { radiusIdentity } from '@/lib/radius/format'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -26,6 +27,13 @@ export type PaymentListRow = {
   customerName: string
   /** The customer's account number (0020). Null until it is applied. */
   accountNumber: string | null
+  /**
+   * The number off the customer's receipt (0044) — a transfer reference, a
+   * cheque number. Null for cash and for anything taken without one. The
+   * search box matches it, which is the whole point of storing it: somebody
+   * ringing up about a transfer has this number and nothing else.
+   */
+  reference: string | null
   checkedOff: boolean
   /**
    * The customer segment this payment is attributed to: the value stamped on
@@ -140,6 +148,7 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
     // above is the fallback for everything older. See segmentOf.
     (caps.paymentSegment ? ', customer_misc_category_id' : '') +
     (caps.checkoff ? ', payment_method, checked_off' : '') +
+    (caps.paymentReference ? ', reference' : '') +
     (caps.otherPayments ? ', paid_on, payment_kind, payment_categories(name)' : '')
 
   // PAGED, so the whole filtered set is read rather than PostgREST's first
@@ -204,6 +213,7 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
     payment_categories?: { name: string } | null
     agent: string | null
     notes: string | null
+    reference?: string | null
     customer_id: number | null
     customer_misc_category_id?: number | null
     customers: {
@@ -231,6 +241,7 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
       .filter(Boolean)
       .join(' ') || 'Unknown',
     accountNumber: r.customers?.account_number ?? null,
+    reference: r.reference ?? null,
     checkedOff: Boolean(r.checked_off),
     // STAMPED FIRST, JOIN SECOND. The stamp says which segment the customer was
     // in when they paid; the join says which one they are in now. They differ
@@ -244,9 +255,18 @@ export async function listPayments(opts: PaymentFilters): Promise<PaymentListRes
       r.customer_misc_category_id ?? r.customers?.misc_category_id ?? null,
   }))
 
+  // Name OR reference. One box, because the person typing it does not care
+  // which field they hold: a customer disputing a bank transfer reads out the
+  // reference from their banking app, and a cashier looking for the same money
+  // types the name. The reference is matched on a fold — case and punctuation
+  // stripped — since a reference is read off a screen and retyped with dashes
+  // and spaces wherever the reader happens to see them.
   const needle = query.trim().toLowerCase()
+  const refNeedle = foldReference(query)
   const byName = needle
-    ? all.filter((r) => r.customerName.toLowerCase().includes(needle))
+    ? all.filter((r) =>
+        r.customerName.toLowerCase().includes(needle) ||
+        (refNeedle.length > 0 && foldReference(r.reference).includes(refNeedle)))
     : all
 
   /**
@@ -393,6 +413,12 @@ export type PaymentDetail = {
   payment_date: string
   agent: string | null
   notes: string | null
+  /**
+   * The number off the customer's receipt — a transfer reference, a cheque
+   * number. Null for cash, for a payment taken without one, and for every
+   * payment at all until migration 0044 is applied.
+   */
+  reference: string | null
   created_at: string | null
   customer: {
     id: number
@@ -482,11 +508,13 @@ export async function getPayment(
   id: number
 ): Promise<PaymentDetail | null> {
   const db = tenantClient()
+  const caps = await getSchemaCapabilities()
 
   const { data, error } = await db
     .from('payments')
     .select(
       'id, amount, months_paid, payment_type, payment_date, agent, notes, created_at, ' +
+      (caps.paymentReference ? 'reference, ' : '') +
       'customers(id, first_name, last_name, email, phone, address, monthly_rate, carried_balance)'
     )
     .eq('company_id', companyId)
@@ -504,6 +532,7 @@ export async function getPayment(
     payment_date: string
     agent: string | null
     notes: string | null
+    reference?: string | null
     created_at: string | null
     customers: {
       id: number
@@ -525,6 +554,7 @@ export async function getPayment(
     payment_date: r.payment_date,
     agent: r.agent,
     notes: r.notes,
+    reference: r.reference ?? null,
     created_at: r.created_at,
     customer: r.customers
       ? {

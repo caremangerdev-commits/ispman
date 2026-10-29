@@ -33,6 +33,7 @@ export function PaymentWorkspace({
   companyBillDate,
   paymentCategories,
   otherPaymentsAvailable,
+  hasReference,
 }: {
   /** The four running totals, rendered on the server. */
   stats: ReactNode
@@ -47,6 +48,8 @@ export function PaymentWorkspace({
   paymentCategories: PaymentCategory[]
   /** False until migration 0013 is applied — the type toggle stays hidden. */
   otherPaymentsAvailable: boolean
+  /** False until migration 0044 is applied — the reference field stays hidden. */
+  hasReference: boolean
 }) {
   const [focused, setFocused] = useState(Boolean(initialCustomer))
 
@@ -64,6 +67,7 @@ export function PaymentWorkspace({
         companyBillDate={companyBillDate}
         paymentCategories={paymentCategories}
         otherPaymentsAvailable={otherPaymentsAvailable}
+        hasReference={hasReference}
         onCustomerChange={(hit) => setFocused(Boolean(hit))}
       />
 

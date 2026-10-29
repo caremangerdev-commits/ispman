@@ -103,6 +103,50 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   other: 'Other',
 }
 
+/**
+ * What the reference box is called for each method (migration 0044).
+ *
+ * The same column holds all of these — a bank transfer's reference, a cheque
+ * number, a Zelle confirmation — because they are one thing: the number the
+ * other side of the payment knows it by, and the only way to tie a line on a
+ * bank statement to a payment in here. Naming it per method is what makes a
+ * cashier recognise what to type.
+ *
+ * Cash is absent on purpose: cash has no reference, and an empty box on the
+ * commonest method is a box people learn to ignore on every method.
+ */
+export const PAYMENT_REFERENCE_LABELS: Partial<Record<PaymentMethod, string>> = {
+  card: 'Authorisation code',
+  bank_transfer: 'Transfer reference',
+  cheque: 'Cheque number',
+  paypal: 'PayPal transaction ID',
+  cashapp: 'CashApp reference',
+  zelle: 'Zelle confirmation',
+  wire_transfer: 'Wire reference',
+  online: 'Transaction ID',
+  other: 'Reference',
+}
+
+/** The longest reference worth storing; the column is varchar(64). */
+export const PAYMENT_REFERENCE_MAX = 64
+
+/**
+ * A reference reduced to what is actually significant about it, for matching:
+ * letters and digits, upper-cased.
+ *
+ * A transfer reference is read off a banking app and retyped by somebody else,
+ * and the separators never survive that trip — "TRN-4471 9920", "trn44719920"
+ * and "TRN 4471-9920" are one reference written three ways. Searching the raw
+ * text would find the money only for whoever typed it in the first place,
+ * which is the one person who does not need to search.
+ *
+ * Null and undefined fold to '' so a row without a reference simply never
+ * matches, rather than needing a guard at every call site.
+ */
+export function foldReference(value: string | null | undefined): string {
+  return (value ?? '').replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+}
+
 /** Narrows a method to a value the legacy payment_type column accepts. */
 export function legacyPaymentType(method: PaymentMethod): string {
   if (method === 'cash') return 'cash'

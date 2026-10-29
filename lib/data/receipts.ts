@@ -29,6 +29,8 @@ type PaymentRow = {
   agent: string | null
   payment_type: string | null
   payment_method?: string | null
+  /** Migration 0044; absent from the select until it is applied. */
+  reference?: string | null
   notes: string | null
   months_paid: number | null
   carried_balance_before?: number | string | null
@@ -89,6 +91,7 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
   const cols =
     'id, amount, payment_date, created_at, agent, payment_type, notes, months_paid' +
     (caps.checkoff ? ', payment_method' : '') +
+    (caps.paymentReference ? ', reference' : '') +
     (caps.billing ? ', carried_balance_before, carried_balance_after' : '') +
     (caps.creditReversal ? ', credit_applied' : '') +
     (caps.firstPeriod ? ', amount_due, first_period_discount' : '') +
@@ -340,6 +343,9 @@ export async function getReceipt(companyId: number, id: number): Promise<Receipt
     totalDue,
     paidLabel: 'Paid (' + PAYMENT_METHOD_LABELS[method] + ')',
     paid,
+    // One reference per visit, same rule as the method: every row of the visit
+    // was written from the same field, so the first row carries it.
+    reference: first.reference ?? null,
     allocations,
     balance,
     owing,

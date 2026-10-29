@@ -47,6 +47,14 @@ export type SchemaCapabilities = {
    */
   otherPayments: boolean
   /**
+   * `payments.reference` (migration 0044): the number the other side of a
+   * payment knows it by — a bank transfer's reference, a cheque number, a
+   * Zelle confirmation. Until it exists the till offers no reference field and
+   * nothing reads one, so the only cost of not applying 0044 is that the
+   * cashier goes on putting it in the notes.
+   */
+  paymentReference: boolean
+  /**
    * `payments.credit_applied` (migration 0015). What makes a prepayment's
    * credit reversible when the payment is corrected or deleted. Until it is
    * present the correction paths move the carried balance only, and say in the
@@ -253,6 +261,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     paymentGatewaysRes,
     billDocumentsRes, anniversaryRes,
     ticketNotesRes, emailBillsRes, invoicePrefixRes, flexMonthRes,
+    paymentReferenceRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -358,6 +367,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('settings').select('invoice_prefix').limit(1),
     // 0043: bill-day-to-bill-day billing periods.
     db.from('settings').select('flex_month').limit(1),
+    db.from('payments').select('reference').limit(1),
   ])
   console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
 
@@ -652,6 +662,10 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
   }
 
   // 0043: one column. Absent, every period is the calendar month.
+  const missingPaymentReference = paymentReferenceRes.error?.code === '42703'
+  if (paymentReferenceRes.error && !missingPaymentReference) {
+    throw new Error('Schema probe failed for payments.reference: ' + paymentReferenceRes.error.message)
+  }
   const missingFlexMonth = flexMonthRes.error?.code === '42703'
   if (flexMonthRes.error && !missingFlexMonth) {
     throw new Error('Schema probe failed for settings.flex_month: ' + flexMonthRes.error.message)
@@ -697,6 +711,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     emailBills: !missingEmailBills,
     invoicePrefix: !missingInvoicePrefix,
     flexMonth: !missingFlexMonth,
+    paymentReference: !missingPaymentReference,
   }
 })
 

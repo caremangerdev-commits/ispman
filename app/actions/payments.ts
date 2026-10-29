@@ -7,7 +7,10 @@ import {
   outstandingBalance, parseYmd, prepaymentCredit, reverseCredit, ymd, type PriorGrant,
 } from '@/lib/billing'
 import { backdateError, needsBackdateReason } from '@/lib/payments/backdate'
-import { legacyPaymentType, toPaymentMethod } from '@/lib/data/checkoff'
+import {
+  legacyPaymentType, PAYMENT_REFERENCE_LABELS, PAYMENT_REFERENCE_MAX, toPaymentMethod,
+  type PaymentMethod,
+} from '@/lib/data/checkoff'
 import { instantToDateOnly, paymentInstant } from '@/lib/format'
 import {
   billedThroughOf, PREPAID_CALENDAR_OFF, prepaidCalendarFor, readMonthCharges,
@@ -42,6 +45,23 @@ export type { PaymentResult }
 const str = (fd: FormData, key: string) => {
   const v = fd.get(key)
   return typeof v === 'string' ? v.trim() : ''
+}
+
+/**
+ * The number off the customer's receipt, as submitted.
+ *
+ * Optional everywhere and never validated, because the only thing that could
+ * be checked is a format that differs per bank. A cashier holding a receipt
+ * types what is on it; a wrong one is corrected by editing the payment.
+ *
+ * Dropped for a method that has no reference to give — cash, above all, where
+ * a stray value in the box would otherwise be filed as a transfer number. The
+ * form hides the field for those methods; this is the same rule server-side,
+ * since nothing stops a submit carrying it anyway.
+ */
+function referenceFrom(fd: FormData, method: PaymentMethod): string | null {
+  if (!PAYMENT_REFERENCE_LABELS[method]) return null
+  return str(fd, 'reference').slice(0, PAYMENT_REFERENCE_MAX) || null
 }
 
 const num = (fd: FormData, key: string) => {
@@ -184,6 +204,7 @@ async function recordChargeVisit(opts: {
     notes: str(formData, 'notes'),
     userId: profile.id,
     segmentId: customer.misc_category_id ?? null,
+    reference: referenceFrom(formData, method),
     caps,
   })
 
@@ -396,6 +417,11 @@ async function recordOtherPayment(
   if (caps.paymentSegment) {
     insertRow.customer_misc_category_id = customer.misc_category_id ?? null
   }
+
+  // The number off the customer's receipt (0044), for the methods that have one.
+  const reference = referenceFrom(formData, method)
+  if (caps.paymentReference && reference) insertRow.reference = reference
+
   const { data: inserted, error: insertError } = await db
     .from('payments')
     .insert(insertRow)
@@ -582,6 +608,7 @@ export async function recordPayment(
     paymentDate,
     method,
     notes,
+    reference: referenceFrom(formData, method),
     accessDecisionRaw,
     chosenDate,
     checked: charges.rows,
@@ -1166,6 +1193,14 @@ export async function updatePayment(
   // move it too. Leaving it behind would put the edited payment in one day's
   // collections and print another date on its receipt.
   if (caps.otherPayments) patch.paid_on = ymd(paymentDate)
+
+  // The reference, correctable and clearable. Not filtered by method the way
+  // the till filters it: by the time a payment is being edited the method may
+  // have been the thing that was wrong, and a manager who has typed a transfer
+  // number into the box means it. Empty clears it.
+  if (caps.paymentReference) {
+    patch.reference = str(formData, 'reference').slice(0, PAYMENT_REFERENCE_MAX) || null
+  }
 
   // FEWER MONTHS TAKES THE EXPIRY BACK BY THE DIFFERENCE (owner, 9 Oct 2026),
   // with the same safeguards as a deletion: lib/data/payment-expiry.ts. A

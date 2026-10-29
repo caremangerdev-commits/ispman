@@ -66,6 +66,7 @@ export default async function RecordPaymentPage({
         companyBillDate={settings.billDate}
         paymentCategories={paymentCategories}
         otherPaymentsAvailable={caps.otherPayments}
+        hasReference={caps.paymentReference}
         stats={
           <CollectionStats
             summary={collections}

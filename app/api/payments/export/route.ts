@@ -85,6 +85,10 @@ export async function GET(request: NextRequest) {
     'Method',
     'Agent',
     ...(caps.checkoff ? ['Checked Off'] : []),
+    // Next to the method, which is the column it explains. This is the one
+    // field that lets a row here be matched against a line on a bank
+    // statement, so it belongs in the export above all (0044).
+    ...(caps.paymentReference ? ['Reference'] : []),
     'Notes',
   ]
 
@@ -111,6 +115,7 @@ export async function GET(request: NextRequest) {
         PAYMENT_METHOD_LABELS[p.method],
         p.agent ?? '',
         ...(caps.checkoff ? [p.checkedOff ? 'Checked off' : 'Outstanding'] : []),
+        ...(caps.paymentReference ? [p.reference ?? ''] : []),
         p.notes ?? '',
       ])
     )
