@@ -4,8 +4,8 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   AlertTriangle, Building2, CalendarX2, CreditCard, FileText, Globe,
-  LayoutDashboard, LifeBuoy, LogOut, MessageSquare, Network, Receipt, Router,
-  Settings, Shield, Sliders, Upload, UserPlus, Users, UsersRound, Wifi,
+  LayoutDashboard, LifeBuoy, LogOut, MapPin, MessageSquare, Network, Receipt,
+  Router, Settings, Shield, Sliders, Upload, UserPlus, Users, UsersRound, Wifi,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -35,6 +35,7 @@ const ICONS: Record<IconKey, LucideIcon> = {
   globe: Globe,
   shield: Shield,
   upload: Upload,
+  mapPin: MapPin,
 }
 
 export type SidebarProps = {

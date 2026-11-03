@@ -25,6 +25,18 @@ export type Role =
   // list, and the technician's lack of authority to put an account on the
   // network.
   | 'field_technician'
+  // DOOR-TO-DOOR SALES (owner, 3 Nov 2026).
+  //
+  // The narrowest role in the app. A rep signs prospects up at the gate and
+  // sees their own prospects — nothing else. No customer book, no payments
+  // screen, no tickets, no network. They are not staff of the office; they are
+  // often not staff at all.
+  //
+  // They CAN take installation money at the door (owner, 3 Nov 2026), which is
+  // the one thing that makes this role more than a form. That money is taken
+  // against the prospect they just signed, not through the till, so a rep can
+  // never collect from a customer they did not sell — see convert_lead.
+  | 'sales_rep'
 
 export type Permission =
   | 'view_dashboard_kpis'
@@ -66,6 +78,13 @@ export type Permission =
   | 'send_bulk_sms'
   | 'view_super_admin_dashboard'
   | 'assign_company_admin'
+  // Signing a prospect up at the door, and working the ones you signed.
+  | 'manage_leads'
+  // Everybody's prospects, not just your own. The office view.
+  | 'view_all_leads'
+  // Turning a prospect into a customer — and, where money was taken at the
+  // door, recording it.
+  | 'convert_lead'
 
 const PERMISSIONS: Record<Permission, Role[]> = {
   view_dashboard_kpis: ['super_admin', 'company_admin', 'manager'],
@@ -262,6 +281,33 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   send_bulk_sms: ['super_admin', 'company_admin', 'manager'],
   view_super_admin_dashboard: ['super_admin'],
   assign_company_admin: ['super_admin'],
+  // DOOR-TO-DOOR PROSPECTS (owner, 3 Nov 2026).
+  //
+  // Adding one, and working the ones you added. A rep holds this and almost
+  // nothing else; the office roles hold it because somebody has to be able to
+  // fix a number typed wrong at a gate.
+  //
+  // NOT given to technician or field_technician: a technician's job list is
+  // installs, and a prospect is not an install until somebody has sold it.
+  manage_leads: ['super_admin', 'company_admin', 'manager', 'csr', 'sales_rep'],
+  // WHOSE PROSPECTS YOU SEE. Without this the list is filtered to your own
+  // rows (lib/data/leads.ts), which is the whole of a rep's view: one rep must
+  // not be able to read another's book, work their doors, or see what they
+  // quoted.
+  view_all_leads: ['super_admin', 'company_admin', 'manager', 'csr'],
+  // TURNING A PROSPECT INTO A CUSTOMER. Creates the customer row, raises the
+  // installation fee as a one-off charge, and records any money handed over.
+  //
+  // A REP HOLDS THIS, which is the deliberate part: they agreed the price and
+  // they are holding the cash, so the record has to be able to exist at the
+  // moment the money changes hands. Anything else means a rep's takings are
+  // invisible until the office types them in, which is how money goes missing.
+  //
+  // It is narrower than record_payment and does not imply it. A rep may only
+  // convert a prospect THEY can see, so with view_all_leads absent that is a
+  // prospect they signed up themselves. They cannot reach the till, cannot
+  // search the customer book, and cannot take a payment from anybody else.
+  convert_lead: ['super_admin', 'company_admin', 'manager', 'csr', 'sales_rep'],
 }
 
 export function can(role: Role, permission: Permission): boolean {
@@ -274,7 +320,7 @@ export function canAny(role: Role, permissions: Permission[]): boolean {
 
 export const ROLES: Role[] = [
   'super_admin', 'company_admin', 'manager', 'csr', 'cashier',
-  'technician', 'field_technician',
+  'technician', 'field_technician', 'sales_rep',
 ]
 
 /** Human labels for the UI. */
@@ -289,6 +335,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   // from a list recognises it. "Technician (payments)" would read as a
   // permission setting; this reads as a job somebody has.
   field_technician: 'Field Technician',
+  sales_rep: 'Sales Rep',
 }
 
 const VALID_ROLES = new Set<string>(ROLES)

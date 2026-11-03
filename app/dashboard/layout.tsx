@@ -55,6 +55,11 @@ export default async function DashboardLayout({ children }: { children: ReactNod
     ...(can(profile.role, 'record_payment')
       ? [{ href: '/dashboard/payments/new', label: 'Payment', icon: 'payment' as const }]
       : []),
+    // A rep works entirely from a phone at a gate, so this is their only tab —
+    // and the reason the tab bar exists for them at all.
+    ...(can(profile.role, 'manage_leads')
+      ? [{ href: '/dashboard/leads/new', label: 'Prospect', icon: 'customers' as const }]
+      : []),
   ]
 
   return (

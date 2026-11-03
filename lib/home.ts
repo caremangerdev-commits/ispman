@@ -43,12 +43,19 @@ export function homePathFor(
   // their home rather than a dashboard they have no KPI access to.
   if (profile.role === 'cashier') return '/dashboard/payments/new'
 
+  // A sales rep's whole job is the prospects they signed up, and that list is
+  // the only screen in the app they may read. They hold neither view_customer
+  // nor view_dashboard_kpis, so without this they would land on /dashboard and
+  // fall through its role branches to the CSR dashboard — a page built
+  // entirely from customers they are not allowed to see.
+  if (profile.role === 'sales_rep') return '/dashboard/leads'
+
   return '/dashboard'
 }
 
 /** True when this role has no analytics dashboard of its own. */
 export function skipsDashboard(role: Role): boolean {
-  return role === 'cashier'
+  return role === 'cashier' || role === 'sales_rep'
 }
 
 /**
@@ -75,7 +82,9 @@ export function landingPathFor(
   requested: string | null
 ): string {
   const home = homePathFor(profile, isActingInTenant)
-  if (profile.role === 'cashier') return home
+  // Same reasoning as the cashier: a rep signs in at a gate, on a phone, to do
+  // one thing. Whatever page their lapsed session was on is not it.
+  if (profile.role === 'cashier' || profile.role === 'sales_rep') return home
   return requested ?? home
 }
 

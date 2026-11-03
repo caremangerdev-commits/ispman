@@ -9,7 +9,7 @@ import { tenantClient } from '@/lib/supabase/tenant'
  * able to mint a peer or escalate to platform level from this screen.
  */
 export const ASSIGNABLE_ROLES: Role[] = [
-  'manager', 'csr', 'cashier', 'technician', 'field_technician',
+  'manager', 'csr', 'cashier', 'technician', 'field_technician', 'sales_rep',
 ]
 
 /**

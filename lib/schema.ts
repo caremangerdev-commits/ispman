@@ -55,6 +55,17 @@ export type SchemaCapabilities = {
    */
   paymentReference: boolean
   /**
+   * `leads` (migration 0046) — door-to-door prospects, and the sales_rep role
+   * that fills them in. Until the table exists the Sales nav section, the
+   * capture form and the conversion path all hide themselves, so a company
+   * that never sends anybody door to door sees no sign of it either way.
+   *
+   * ONE TABLE DECIDES IT. The role widening in the same file is a CHECK
+   * constraint, which cannot be probed through PostgREST, and the two land
+   * together — so if the table is there, the role is accepted too.
+   */
+  leads: boolean
+  /**
    * `payments.credit_applied` (migration 0015). What makes a prepayment's
    * credit reversible when the payment is corrected or deleted. Until it is
    * present the correction paths move the carried balance only, and say in the
@@ -262,6 +273,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     billDocumentsRes, anniversaryRes,
     ticketNotesRes, emailBillsRes, invoicePrefixRes, flexMonthRes,
     paymentReferenceRes,
+    leadsRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -368,8 +380,10 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     // 0043: bill-day-to-bill-day billing periods.
     db.from('settings').select('flex_month').limit(1),
     db.from('payments').select('reference').limit(1),
+    // 0046: door-to-door prospects. One table.
+    db.from('leads').select('id').limit(1),
   ])
-  console.log('[perf]     schema probe: 26 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 27 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -671,6 +685,13 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for settings.flex_month: ' + flexMonthRes.error.message)
   }
 
+  // 0046: one table. Absent, the whole Sales section is not there.
+  const missingLeads =
+    leadsRes.error?.code === 'PGRST205' || leadsRes.error?.code === '42P01'
+  if (leadsRes.error && !missingLeads) {
+    throw new Error('Schema probe failed for leads: ' + leadsRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -712,6 +733,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     invoicePrefix: !missingInvoicePrefix,
     flexMonth: !missingFlexMonth,
     paymentReference: !missingPaymentReference,
+    leads: !missingLeads,
   }
 })
 

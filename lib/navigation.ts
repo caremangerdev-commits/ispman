@@ -9,7 +9,7 @@ export type IconKey =
   | 'dashboard' | 'users' | 'userPlus' | 'calendarX' | 'alertTriangle'
   | 'creditCard' | 'fileText' | 'receipt' | 'network' | 'router'
   | 'lifeBuoy' | 'sliders' | 'settings' | 'usersRound' | 'building'
-  | 'globe' | 'shield' | 'messageSquare' | 'upload'
+  | 'globe' | 'shield' | 'messageSquare' | 'upload' | 'mapPin'
 
 export type NavItem = {
   label: string
@@ -54,6 +54,19 @@ const SECTIONS: NavSection[] = [
       // The daily billing engine's run log (migration 0024). Same line as the
       // payments book: reading what the company was charged is reading money.
       { label: 'Billing Runs', href: '/dashboard/billing-runs', icon: 'fileText', permission: 'view_all_payments' },
+    ],
+  },
+  {
+    // SALES, above Customers in a rep's nav because it is the whole of it.
+    //
+    // Deliberately not an item under Customers: a prospect is not a customer,
+    // and the one thing this feature must never do is blur that. A rep holding
+    // manage_leads and nothing else sees this section alone.
+    heading: 'Sales',
+    requireAny: ['manage_leads', 'view_all_leads'],
+    items: [
+      { label: 'Prospects', href: '/dashboard/leads', icon: 'userPlus', permission: 'manage_leads' },
+      { label: 'Add Prospect', href: '/dashboard/leads/new', icon: 'mapPin', permission: 'manage_leads' },
     ],
   },
   {
@@ -116,6 +129,9 @@ const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/tickets\/[^/]+$/, title: 'Ticket Details' },
   { match: /^\/dashboard\/tickets$/, title: 'Tickets' },
   { match: /^\/dashboard\/incidents$/, title: 'Outages' },
+  { match: /^\/dashboard\/leads\/new$/, title: 'Add Prospect' },
+  { match: /^\/dashboard\/leads\/[^/]+$/, title: 'Prospect' },
+  { match: /^\/dashboard\/leads$/, title: 'Prospects' },
   { match: /^\/dashboard\/checkoff/, title: 'Checkoff' },
   { match: /^\/dashboard\/billing-runs\/[^/]+$/, title: 'Billing Run' },
   { match: /^\/dashboard\/billing-runs$/, title: 'Billing Runs' },
