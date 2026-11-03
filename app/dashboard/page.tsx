@@ -77,7 +77,12 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
       )
     }
 
-    if (role === 'technician') {
+    // A field technician's home is the technician's: their job list, not a
+    // till. The money they may now see lives on the customer's own record and
+    // on the payment screen, which is where collecting actually happens — so
+    // the hits here stay money-free for both, and nothing on this page has to
+    // know which of the two roles is reading it.
+    if (role === 'technician' || role === 'field_technician') {
       const data = await getTechnicianDashboard(company.id, profile.id)
       return (
         <div className="space-y-4">

@@ -135,9 +135,10 @@ export function NewCustomerForm({
   )
   const [addons, setAddons] = useState<number[]>([])
   const showPppoeFields = authType === 'pppoe' || authType === 'hotspot'
-  // Matches the server rule: MAC only becomes optional for PPPoE once
-  // migration 0003 has dropped the NOT NULL constraint.
-  const macRequired = authType !== 'pppoe' || !typesAvailable
+  // Matches the server rule (owner, 2 Nov 2026): a MAC is not needed to hold
+  // a customer record, only to put them on the network. Still mandatory before
+  // migration 0003, which is what makes the column nullable.
+  const macRequired = !typesAvailable
   const cls = (name: string) => inputBase + (errors[name] ? inputBad : inputOk)
 
   /** Picking a plan pre-fills the rate; it stays editable afterwards. */
@@ -260,9 +261,17 @@ export function NewCustomerForm({
           </Field>
 
           <Field
-            label={'MAC Address' + (macRequired ? '' : ' (optional for PPPoE)')}
+            label={'MAC Address' + (macRequired ? '' : ' (optional)')}
             htmlFor="mac_address"
             error={macHolders.length > 0 ? <MacHolderLinks holders={macHolders} /> : errors.mac_address}
+            /* Says what leaving it blank costs, so nobody is later surprised
+               that the customer is not online. Only while it IS blank: once a
+               MAC is typed the note has nothing left to warn about. */
+            hint={
+              !macRequired && !mac.trim() && authType !== 'pppoe'
+                ? 'Leave blank if you do not have it yet. The customer is saved either way, but cannot go on the network until a MAC is added.'
+                : undefined
+            }
             className="sm:col-span-2"
             required={macRequired}
           >

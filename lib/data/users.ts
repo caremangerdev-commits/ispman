@@ -8,7 +8,9 @@ import { tenantClient } from '@/lib/supabase/tenant'
  * Deliberately excludes company_admin and super_admin: an admin must not be
  * able to mint a peer or escalate to platform level from this screen.
  */
-export const ASSIGNABLE_ROLES: Role[] = ['manager', 'csr', 'cashier', 'technician']
+export const ASSIGNABLE_ROLES: Role[] = [
+  'manager', 'csr', 'cashier', 'technician', 'field_technician',
+]
 
 /**
  * Roles THIS caller may hand out — the single definition, used by the page

@@ -180,11 +180,26 @@ export async function createCustomer(
   const pppoe_username = str(formData, 'pppoe_username')
   const pppoe_password = str(formData, 'pppoe_password')
 
-  // PPPoE authenticates by username, the other two by MAC. But mac_address is
-  // NOT NULL until migration 0003 drops that constraint, so before it runs a
-  // MAC is still mandatory for every type — otherwise the insert would fail
-  // with a raw database error instead of a field message.
-  const macRequired = customerType !== 'pppoe' || !caps.connectionTypes
+  // NOT REQUIRED TO CREATE A CUSTOMER (owner, 2 Nov 2026).
+  //
+  // DHCP and hotspot authenticate BY MAC, so a customer without one cannot be
+  // put on the network — but that is a provisioning fact, not a reason to
+  // refuse the record. A technician signs somebody up at the kitchen table
+  // before the radio is mounted, and the MAC is the one thing they do not have
+  // yet. Refusing the form at that point does not produce a MAC; it produces a
+  // made-up one. Vernon's book carries 25 placeholder MACs that were invented
+  // to get past this field, and each one is a row that looks provisioned and
+  // is not.
+  //
+  // So the record is accepted without it and the customer stays unprovisioned
+  // until a real MAC is added, which is what was already true in substance.
+  // radiusIdentity() returns null for a customer with no MAC and every caller
+  // already reads that as "not on the network".
+  //
+  // STILL MANDATORY BEFORE MIGRATION 0003, which is what drops the NOT NULL
+  // constraint: without it a blank MAC fails in the database with a raw error
+  // instead of a field message.
+  const macRequired = !caps.connectionTypes
 
   if (!first_name) fieldErrors.first_name = 'First name is required.'
   if (!last_name) fieldErrors.last_name = 'Last name is required.'
@@ -468,11 +483,10 @@ export async function updateCustomer(
 
   if (caps.connectionTypes) {
     const customerType = toCustomerType(str(formData, 'customer_type') || 'dhcp')
-    // Same rule as create: MAC is only optional for PPPoE once 0003 has
-    // dropped the NOT NULL constraint.
-    if (customerType !== 'pppoe' && !mac_address) {
-      return { ok: false, error: 'MAC address is required for ' + customerType.toUpperCase() + '.' }
-    }
+    // Same rule as create (owner, 2 Nov 2026): a MAC is not required to hold a
+    // customer record. Clearing one here takes the customer off the network at
+    // the next sync rather than being refused — the same end state as a
+    // customer created without one.
     patch.customer_type = customerType
     patch.pppoe_username = str(formData, 'pppoe_username') || null
     // Blank means "leave unchanged" so an edit does not silently wipe the

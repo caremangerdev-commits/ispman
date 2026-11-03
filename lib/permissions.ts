@@ -5,6 +5,26 @@ export type Role =
   | 'csr'
   | 'cashier'
   | 'technician'
+  // A TECHNICIAN WHO ALSO COLLECTS (owner, 2 Nov 2026).
+  //
+  // Identical to technician in every respect but two: this role may see a
+  // customer's billing history and may record a payment. It exists because
+  // removing technician from those two on 21 Oct was right for a technician
+  // and wrong for the people who do both jobs — install in the morning and
+  // take cash at the gate in the afternoon. Trevor Case at Northwind is the
+  // case it was added for.
+  //
+  // A SEPARATE ROLE RATHER THAN GIVING IT BACK TO technician, because
+  // `technician` is not one company's word: ten of them exist across five
+  // tenants, and handing the role money would open customer balances inside
+  // other operators' businesses without them asking. This way the access is
+  // granted one person at a time.
+  //
+  // It is NOT a cashier with tools. A cashier's home is the till and they get
+  // no dashboard; this role keeps the technician's home, the technician's job
+  // list, and the technician's lack of authority to put an account on the
+  // network.
+  | 'field_technician'
 
 export type Permission =
   | 'view_dashboard_kpis'
@@ -60,7 +80,7 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // who they are, where they are, how they connect, and whether their service
   // is on and until when. Every role. It is what /api/search and the customer
   // record page ask for. It carries NO money — that is the next permission.
-  view_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  view_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician', 'field_technician'],
   // A CUSTOMER'S MONEY, every form of it: their balance and credit, their rate
   // and the prices on their plan and add-ons, their bill day and last bill,
   // one-off charges, their payment history, and their statement and bill PDFs.
@@ -78,10 +98,12 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // Directly from the database, payments and the other money tables are
   // readable by a narrower list still — see
   // supabase/migrations/0041_money_and_ticket_rls.sql.
-  view_customer_billing_history: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
-  view_customer_tech_info: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
-  add_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
-  edit_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
+  // field_technician added with record_payment (owner, 2 Nov 2026): the payment
+  // form is built from the customer's balance, so the two travel together.
+  view_customer_billing_history: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'field_technician'],
+  view_customer_tech_info: ['super_admin', 'company_admin', 'manager', 'csr', 'technician', 'field_technician'],
+  add_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'technician', 'field_technician'],
+  edit_customer: ['super_admin', 'company_admin', 'manager', 'csr', 'technician', 'field_technician'],
   // Deliberately NOT folded into add_customer. Adding one customer at the
   // counter is routine CSR work; loading someone else's spreadsheet writes
   // hundreds of rows in one unattended pass, decides how every name is split
@@ -118,7 +140,10 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // left here also holds view_customer_billing_history, and must — the payment
   // form is built from a customer's balance. A technician who collects cash in
   // the field needs a role that may see money.
-  record_payment: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
+  //
+  // FIELD TECHNICIAN ADDED (owner, 2 Nov 2026). The role above, for somebody
+  // who installs and collects. It does not reopen this to `technician`.
+  record_payment: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'field_technician'],
   // The whole payments book — every payment the company has ever taken, by
   // anyone. NARROWED FROM csr AND cashier, who used to hold this.
   //
@@ -171,7 +196,7 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // Cashier included deliberately: they already see tickets on a customer
   // record, so excluding them from the dashboard panel only made the two
   // surfaces disagree.
-  view_support_tickets: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  view_support_tickets: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician', 'field_technician'],
   // A TECHNICIAN DOES THEIR OWN WORK; SOMEONE ELSE DECIDES WHO DOES WHAT
   // (owner, 21 Oct 2026). The office roles raise, reword, reprioritise, assign,
   // resolve and reopen any ticket. A technician opens tickets, talks on them —
@@ -182,11 +207,11 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // Opening a ticket. A technician's lands at the default priority, assigned
   // to them or to nobody: choosing someone else, or a priority, is
   // assign_ticket and edit_ticket below, checked in createTicket.
-  create_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  create_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician', 'field_technician'],
   // Adding to the conversation: a reply to the customer, an internal note, a
   // photo. Any ticket the role can see — a note on a ticket that is not yours
   // is how the person it is assigned to finds out what you saw.
-  reply_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  reply_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician', 'field_technician'],
   // Deciding what a ticket IS: its title, description and priority, after it is
   // opened or while opening it. The description is the opener's own words, so
   // a technician adds a note instead of rewriting it.
@@ -198,12 +223,12 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   assign_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
   // Resolving a ticket assigned to YOU. The app has one finished state,
   // Resolved; "work done" is that.
-  resolve_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician'],
+  resolve_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician', 'field_technician'],
   // Resolving a ticket assigned to somebody else, or to nobody.
   resolve_any_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
   // Putting a resolved ticket back into play overrides whoever resolved it.
   reopen_ticket: ['super_admin', 'company_admin', 'manager', 'csr', 'cashier'],
-  view_network_infrastructure: ['super_admin', 'company_admin', 'manager', 'csr', 'technician'],
+  view_network_infrastructure: ['super_admin', 'company_admin', 'manager', 'csr', 'technician', 'field_technician'],
   view_nas_management: ['super_admin', 'company_admin', 'manager'],
   // Manager included: they run the team day to day. The guardrails that matter
   // live in app/actions/users.ts and are checked against the TARGET row, not
@@ -248,7 +273,8 @@ export function canAny(role: Role, permissions: Permission[]): boolean {
 }
 
 export const ROLES: Role[] = [
-  'super_admin', 'company_admin', 'manager', 'csr', 'cashier', 'technician',
+  'super_admin', 'company_admin', 'manager', 'csr', 'cashier',
+  'technician', 'field_technician',
 ]
 
 /** Human labels for the UI. */
@@ -259,6 +285,10 @@ export const ROLE_LABELS: Record<Role, string> = {
   csr: 'CSR',
   cashier: 'Cashier',
   technician: 'Technician',
+  // Named for the job and not for the extra right, so the person picking it
+  // from a list recognises it. "Technician (payments)" would read as a
+  // permission setting; this reads as a job somebody has.
+  field_technician: 'Field Technician',
 }
 
 const VALID_ROLES = new Set<string>(ROLES)
