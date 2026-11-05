@@ -38,10 +38,17 @@ export function AdjustBalanceModal({
   customerId,
   customerName,
   currentBalance,
+  monthlyCharge = 0,
 }: {
   customerId: number
   customerName: string
   currentBalance: number
+  /**
+   * The customer's monthly rate, used only to recognise an adjustment that is
+   * about the size of a month's charge and say what that does. Zero or absent
+   * turns the warning off rather than guessing.
+   */
+  monthlyCharge?: number
 }) {
   const { moneyExact } = useMoney()
   const [open, setOpen] = useState(false)
@@ -121,6 +128,25 @@ export function AdjustBalanceModal({
                     {parsed < 0 ? ' The customer will be owed money; the next bill is taken from it first.' : ''}
                   </p>
                 )}
+                {/* TAKING A MONTH OFF THE BALANCE (owner, 5 Nov 2026).
+                    An adjustment the size of a month's charge is usually
+                    somebody removing a bill they think was raised wrongly. It
+                    is worth saying what that does, because the balance is also
+                    what decides which month a later payment settles: with the
+                    charge gone, the money lands on the month before it. That
+                    is how Jermain Robinson paid a full month on the day his
+                    service ran out and the expiry did not move. */}
+                {valid && !unchanged && monthlyCharge > 0 && delta <= -monthlyCharge ? (
+                  <p className="rounded-lg border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-300/90">
+                    <strong className="font-semibold">That is about a month&rsquo;s charge.</strong>{' '}
+                    If this is the bill for a month they have not used yet, only
+                    remove it if you mean to write that month off — their next
+                    payment will settle what is left instead of buying it. To
+                    take money for a month without writing one off, leave the
+                    balance alone and record the payment instead.
+                  </p>
+                ) : null}
+
                 <p className="text-[11px] text-gray-600">
                   Negative balances are allowed. Saved exactly as typed, to the cent.
                 </p>

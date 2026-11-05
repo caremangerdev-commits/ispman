@@ -596,9 +596,45 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
   // returning customer's months are counted against that figure: the current
   // month if any money is paid (a part payment reconnects, as today), plus one
   // per whole rounded month beyond what is owed.
-  const monthsPaid = returning || calendarFirst
+  const counted = returning || calendarFirst
     ? monthsCovered(due, round100(monthlyCharge), paidAmount, false)
     : monthsCovered(due, monthlyCharge, paidAmount, periodGranted)
+
+  // A FULL MONTH'S MONEY BUYS A FULL MONTH (owner, 5 Nov 2026).
+  //
+  // periodGranted above suppresses the settled month, so a customer who pays
+  // twice in one period does not walk away with two months of access. That is
+  // right while they still hold time they have not used. It is wrong the
+  // moment their service has run out, and that is how Jermain Robinson
+  // (#5768) handed over a full J$3,500 on the day his access expired and got
+  // nothing for it.
+  //
+  // WHAT WENT WRONG THERE. Which period a payment settles is decided from the
+  // carried balance, and the carried balance can be edited by hand. His
+  // November charge was adjusted off the balance thirteen seconds before the
+  // payment, so the money was attributed back to October — a period his 7 Oct
+  // payment had already been granted access for — and the guard refused to
+  // grant it twice. Two other customers had the same balance edit the same
+  // afternoon and were unaffected, because their bill day put them on a
+  // period that had not been granted yet. So the outcome turned on a hand
+  // edit and a bill-day coincidence, which is no basis for whether somebody
+  // gets the month they paid for.
+  //
+  // THE RULE, decided from SERVICE rather than from the balance: a payment of
+  // at least one monthly charge buys at least one month when the customer is
+  // holding no time — their access has lapsed, ends today, or they were never
+  // on the network. Nothing anyone does to the balance can take that away.
+  //
+  // THE GUARD STILL STANDS where it earns its keep. A customer part-paid on
+  // the 7th, given a full period to the 5th of next month, who comes back on
+  // the 20th to clear the rest is still holding two weeks of service: that
+  // money is for the month they are using, it buys no second month, and this
+  // floor does not apply to them.
+  const holdingNoTime =
+    registryExpiry === null || ymd(registryExpiry) <= ymd(paymentDate)
+  const fullMonthPaid = monthlyCharge > 0 && paidAmount >= monthlyCharge
+  const monthsPaid =
+    periodGranted && holdingNoTime && fullMonthPaid ? Math.max(1, counted) : counted
 
   // A decision only means something for a payment that is actually short. One
   // sent for a payment that covers the bill is dropped rather than stored.

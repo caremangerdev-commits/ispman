@@ -822,6 +822,7 @@ export function CustomerDetail({
                     customerId={c.id}
                     customerName={name}
                     currentBalance={owed}
+                    monthlyCharge={Number(money?.monthly_rate ?? 0)}
                   />
                 ) : null}
               </span>
