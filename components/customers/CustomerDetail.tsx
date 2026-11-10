@@ -181,6 +181,30 @@ function Card({
   )
 }
 
+/**
+ * How a label and its value are told apart (owner, 10 Nov 2026).
+ *
+ * THE OLD ROW DREW BOTH THE SAME. Label was text-xs/gray-500 and value was
+ * text-sm/gray-200 — one step of size and one of grey between the question and
+ * the answer, same weight, same case. On a customer record that is forty rows
+ * deep, that reads as one flat column of grey text, and the eye has nothing to
+ * land on when you are looking for the expiry date with a customer waiting.
+ *
+ * Three changes, each doing one job:
+ *   LABEL_CLS   smaller, uppercase, letter-spaced — unmistakably the caption,
+ *               so it stops competing with the value even though it is first.
+ *   VALUE_CLS   white and medium — the data is the only bright thing in the
+ *               row, which is what the eye should find.
+ *   ROW_CLS     a faint stripe on alternate rows. The label sits left and the
+ *               value right, so the hard part is carrying your eye across the
+ *               gap to the right answer; the stripe is what keeps the pairing.
+ */
+const ROW_CLS =
+  'flex items-center justify-between gap-3 px-4 py-2.5 even:bg-gray-950/40'
+const LABEL_CLS =
+  'shrink-0 text-[11px] font-medium uppercase tracking-wide text-gray-500'
+const VALUE_CLS = 'min-w-0 flex-1 text-right text-sm font-medium text-white'
+
 /** Label/value row; renders a plain input instead of text while editing. */
 function Row({
   label, value, editing, name, defaultValue, type = 'text', mono,
@@ -194,9 +218,9 @@ function Row({
   mono?: boolean
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 px-4 py-2">
-      <dt className="shrink-0 text-xs text-gray-500">{label}</dt>
-      <dd className={'min-w-0 flex-1 text-right text-sm text-gray-200 ' + (mono ? 'font-mono text-xs' : '')}>
+    <div className={ROW_CLS}>
+      <dt className={LABEL_CLS}>{label}</dt>
+      <dd className={VALUE_CLS + (mono ? ' font-mono text-xs tracking-tight' : '')}>
         {editing && name ? (
           <input
             name={name}
@@ -222,11 +246,9 @@ function ControlRow({
   control: React.ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 px-4 py-2">
-      <dt className="shrink-0 text-xs text-gray-500">{label}</dt>
-      <dd className="min-w-0 flex-1 text-right text-sm text-gray-200">
-        {editing ? control : value}
-      </dd>
+    <div className={ROW_CLS}>
+      <dt className={LABEL_CLS}>{label}</dt>
+      <dd className={VALUE_CLS}>{editing ? control : value}</dd>
     </div>
   )
 }

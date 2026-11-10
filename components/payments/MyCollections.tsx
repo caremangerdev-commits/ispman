@@ -9,6 +9,7 @@ import {
   PAYMENT_METHOD_LABELS, type CollectionSummary, type KindSplit, type PaymentMethod,
 } from '@/lib/data/checkoff'
 import { currencySymbol } from '@/lib/format'
+import { SEARCH_INPUT_CLASS_LG, SEARCH_INPUT_PROPS } from '@/lib/search-input'
 
 const METHOD_STYLES: Partial<Record<PaymentMethod, string>> = {
   cash: 'bg-emerald-500/10 text-emerald-400',
@@ -191,7 +192,7 @@ export function CollectionsList({
 
         <div className="relative w-full sm:w-64">
           <Search
-            className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-500"
+            className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400"
             aria-hidden
           />
           <label htmlFor="collections-search" className="sr-only">Search my payments</label>
@@ -199,11 +200,11 @@ export function CollectionsList({
               target, and no focus zoom on iOS. */}
           <input
             id="collections-search"
-            type="search"
+            {...SEARCH_INPUT_PROPS}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search my payments..."
-            className="w-full min-h-11 rounded-lg border border-gray-700 bg-gray-800 py-2.5 pl-9 pr-3 text-base text-white placeholder:text-gray-500 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30 sm:min-h-0 sm:py-2 sm:text-sm"
+            className={SEARCH_INPUT_CLASS_LG}
           />
         </div>
       </header>

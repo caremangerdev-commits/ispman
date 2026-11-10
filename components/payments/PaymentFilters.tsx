@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABELS,
 } from '@/lib/data/checkoff'
+import { SEARCH_INPUT_CLASS, SEARCH_INPUT_PROPS } from '@/lib/search-input'
 
 const control =
   'rounded-lg border border-gray-800 bg-gray-950 px-3 py-2 text-sm text-gray-200 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30'
@@ -182,14 +183,14 @@ export function PaymentFilters({
       <div className="min-w-[220px] flex-1 space-y-1.5">
         <label htmlFor="q" className="block text-xs font-medium text-gray-400">Search</label>
         <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" aria-hidden />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
           <input
             id="q"
-            type="search"
+            {...SEARCH_INPUT_PROPS}
             value={text}
             onChange={(e) => onSearch(e.target.value)}
             placeholder="Search by customer name or reference..."
-            className={control + ' w-full pl-9'}
+            className={SEARCH_INPUT_CLASS}
           />
         </div>
       </div>

@@ -4,6 +4,7 @@ import { Menu, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
 import { PageTitle } from '@/components/ui/PageTitle'
 import { GlobalSearch } from '@/components/ui/GlobalSearch'
+import { MobileSearch } from '@/components/ui/MobileSearch'
 import { NotificationBell } from '@/components/ui/NotificationBell'
 import { UserMenu } from '@/components/ui/UserMenu'
 import { useShell } from '@/components/ui/Shell'
@@ -83,13 +84,15 @@ export function Navbar({
         <PageTitle />
       </span>
 
-      {/* Below `md` the tab bar's Find Customer is the way to a customer, and
-          it lands on a page whose own search box is bigger than this one. */}
+      {/* Above `md` the box sits in the header; below it, the magnifier in the
+          cluster on the right opens the same search as a sheet. Either way
+          search is one tap from every page, not only from the customers list. */}
       <span className="hidden min-w-0 flex-1 md:block">
         <GlobalSearch />
       </span>
 
       <div className="ml-auto flex shrink-0 items-center gap-1 md:ml-0">
+        <MobileSearch />
         <NotificationBell items={notifications} unread={unreadCount} />
         <UserMenu
           name={userName}

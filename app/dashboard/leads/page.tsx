@@ -1,12 +1,13 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { MapPin, Plus } from 'lucide-react'
+import { MapPin, Plus, Search } from 'lucide-react'
 
 import { companySymbol } from '@/lib/data/currency'
 import { listLeads, mapLink, type LeadStatus } from '@/lib/data/leads'
 import { formatCurrency } from '@/lib/format'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
+import { SEARCH_INPUT_CLASS, SEARCH_INPUT_PROPS } from '@/lib/search-input'
 import { requirePermission } from '@/lib/session'
 
 export const metadata: Metadata = { title: 'Prospects · ISPMan' }
@@ -101,14 +102,20 @@ export default async function LeadsPage({ searchParams }: PageProps<'/dashboard/
         {tab('lost', 'Not interested', counts.lost)}
       </div>
 
-      <form method="get" className="flex gap-2">
+      <form method="get" className="relative w-full max-w-md">
         {status ? <input type="hidden" name="status" value={status} /> : null}
+        <Search
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+          aria-hidden
+        />
+        <label htmlFor="lead-search" className="sr-only">Search prospects</label>
         <input
-          type="search"
+          id="lead-search"
           name="q"
+          {...SEARCH_INPUT_PROPS}
           defaultValue={query}
           placeholder="Search name, phone or address…"
-          className="w-full max-w-md rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
+          className={SEARCH_INPUT_CLASS}
         />
       </form>
 

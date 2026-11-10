@@ -5,6 +5,7 @@ import { CustomerHitCard } from '@/components/customers/CustomerHitCard'
 import { EmptyState, Panel } from '@/components/dashboard/Panel'
 import type { CustomerHit, SearchHit } from '@/lib/data/customer-search'
 import { formatCurrency, formatRelativeDate, fullName, timeAgo } from '@/lib/format'
+import { SEARCH_INPUT_CLASS, SEARCH_INPUT_PROPS } from '@/lib/search-input'
 import type {
   CashierDashboard as CashierData,
   CsrDashboard as CsrData,
@@ -65,15 +66,15 @@ function TicketList({ tickets }: { tickets: MyTicket[] }) {
 function SearchForm({ defaultValue, placeholder }: { defaultValue: string; placeholder: string }) {
   return (
     <form method="get" className="relative w-full max-w-md">
-      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" aria-hidden />
+      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
       <label htmlFor="q" className="sr-only">Search customers</label>
       <input
         id="q"
         name="q"
-        type="search"
+        {...SEARCH_INPUT_PROPS}
         defaultValue={defaultValue}
         placeholder={placeholder}
-        className="w-full rounded-lg border border-gray-800 bg-gray-950 py-2 pl-9 pr-3 text-sm text-gray-200 placeholder:text-gray-600 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
+        className={SEARCH_INPUT_CLASS}
       />
     </form>
   )

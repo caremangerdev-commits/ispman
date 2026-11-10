@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react'
 import { CustomerHitCard } from '@/components/customers/CustomerHitCard'
 import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
 import type { CustomerHit } from '@/lib/data/customer-search'
+import { SEARCH_INPUT_PROPS } from '@/lib/search-input'
 
 /**
  * Who the ticket is for, found the way the header search finds anyone.
@@ -111,19 +112,18 @@ export function TicketCustomerPicker({
             />
           ) : (
             <Search
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
               aria-hidden
             />
           )}
           <input
             id={inputId}
             autoFocus={focusSearch}
-            type="search"
+            {...SEARCH_INPUT_PROPS}
             role="combobox"
             aria-expanded={search.showList}
             aria-controls={inputId + '-results'}
             aria-autocomplete="list"
-            autoComplete="off"
             value={query}
             onChange={(e) => search.onQueryChange(e.target.value)}
             onKeyDown={onKeyDown}

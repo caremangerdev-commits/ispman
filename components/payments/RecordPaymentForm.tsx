@@ -30,6 +30,7 @@ import {
   PAYMENT_METHODS, PAYMENT_METHOD_LABELS, PAYMENT_REFERENCE_LABELS,
   PAYMENT_REFERENCE_MAX, type PaymentMethod,
 } from '@/lib/data/checkoff'
+import { SEARCH_INPUT_CLASS_LG, SEARCH_INPUT_PROPS } from '@/lib/search-input'
 import {
   CATEGORY_NAME_MAX, type PaymentCategory,
 } from '@/lib/data/payment-categories'
@@ -935,17 +936,16 @@ export function RecordPaymentForm({
           {searching ? (
             <Loader2 className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 animate-spin text-blue-400" aria-hidden />
           ) : (
-            <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-500" aria-hidden />
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" aria-hidden />
           )}
           <input
             id="payment-search"
-            type="search"
-            autoComplete="off"
+            {...SEARCH_INPUT_PROPS}
             value={term}
             onChange={(e) => setTerm(e.target.value)}
             onFocus={() => visibleHits.length > 0 && setOpen(true)}
             placeholder="Search by name, phone, address, MAC or #id..."
-            className="w-full rounded-lg border border-gray-700 bg-gray-800 py-3 pl-12 pr-3 text-base text-white placeholder:text-gray-500 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
+            className={SEARCH_INPUT_CLASS_LG}
           />
 
           {open && visibleHits.length > 0 ? (

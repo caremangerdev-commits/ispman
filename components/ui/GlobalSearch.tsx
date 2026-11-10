@@ -2,17 +2,43 @@
 
 import { Loader2, Search } from 'lucide-react'
 import { useRouter } from 'next/navigation'
-import { useEffect, useRef } from 'react'
+import { useEffect, useId, useRef } from 'react'
 
 import { CustomerHitCard } from '@/components/customers/CustomerHitCard'
 import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
 import type { CustomerHit } from '@/lib/data/customer-search'
+import {
+  SEARCH_INPUT_CLASS,
+  SEARCH_INPUT_CLASS_LG,
+  SEARCH_INPUT_PROPS,
+} from '@/lib/search-input'
 
-export function GlobalSearch() {
+export type GlobalSearchProps = {
+  /** Focus on mount. Set by the mobile sheet, whose only purpose is this box. */
+  autoFocus?: boolean
+  /** `lg` is the touch size — taller, bigger text, no iOS zoom-on-focus. */
+  size?: 'md' | 'lg'
+  /** Called after a result is picked, so a sheet can close itself. */
+  onNavigate?: () => void
+}
+
+export function GlobalSearch({
+  autoFocus = false,
+  size = 'md',
+  onNavigate,
+}: GlobalSearchProps = {}) {
   const router = useRouter()
   const search = useCustomerSearch()
   const { query, results, loading, open, setOpen, active, setActive } = search
   const wrapRef = useRef<HTMLDivElement>(null)
+  const large = size === 'lg'
+
+  // The desktop box stays mounted (just hidden) while the mobile sheet is
+  // open, so two of these exist at once. Fixed ids would collide and a tap on
+  // the sheet's label would focus the invisible one.
+  const uid = useId()
+  const inputId = 'global-search' + uid
+  const listId = 'global-search-results' + uid
 
   useEffect(() => {
     if (!open) return
@@ -25,6 +51,7 @@ export function GlobalSearch() {
 
   function go(hit: CustomerHit) {
     search.clear()
+    onNavigate?.()
     router.push('/dashboard/customers/' + hit.id)
   }
 
@@ -35,41 +62,50 @@ export function GlobalSearch() {
 
   return (
     <div ref={wrapRef} className="relative mx-auto w-full max-w-md">
-      <label htmlFor="global-search" className="sr-only">Search customers</label>
+      <label htmlFor={inputId} className="sr-only">Search customers</label>
       <div className="relative">
         {loading ? (
           <Loader2
-            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-blue-400"
+            className={
+              'pointer-events-none absolute top-1/2 -translate-y-1/2 animate-spin text-blue-400 ' +
+              (large ? 'left-4 h-5 w-5' : 'left-3 h-4 w-4')
+            }
             aria-hidden
           />
         ) : (
           <Search
-            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500"
+            className={
+              'pointer-events-none absolute top-1/2 -translate-y-1/2 text-gray-400 ' +
+              (large ? 'left-4 h-5 w-5' : 'left-3 h-4 w-4')
+            }
             aria-hidden
           />
         )}
         <input
-          id="global-search"
-          type="search"
+          id={inputId}
+          {...SEARCH_INPUT_PROPS}
           role="combobox"
           aria-expanded={search.showList}
-          aria-controls="global-search-results"
+          aria-controls={listId}
           aria-autocomplete="list"
-          autoComplete="off"
+          autoFocus={autoFocus}
           value={query}
           onChange={(e) => search.onQueryChange(e.target.value)}
           onKeyDown={onKeyDown}
           onFocus={() => results.length > 0 && setOpen(true)}
           placeholder="Search name, phone, address, MAC or #id..."
-          className="w-full rounded-lg border border-gray-800 bg-gray-950 py-2 pl-9 pr-3 text-sm text-gray-200 placeholder:text-gray-600 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
+          className={large ? SEARCH_INPUT_CLASS_LG : SEARCH_INPUT_CLASS}
         />
       </div>
 
       {search.showList ? (
         <div
-          id="global-search-results"
+          id={listId}
           role="listbox"
-          className="absolute left-0 right-0 top-11 z-50 overflow-hidden rounded-lg bg-gray-800 shadow-xl ring-1 ring-black/40"
+          className={
+            'absolute left-0 right-0 z-50 overflow-hidden rounded-lg bg-gray-800 shadow-xl ring-1 ring-black/40 ' +
+            (large ? 'top-14' : 'top-11')
+          }
         >
           {results.length === 0 ? (
             <p className="px-4 py-6 text-center text-sm text-gray-400">
