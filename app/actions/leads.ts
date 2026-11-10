@@ -346,6 +346,170 @@ export async function convertLead(formData: FormData): Promise<LeadResult> {
   }
 }
 
+/**
+ * Corrects a prospect.
+ *
+ * ANYONE WHO CAN SEE IT CAN EDIT IT (owner, 10 Nov 2026) — there is no
+ * separate edit permission. `manage_leads` already means "work prospects", and
+ * ownerScope() already decides which ones you can see: a rep sees and so edits
+ * their own book, the office sees and so edits everybody's. Adding an
+ * edit_lead permission would have let somebody read a prospect they could not
+ * fix, which is the one combination nobody wants — a wrong phone number at a
+ * gate is useless to whoever is looking at it and can do nothing about it.
+ *
+ * WHAT THIS DOES NOT TOUCH:
+ *   status, customer_id, converted_at — those are set by convertLead and
+ *     markLeadLost, which are the two actions that mean something happened.
+ *     An edit is a correction, not a decision.
+ *   the GPS fix, UNLESS a new one is sent. The edit form carries the same
+ *     LocationCapture as the new-prospect form, and that sends empty strings
+ *     until somebody actually takes a reading. Empty therefore means "leave
+ *     the fix alone" and not "clear it" — otherwise correcting a typo in a
+ *     name from the office would silently throw away the coordinate the rep
+ *     walked to the house for.
+ */
+export async function updateLead(
+  _prev: LeadResult | null,
+  formData: FormData
+): Promise<LeadResult> {
+  const { company, profile } = await requirePermission('manage_leads')
+  if (!(await getSchemaCapabilities()).leads) {
+    return { ok: false, error: 'Prospects are not set up on this system yet.' }
+  }
+
+  const leadId = Number(str(formData, 'lead_id'))
+  const lead = await getLead(company.id, leadId, ownerScope(profile.role, profile.id))
+  if (!lead) return { ok: false, error: 'That prospect could not be found.' }
+
+  const fieldErrors: Record<string, string> = {}
+  const first_name = str(formData, 'first_name').slice(0, NAME_MAX)
+  const last_name = str(formData, 'last_name').slice(0, NAME_MAX)
+  const phone = str(formData, 'phone')
+  const address = str(formData, 'address')
+
+  if (!first_name) fieldErrors.first_name = 'First name is required.'
+  if (!last_name) fieldErrors.last_name = 'Last name is required.'
+  if (!phone) fieldErrors.phone = 'Phone number is required.'
+  if (!address) fieldErrors.address = 'Address is required.'
+
+  const installFee = numOrNull(formData, 'install_fee') ?? 0
+  if (installFee < 0) fieldErrors.install_fee = 'Enter 0 or more.'
+
+  const monthlyRate = numOrNull(formData, 'monthly_rate')
+  if (monthlyRate !== null && monthlyRate < 0) {
+    fieldErrors.monthly_rate = 'Enter 0 or more.'
+  }
+
+  if (Object.keys(fieldErrors).length > 0) return { ok: false, fieldErrors }
+
+  const patch: Record<string, unknown> = {
+    first_name,
+    last_name,
+    phone,
+    address,
+    install_fee: round2(installFee),
+    monthly_rate: monthlyRate === null ? null : round2(monthlyRate),
+    service_plan_id: numOrNull(formData, 'service_plan_id'),
+    notes: str(formData, 'notes').slice(0, NOTES_MAX) || null,
+    updated_at: new Date().toISOString(),
+  }
+
+  // A new fix, only if one was taken. See the note above.
+  const lat = numOrNull(formData, 'latitude')
+  const lng = numOrNull(formData, 'longitude')
+  if (
+    lat !== null && lng !== null &&
+    lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180
+  ) {
+    patch.latitude = lat
+    patch.longitude = lng
+    patch.gps_accuracy_m = numOrNull(formData, 'gps_accuracy_m')
+    patch.gps_taken_at = new Date().toISOString()
+  }
+
+  const { error } = await tenantClient()
+    .from('leads')
+    .update(patch)
+    .eq('company_id', company.id)
+    .eq('id', lead.id)
+
+  if (error) return { ok: false, error: 'Could not save the changes: ' + error.message }
+
+  // The customer this prospect became is a different record and is NOT
+  // updated. Say so rather than letting somebody think they have corrected an
+  // account by correcting the prospect it came from.
+  const alsoCustomer =
+    lead.customerId !== null
+      ? ' Their customer account is separate and was not changed.'
+      : ''
+
+  revalidatePath('/dashboard/leads')
+  revalidatePath('/dashboard/leads/' + lead.id)
+  return {
+    ok: true,
+    leadId: lead.id,
+    message: 'Saved.' + alsoCustomer,
+  }
+}
+
+/**
+ * Deletes a prospect for good. Admin only — see delete_lead in
+ * lib/permissions.ts for why it is not given to a manager or a rep.
+ *
+ * A CONVERTED PROSPECT CANNOT BE DELETED. Once it has become a customer the
+ * row is the provenance of that account: who sold it, what they quoted, and
+ * what was taken at the door. The customer's own audit line points back at
+ * this id. Deleting it would leave an account nobody can explain, and would
+ * not remove the customer, the installation charge or the payment anyway —
+ * so it is refused, and the refusal says what to do instead.
+ */
+export async function deleteLead(formData: FormData): Promise<LeadResult> {
+  const { company, profile } = await requirePermission('delete_lead')
+  if (!(await getSchemaCapabilities()).leads) {
+    return { ok: false, error: 'Prospects are not set up on this system yet.' }
+  }
+
+  const leadId = Number(str(formData, 'lead_id'))
+  // Admin holds view_all_leads, so this is unscoped in practice; ownerScope is
+  // used anyway so the rule lives in one place and cannot drift.
+  const lead = await getLead(company.id, leadId, ownerScope(profile.role, profile.id))
+  if (!lead) return { ok: false, error: 'That prospect could not be found.' }
+
+  if (lead.customerId !== null) {
+    return {
+      ok: false,
+      error:
+        lead.name + ' already became a customer, so this record is the history of ' +
+        'that account and cannot be deleted. Delete the customer instead if that ' +
+        'is what you meant.',
+    }
+  }
+
+  const { error } = await tenantClient()
+    .from('leads')
+    .delete()
+    .eq('company_id', company.id)
+    .eq('id', lead.id)
+
+  if (error) return { ok: false, error: 'Could not delete the prospect: ' + error.message }
+
+  // No customer to hang an event on, so this goes in the log without one —
+  // deleting somebody else's work is worth a line regardless.
+  await logEvent({
+    customerId: null,
+    type: 'lead_deleted',
+    tag: '[leads]',
+    details:
+      'Deleted prospect #' + lead.id + ' (' + lead.name + ', ' + lead.phone + ')' +
+      ' signed up by ' + (lead.agent ?? 'a sales rep') +
+      ', quoted ' + lead.installFee + ' installation. Deleted by ' + displayName(profile) + '.',
+    amount: null,
+  }).catch(() => {})
+
+  revalidatePath('/dashboard/leads')
+  return { ok: true, leadId: lead.id, message: lead.name + ' was deleted.' }
+}
+
 /** Not interested, or cannot be served. Keeps the row: a door knocked is a fact. */
 export async function markLeadLost(formData: FormData): Promise<LeadResult> {
   const { company, profile } = await requirePermission('manage_leads')

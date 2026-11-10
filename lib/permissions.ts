@@ -85,6 +85,8 @@ export type Permission =
   // Turning a prospect into a customer — and, where money was taken at the
   // door, recording it.
   | 'convert_lead'
+  // Deleting a prospect outright. Admin only.
+  | 'delete_lead'
 
 const PERMISSIONS: Record<Permission, Role[]> = {
   view_dashboard_kpis: ['super_admin', 'company_admin', 'manager'],
@@ -308,6 +310,18 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // prospect they signed up themselves. They cannot reach the till, cannot
   // search the customer book, and cannot take a payment from anybody else.
   convert_lead: ['super_admin', 'company_admin', 'manager', 'csr', 'sales_rep'],
+  // DELETING A PROSPECT. Admin only (owner, 10 Nov 2026).
+  //
+  // Deliberately narrower than manage_leads, which lets anyone who can see a
+  // prospect EDIT it. Editing leaves a record that can be corrected again;
+  // deleting does not, and the row is a rep's work — a knocked door, a quoted
+  // price, and sometimes the only trace of money that changed hands. One rep
+  // must not be able to make another's day disappear, and a rep must not be
+  // able to tidy away a prospect they mishandled.
+  //
+  // Not given to manager: a manager can mark a prospect not interested, which
+  // is the honest way to close one off, and that is reversible.
+  delete_lead: ['super_admin', 'company_admin'],
 }
 
 export function can(role: Role, permission: Permission): boolean {

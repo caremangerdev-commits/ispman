@@ -3,7 +3,9 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { ArrowLeft, MapPin } from 'lucide-react'
 
+import { EditLeadForm } from '@/components/leads/EditLeadForm'
 import { LeadActions } from '@/components/leads/LeadActions'
+import { listServicePlans } from '@/lib/data/catalog'
 import { companySymbol } from '@/lib/data/currency'
 import { accuracyLabel, getLead, mapLink } from '@/lib/data/leads'
 import { formatCurrency } from '@/lib/format'
@@ -37,8 +39,21 @@ export default async function LeadPage({ params }: PageProps<'/dashboard/leads/[
   const lead = await getLead(company.id, leadId, seesAll ? null : profile.id)
   if (!lead) notFound()
 
-  const symbol = await companySymbol(company.id)
-  const open = lead.status === 'new'
+  const [symbol, plans] = await Promise.all([
+    companySymbol(company.id),
+    listServicePlans(company.id).catch(() => []),
+  ])
+
+  /**
+   * WHO CAN STILL BE SOLD TO. Anything that has not already become a customer
+   * — which includes one marked "not interested" (owner, 10 Nov 2026).
+   *
+   * That used to be `status === 'new'`, so a no at the door was final in the
+   * interface: a prospect who rang back a week later had nowhere to go, even
+   * though convertLead itself has always allowed it. Only an actual customer
+   * is the end of the line.
+   */
+  const sellable = lead.customerId === null
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-4">
@@ -150,14 +165,24 @@ export default async function LeadPage({ params }: PageProps<'/dashboard/leads/[
         </dl>
       </section>
 
-      {open ? (
+      {sellable ? (
         <LeadActions
           leadId={lead.id}
           installFee={lead.installFee}
           canConvert={can(profile.role, 'convert_lead')}
-          canMarkLost
+          // Already a no: offering it again is the one button that does nothing.
+          canMarkLost={lead.status !== 'lost'}
         />
       ) : null}
+
+      {/* Editing needs no permission of its own: reaching this page at all
+          means manage_leads, and getLead() has already decided it is one of
+          yours to see. See updateLead() in app/actions/leads.ts. */}
+      <EditLeadForm
+        lead={lead}
+        servicePlans={plans}
+        canDelete={can(profile.role, 'delete_lead')}
+      />
     </div>
   )
 }
