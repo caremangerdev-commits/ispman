@@ -107,12 +107,12 @@ export function TicketCustomerPicker({
         <div ref={wrapRef} className="relative">
           {loading ? (
             <Loader2
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-blue-400"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-blue-600"
               aria-hidden
             />
           ) : (
             <Search
-              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+              className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500"
               aria-hidden
             />
           )}
@@ -129,7 +129,7 @@ export function TicketCustomerPicker({
             onKeyDown={onKeyDown}
             onFocus={() => results.length > 0 && setOpen(true)}
             placeholder="Search name, phone, address, MAC or #id..."
-            className={inputClassName + ' pl-9'}
+            className={inputClassName}
           />
 
           {search.showList ? (

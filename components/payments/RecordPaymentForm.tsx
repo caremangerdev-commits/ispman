@@ -934,9 +934,9 @@ export function RecordPaymentForm({
 
         <div ref={wrapRef} className={'relative' + (selected ? ' hidden' : '')}>
           {searching ? (
-            <Loader2 className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 animate-spin text-blue-400" aria-hidden />
+            <Loader2 className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 animate-spin text-blue-600" aria-hidden />
           ) : (
-            <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" aria-hidden />
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-500" aria-hidden />
           )}
           <input
             id="payment-search"

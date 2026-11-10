@@ -59,14 +59,21 @@ export const SEARCH_INPUT_PROPS = {
  * screen, where somebody is standing at a counter with a customer waiting,
  * that is the one control they need to find first.
  *
- * So it is lighter than anything it sits on rather than darker: a gray-800
- * fill with a gray-600 border reads as a control against the header, the page
- * and a card alike, without needing a different class in each place.
+ * So it is lighter than anything it sits on rather than darker. A gray-800
+ * fill was the first attempt; the owner asked for white with grey text
+ * (10 Nov 2026), which is the strongest version of the same idea — on a dark
+ * app the one white rectangle on the screen cannot be missed, and it reads as
+ * a control against the header, the page and a card alike without needing a
+ * different class in each place.
+ *
+ * Grey text and not black: gray-800 on white is the full-contrast pairing
+ * without the hard edge of pure black on pure white, and it leaves gray-500
+ * below it for the placeholder, so a typed query still outweighs the hint.
  */
 const base =
-  'w-full rounded-lg border bg-gray-800 text-gray-100 placeholder:text-gray-400 ' +
-  'outline-none transition border-gray-600 ' +
-  'hover:border-gray-500 focus:border-blue-500 focus:bg-gray-800 focus:ring-2 focus:ring-blue-500/40'
+  'w-full rounded-lg border bg-white text-gray-800 placeholder:text-gray-500 ' +
+  'outline-none transition border-gray-300 ' +
+  'hover:border-gray-400 focus:border-blue-500 focus:bg-white focus:ring-2 focus:ring-blue-500/40'
 
 /** Header and filter bars: compact, with room for the icon on the left. */
 export const SEARCH_INPUT_CLASS = base + ' py-2 pl-9 pr-8 text-sm'

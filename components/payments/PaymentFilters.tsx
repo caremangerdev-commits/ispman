@@ -183,7 +183,7 @@ export function PaymentFilters({
       <div className="min-w-[220px] flex-1 space-y-1.5">
         <label htmlFor="q" className="block text-xs font-medium text-gray-400">Search</label>
         <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" aria-hidden />
           <input
             id="q"
             {...SEARCH_INPUT_PROPS}

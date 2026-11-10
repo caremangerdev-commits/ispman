@@ -8,6 +8,7 @@ import { createTicket, type ActionResult } from '@/app/actions/tickets'
 import { TicketCustomerPicker } from '@/components/tickets/TicketCustomerPicker'
 import type { AgentOption } from '@/lib/data/checkoff'
 import type { CustomerHit } from '@/lib/data/customer-search'
+import { SEARCH_INPUT_CLASS } from '@/lib/search-input'
 import {
   DEFAULT_TICKET_PRIORITY, TICKET_PRIORITIES, TICKET_PRIORITY_LABELS,
 } from '@/lib/tickets'
@@ -98,11 +99,18 @@ export function NewTicketForm({
           required
         >
           {/* The pick lives in the picker's own state, so a failed submit
-              keeps it without re-seeding from what was posted. */}
+              keeps it without re-seeding from what was posted.
+
+              It is a search box, so it is drawn like every other search box in
+              the app (white, grey text) rather than like this form's own
+              fields; only the error state comes from the form. */}
           <TicketCustomerPicker
             initial={presetCustomer}
             inputId="customer_search"
-            inputClassName={cls('customer_id')}
+            inputClassName={
+              SEARCH_INPUT_CLASS +
+              (errors.customer_id ? ' border-red-500 focus:border-red-500 focus:ring-red-500/30' : '')
+            }
           />
         </Field>
 

@@ -192,7 +192,7 @@ export function CollectionsList({
 
         <div className="relative w-full sm:w-64">
           <Search
-            className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400"
+            className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-500"
             aria-hidden
           />
           <label htmlFor="collections-search" className="sr-only">Search my payments</label>

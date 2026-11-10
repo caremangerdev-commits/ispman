@@ -105,7 +105,7 @@ export default async function LeadsPage({ searchParams }: PageProps<'/dashboard/
       <form method="get" className="relative w-full max-w-md">
         {status ? <input type="hidden" name="status" value={status} /> : null}
         <Search
-          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500"
           aria-hidden
         />
         <label htmlFor="lead-search" className="sr-only">Search prospects</label>

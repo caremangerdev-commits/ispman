@@ -67,7 +67,7 @@ export function GlobalSearch({
         {loading ? (
           <Loader2
             className={
-              'pointer-events-none absolute top-1/2 -translate-y-1/2 animate-spin text-blue-400 ' +
+              'pointer-events-none absolute top-1/2 -translate-y-1/2 animate-spin text-blue-600 ' +
               (large ? 'left-4 h-5 w-5' : 'left-3 h-4 w-4')
             }
             aria-hidden
@@ -75,7 +75,7 @@ export function GlobalSearch({
         ) : (
           <Search
             className={
-              'pointer-events-none absolute top-1/2 -translate-y-1/2 text-gray-400 ' +
+              'pointer-events-none absolute top-1/2 -translate-y-1/2 text-gray-500 ' +
               (large ? 'left-4 h-5 w-5' : 'left-3 h-4 w-4')
             }
             aria-hidden
