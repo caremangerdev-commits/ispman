@@ -7,18 +7,22 @@ import { listRouterTunnels } from '@/lib/data/tunnels'
 import { getNasRow } from '@/lib/radius-db'
 
 /**
- * Ends a customer's live session now, instead of waiting for it to re-auth.
+ * Puts a paid PPPoE or hotspot customer back online at once, by telling their
+ * router to drop the session so it re-authenticates against the expiry the
+ * payment has just extended.
  *
- * ONE PACKET, TWO PURPOSES. A RADIUS Disconnect-Request (RFC 5176) tears the
- * session down; what happens next is decided entirely by the radcheck row the
- * router then re-reads. So the same send serves both directions:
+ * PPPoE AND HOTSPOT ONLY, AND THAT IS NOT A LIMITATION OF THIS FILE.
+ * MikroTik does not support CoA or Disconnect for DHCP RADIUS at all — a DHCP
+ * lease has no session context, and a Disconnect-Request for one is answered
+ * Session-Context-Not-Found. 5,432 of our 5,434 customers are DHCP, so for
+ * almost everybody this path does not and cannot apply, and the way their
+ * cut-off is enforced is Session-Timeout instead (migration 0047).
  *
- *   after a payment    expiry is in the future, the re-auth succeeds, and the
- *                      customer is back online in seconds instead of at the
- *                      next lease renewal.
- *   on a cut-off       expiry is in the past, the re-auth is refused, and the
- *                      customer is off now rather than whenever they next
- *                      happen to re-authenticate.
+ * There is deliberately NO disconnectCustomer() here. Cutting a customer off
+ * at once is the same packet with the radcheck row already in the past, and it
+ * would work for the same two customers and no others — a function nothing can
+ * call is worse than no function, because the next person reads it as a
+ * capability we have.
  *
  * WHY IT NO LONGER READS radacct (11 Nov 2026). It used to find the customer's
  * open accounting session and send the packet to that row's nasipaddress. That
@@ -221,20 +225,4 @@ export async function reconnectCustomer(
   companyId: number
 ): Promise<CoaResult> {
   return terminate(identity, companyId, 'reconnect')
-}
-
-/**
- * Cuts a customer off at once: the session is dropped and the re-auth that
- * follows is refused, because the expiry is already in the past.
- *
- * Only called when the company has turned immediate disconnection on — see
- * migration 0047 and lib/schema.ts#immediateDisconnect. Without it a cut-off
- * behaves as it always has: the expiry is written and the session lives until
- * it next re-authenticates.
- */
-export async function disconnectCustomer(
-  identity: string | null | undefined,
-  companyId: number
-): Promise<CoaResult> {
-  return terminate(identity, companyId, 'cut off')
 }

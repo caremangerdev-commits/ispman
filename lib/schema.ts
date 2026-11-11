@@ -66,15 +66,18 @@ export type SchemaCapabilities = {
    */
   leads: boolean
   /**
-   * `settings.immediate_disconnect_enabled` (migration 0047) — whether a
-   * cut-off tears the live session down at once instead of waiting for the
-   * next authentication.
+   * `settings.radius_session_timeout_secs` (migration 0047) — how often a
+   * customer's device is made to re-ask whether it is still paid up.
    *
-   * Until the column exists the setting is not offered and no session is ever
-   * torn down, which is exactly how every company behaves today. See the
-   * migration for why it is per-company and off by default.
+   * Returned as Session-Timeout in the Access-Accept, which RouterOS treats as
+   * the maximum lease time and which is the ONLY supported way to make a DHCP
+   * customer re-authenticate: a renewal does not re-query RADIUS, and CoA does
+   * not exist for DHCP leases at all. See the migration.
+   *
+   * Until the column exists no Session-Timeout is sent and every router keeps
+   * today's behaviour.
    */
-  immediateDisconnect: boolean
+  sessionTimeout: boolean
   /**
    * `payments.credit_applied` (migration 0015). What makes a prepayment's
    * credit reversible when the payment is corrected or deleted. Until it is
@@ -284,7 +287,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     ticketNotesRes, emailBillsRes, invoicePrefixRes, flexMonthRes,
     paymentReferenceRes,
     leadsRes,
-    immediateDisconnectRes,
+    sessionTimeoutRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -393,8 +396,8 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('payments').select('reference').limit(1),
     // 0046: door-to-door prospects. One table.
     db.from('leads').select('id').limit(1),
-    // 0047: the per-company immediate-disconnect switch. One column.
-    db.from('settings').select('immediate_disconnect_enabled').limit(1),
+    // 0047: the per-company Session-Timeout. One column.
+    db.from('settings').select('radius_session_timeout_secs').limit(1),
   ])
   console.log('[perf]     schema probe: 28 parallel queries  %dms', Date.now() - tProbe)
 
@@ -705,12 +708,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for leads: ' + leadsRes.error.message)
   }
 
-  // 0047: one column on settings. Absent, no session is ever torn down.
-  const missingImmediateDisconnect = immediateDisconnectRes.error?.code === '42703'
-  if (immediateDisconnectRes.error && !missingImmediateDisconnect) {
+  // 0047: one column on settings. Absent, no Session-Timeout is ever sent.
+  const missingSessionTimeout = sessionTimeoutRes.error?.code === '42703'
+  if (sessionTimeoutRes.error && !missingSessionTimeout) {
     throw new Error(
-      'Schema probe failed for the immediate-disconnect setting: ' +
-      immediateDisconnectRes.error.message
+      'Schema probe failed for the RADIUS session timeout setting: ' +
+      sessionTimeoutRes.error.message
     )
   }
 
@@ -756,7 +759,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     flexMonth: !missingFlexMonth,
     paymentReference: !missingPaymentReference,
     leads: !missingLeads,
-    immediateDisconnect: !missingImmediateDisconnect,
+    sessionTimeout: !missingSessionTimeout,
   }
 })
 
