@@ -1,7 +1,9 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-import { externalHost, isPortalHost, PORTAL_SLUG_HEADER, portalSlugFromHost } from '@/lib/portal/config'
+import {
+  externalHost, isKnownAppHost, isPortalHost, PORTAL_SLUG_HEADER, portalSlugFromHost,
+} from '@/lib/portal/config'
 import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase/env'
 
 /**
@@ -79,6 +81,27 @@ export async function proxy(request: NextRequest) {
     const headers = new Headers(request.headers)
     headers.delete(PORTAL_SLUG_HEADER)
     return NextResponse.rewrite(url, { request: { headers } })
+  }
+
+  // A HOST THAT IS NOT OURS IS A SUSPENDED CUSTOMER, not a visitor.
+  //
+  // Their router rewrites their web traffic to this server, and the request
+  // still asks for whatever they typed — so `Host: instagram.com` arriving here
+  // means somebody's internet was cut off and their browser has been pointed at
+  // us. See deploy/freeradius/suspended-router-setup.md.
+  //
+  // Without this they fall through to the staff app below, find no session, and
+  // are redirected to /login — a customer whose internet is off being shown an
+  // ISP's staff login screen, which explains nothing and invites them to try
+  // passwords.
+  //
+  // Checked BEFORE the Supabase client is created, so a redirected customer
+  // costs no auth round trip. Inert until APP_HOSTS is set.
+  if (!isKnownAppHost(host)) {
+    const url = request.nextUrl.clone()
+    url.pathname = '/suspended'
+    url.search = ''
+    return NextResponse.rewrite(url)
   }
 
   // From here down is the STAFF app. A portal host can never reach it, and a
