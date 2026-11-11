@@ -1,0 +1,90 @@
+# ISPMan walled garden — accept an expired customer into a restricted pool
+# instead of rejecting them.
+#
+# Goes in /etc/freeradius/3.0/policy.d/ and is called by name from the
+# `authorize` section of sites-enabled/default, IMMEDIATELY BEFORE the
+# `expiration` module:
+#
+#     files
+#     sql
+#     -ldap
+#     ispman_walled_garden      <-- here
+#     expiration
+#     logintime
+#     pap
+#
+# WHY. Expiry is enforced by the `expiration` module turning the radcheck
+# Expiration attribute into an Access-Reject. A rejected DHCP client gets no
+# lease, so it has no address and no traffic — there is nothing to redirect to
+# a notice page, and the device simply retries forever. On 10 November 2026
+# that was 5,256,489 rejects in two days against 7,342 accepts: 573 devices,
+# the worst of them asking once a second, and 65 million rows and 6 GB a month
+# in radpostauth to record it.
+#
+# So an expired customer is ACCEPTED, into a pool that can reach the payment
+# portal and nothing else. The device gets a lease, stops hammering, and can be
+# shown why it is not working.
+#
+# GATED PER ROUTER, which is the whole safety of it. The pool and the firewall
+# rules that make it restricted live on the router, and a router that has not
+# had them is a router where an accepted customer would get ORDINARY INTERNET,
+# FREE. So this changes nothing until a row for that router exists in
+# ispman_walled_garden — see walled-garden.sql. No row, no change: the user
+# keeps their Expiration and `expiration` rejects them exactly as today.
+#
+# ONE QUERY DECIDES IT. The SQL answers both halves at once — is this router
+# turned on, and has this customer's time run out — and returns the pool name
+# only when both are true. Deliberately not done in unlang: the radcheck value
+# is a string like "05 Dec 2026 13:00", and MySQL's STR_TO_DATE parses it
+# reliably where unlang date arithmetic is fiddly and fails quietly.
+#
+# Packet-Src-IP-Address, not NAS-IP-Address. The router reports its own LAN
+# address in NAS-IP-Address — of 530 distinct values in open sessions only ten
+# match a nas row — so the attribute is useless as an identity. The packet
+# source is the tunnel address, which IS the nas.nasname, and is what
+# sites-enabled/ispman-tunnel-clients already keys on.
+
+ispman_walled_garden {
+	#  Only worth asking for a customer who has an expiry at all. A row with
+	#  no Expiration is not an expired customer, it is a customer the
+	#  expiration module was never going to touch.
+	if (&control:Expiration) {
+		update control {
+			#  Empty unless BOTH: this router is switched on, and this
+			#  customer's expiry has passed. The %% are escaped for the
+			#  config parser; MySQL sees %d %b %Y %H:%i.
+			&Tmp-String-0 := "%{sql:SELECT g.pool FROM ispman_walled_garden g JOIN radcheck c ON c.username = '%{User-Name}' AND c.attribute = 'Expiration' WHERE g.nasname = '%{Packet-Src-IP-Address}' AND g.enabled = 1 AND STR_TO_DATE(c.value, '%%d %%b %%Y %%H:%%i') < NOW() LIMIT 1}"
+		}
+
+		if (&control:Tmp-String-0 && &control:Tmp-String-0 != "") {
+			#  Drop the expiry so `expiration`, which runs next, has
+			#  nothing to reject on. radcheck already carries
+			#  Auth-Type := Accept for these users, so authentication
+			#  then succeeds on its own — nothing here forces it.
+			update control {
+				&Expiration !* ANY
+			}
+
+			update reply {
+				#  The restricted pool on that router. Framed-Pool is
+				#  honoured by the RouterOS DHCP server, and is ignored
+				#  if Framed-IP-Address is also sent — so nothing here
+				#  sends one.
+				&Framed-Pool := &control:Tmp-String-0
+
+				#  RouterOS uses Session-Timeout as the MAXIMUM LEASE
+				#  TIME, so this is how long a cut-off customer waits to
+				#  come back after paying at the till.
+				#
+				#  Two minutes, and it matters. Today a cut-off customer
+				#  reconnects in seconds BECAUSE they are being rejected
+				#  and their device is retrying constantly. Once they
+				#  hold a lease they stop retrying, so without this the
+				#  page would be bought at the price of a slow
+				#  reconnection — the one trade nobody would thank us
+				#  for. Set from here rather than on thirteen routers.
+				&Session-Timeout := 120
+			}
+		}
+	}
+}
