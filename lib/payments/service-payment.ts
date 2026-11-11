@@ -1231,7 +1231,8 @@ export async function recordServicePayment(input: ServicePaymentInput): Promise<
   // or a router unreachable means no instant reconnect and no SMS; the payment
   // and the receipt (which already states the new expiry) stand regardless.
   if (disconnectedNow && networkExtended) {
-    const reconnected = await reconnectCustomer(identity).catch(() => ({ ok: false, reason: 'error' }))
+    const reconnected = await reconnectCustomer(identity, company.id)
+      .catch(() => ({ ok: false, reason: 'error' }))
     if (reconnected.ok) {
       await notifyServiceRestored({
         companyId: company.id,

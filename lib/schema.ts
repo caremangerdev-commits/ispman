@@ -66,6 +66,16 @@ export type SchemaCapabilities = {
    */
   leads: boolean
   /**
+   * `settings.immediate_disconnect_enabled` (migration 0047) — whether a
+   * cut-off tears the live session down at once instead of waiting for the
+   * next authentication.
+   *
+   * Until the column exists the setting is not offered and no session is ever
+   * torn down, which is exactly how every company behaves today. See the
+   * migration for why it is per-company and off by default.
+   */
+  immediateDisconnect: boolean
+  /**
    * `payments.credit_applied` (migration 0015). What makes a prepayment's
    * credit reversible when the payment is corrected or deleted. Until it is
    * present the correction paths move the carried balance only, and say in the
@@ -274,6 +284,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     ticketNotesRes, emailBillsRes, invoicePrefixRes, flexMonthRes,
     paymentReferenceRes,
     leadsRes,
+    immediateDisconnectRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -382,8 +393,10 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('payments').select('reference').limit(1),
     // 0046: door-to-door prospects. One table.
     db.from('leads').select('id').limit(1),
+    // 0047: the per-company immediate-disconnect switch. One column.
+    db.from('settings').select('immediate_disconnect_enabled').limit(1),
   ])
-  console.log('[perf]     schema probe: 27 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 28 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -692,6 +705,15 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     throw new Error('Schema probe failed for leads: ' + leadsRes.error.message)
   }
 
+  // 0047: one column on settings. Absent, no session is ever torn down.
+  const missingImmediateDisconnect = immediateDisconnectRes.error?.code === '42703'
+  if (immediateDisconnectRes.error && !missingImmediateDisconnect) {
+    throw new Error(
+      'Schema probe failed for the immediate-disconnect setting: ' +
+      immediateDisconnectRes.error.message
+    )
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -734,6 +756,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     flexMonth: !missingFlexMonth,
     paymentReference: !missingPaymentReference,
     leads: !missingLeads,
+    immediateDisconnect: !missingImmediateDisconnect,
   }
 })
 

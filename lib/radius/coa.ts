@@ -3,33 +3,77 @@ import 'server-only'
 import { createHash, randomInt } from 'node:crypto'
 import dgram from 'node:dgram'
 
-import { getActiveSession, getNasRow } from '@/lib/radius-db'
+import { listRouterTunnels } from '@/lib/data/tunnels'
+import { getNasRow } from '@/lib/radius-db'
 
 /**
- * Forces a paid customer back online at once by telling their NAS to re-auth,
- * instead of waiting for the session to renew on its own.
+ * Ends a customer's live session now, instead of waiting for it to re-auth.
  *
- * There is no CoA anywhere else in this app (expiry is enforced only at
- * authentication), so this is a small, self-contained RADIUS Disconnect-Request
- * (RFC 5176) sent over UDP to the NAS's CoA port. It runs on the box, where the
- * app can reach each tenant MikroTik over the WireGuard tunnel at its tunnel IP
- * — which is also the nas.nasname that holds the CoA secret.
+ * ONE PACKET, TWO PURPOSES. A RADIUS Disconnect-Request (RFC 5176) tears the
+ * session down; what happens next is decided entirely by the radcheck row the
+ * router then re-reads. So the same send serves both directions:
  *
- * It only acts on a customer who HAS an open session (one to disconnect so the
- * router re-authenticates). A fully cut-off customer has none and re-auths on
- * its own the moment the payment lands.
+ *   after a payment    expiry is in the future, the re-auth succeeds, and the
+ *                      customer is back online in seconds instead of at the
+ *                      next lease renewal.
+ *   on a cut-off       expiry is in the past, the re-auth is refused, and the
+ *                      customer is off now rather than whenever they next
+ *                      happen to re-authenticate.
  *
- * OFF unless RADIUS_COA_ENABLED=true AND each router has
- * `/radius incoming set accept=yes port=3799`. NEVER THROWS — the payment has
- * already succeeded; an unreachable router must not undo it.
+ * WHY IT NO LONGER READS radacct (11 Nov 2026). It used to find the customer's
+ * open accounting session and send the packet to that row's nasipaddress. That
+ * cannot work, and measurably did not: of 530 distinct NAS addresses in open
+ * sessions, TEN have a `nas` row. The rest are private addresses —
+ * 192.168.100.209 alone holds 18,599 of them — because each tenant's
+ * distribution router reports its own LAN address in NAS-IP-Address while the
+ * RADIUS packet itself arrives over the tunnel. So the old code looked up a
+ * secret for an unroutable address, found none, and returned 'no NAS secret'
+ * for almost every customer. Nobody noticed because the whole path is off
+ * unless RADIUS_COA_ENABLED is set.
+ *
+ * Accounting cannot be made to answer this either: interim updates are off, so
+ * acctupdatetime equals acctstarttime on all 83,386 open rows and
+ * acctsessiontime is 0 — radacct cannot tell a live session from one abandoned
+ * in 2021, and one identity holds open rows against 132 different NAS
+ * addresses.
+ *
+ * So the target comes from what we actually know: THE ROUTERS OF THE
+ * CUSTOMER'S COMPANY. A tunnel router is reachable (it is a WireGuard peer), it
+ * has a `nas` row, and that row holds the shared secret. A company has a
+ * handful, so the packet goes to each of them carrying only User-Name, and the
+ * one holding the session drops it. The others answer NAK or stay silent,
+ * which costs nothing.
+ *
+ * NOT COVERED: a tenant still on a public-IP NAS rather than a tunnel. Those
+ * four rows were made by hand on the box and ISPMan has no record of which
+ * company each belongs to, so there is nothing to look up. Their customers
+ * keep today's behaviour — expiry at the next re-auth — until the router is
+ * moved onto a tunnel.
+ *
+ * NEVER THROWS. The radcheck write has already landed before any of this runs;
+ * an unreachable router must not undo a cut-off or a reconnection.
  */
 
-const COA_PORT = 3799
+/**
+ * The port the routers listen on for CoA and Disconnect-Messages.
+ *
+ * RouterOS's `/radius incoming` DEFAULTS TO 1700, not to the IANA port 3799.
+ * The default here stays 3799 because that is what the setup instructions tell
+ * the operator to set (`/radius incoming set accept=yes port=3799`), but a
+ * router left on its own default will never answer — so this is an env var
+ * rather than a constant, and a mismatch can be corrected without a deploy.
+ */
+function coaPort(): number {
+  const raw = Number((process.env.RADIUS_COA_PORT ?? '').trim())
+  return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 3799
+}
+
 const TIMEOUT_MS = 4000
 
 // RADIUS codes (RFC 5176).
 const DISCONNECT_REQUEST = 40
 const DISCONNECT_ACK = 41
+const DISCONNECT_NAK = 42
 
 function attr(type: number, value: Buffer | string): Buffer {
   const v = typeof value === 'string' ? Buffer.from(value, 'utf8') : value
@@ -45,6 +89,11 @@ function ipToBuf(ip: string): Buffer | null {
 /**
  * The Request Authenticator for a Disconnect-Request is, as for an
  * Accounting-Request, MD5(Code+ID+Length + 16 zero bytes + Attributes + Secret).
+ *
+ * No Message-Authenticator. RFC 5176 says a Disconnect-Request SHOULD carry
+ * one, and RouterOS does not document requiring it. Left out deliberately so
+ * the first pilot changes only the target and the port; if a router stays
+ * silent, adding it is the next thing to try, not the first.
  */
 function buildPacket(secret: string, attrs: Buffer, id: number): Buffer {
   const length = 20 + attrs.length
@@ -58,51 +107,134 @@ function buildPacket(secret: string, attrs: Buffer, id: number): Buffer {
   return Buffer.concat([header, auth, attrs])
 }
 
-export type ReconnectResult = { ok: boolean; reason: string }
-
 export function coaEnabled(): boolean {
   return (process.env.RADIUS_COA_ENABLED ?? '').trim() === 'true'
 }
 
-export async function reconnectCustomer(identity: string | null | undefined): Promise<ReconnectResult> {
+/** One router we can send to: its tunnel address and the secret it shares. */
+type CoaTarget = { nasIp: string; shortname: string; secret: string }
+
+/**
+ * The company's routers that can be sent a Disconnect-Request.
+ *
+ * Live tunnels only — a tunnel whose key was never pasted is not a peer, and a
+ * revoked one is not supposed to answer. The secret is read from the `nas`
+ * row rather than kept anywhere in ISPMan, which is the same rule the rest of
+ * lib/radius/operations.ts follows: the nas row is the only copy.
+ */
+async function companyTargets(companyId: number): Promise<CoaTarget[]> {
+  const tunnels = (await listRouterTunnels(companyId)).filter(
+    (t) => t.keySetAt !== null && t.revokedAt === null
+  )
+
+  const targets: CoaTarget[] = []
+  for (const t of tunnels) {
+    const nas = await getNasRow(t.tunnelIp)
+    // No row means FreeRADIUS does not know this router either, so a packet to
+    // it could not be authenticated even if it arrived.
+    if (nas?.secret) {
+      targets.push({ nasIp: t.tunnelIp, shortname: nas.shortname ?? t.name, secret: nas.secret })
+    }
+  }
+  return targets
+}
+
+type SendOutcome = 'ack' | 'nak' | 'silent' | 'error'
+
+/** Sends one Disconnect-Request and reports what came back. */
+async function sendTo(target: CoaTarget, username: string): Promise<SendOutcome> {
+  const parts: Buffer[] = [attr(1, username)] // User-Name
+  const nasBuf = ipToBuf(target.nasIp)
+  if (nasBuf) parts.push(attr(4, nasBuf)) // NAS-IP-Address
+
+  const packet = buildPacket(target.secret, Buffer.concat(parts), randomInt(0, 256))
+  const port = coaPort()
+
+  return new Promise<SendOutcome>((resolve) => {
+    const sock = dgram.createSocket('udp4')
+    const done = (v: SendOutcome) => {
+      clearTimeout(timer)
+      try { sock.close() } catch { /* already closed */ }
+      resolve(v)
+    }
+    const timer = setTimeout(() => done('silent'), TIMEOUT_MS)
+    sock.on('message', (msg) => {
+      if (msg.length === 0) return done('error')
+      if (msg[0] === DISCONNECT_ACK) return done('ack')
+      if (msg[0] === DISCONNECT_NAK) return done('nak')
+      done('error')
+    })
+    sock.on('error', () => done('error'))
+    sock.send(packet, port, target.nasIp, (err) => { if (err) done('error') })
+  })
+}
+
+export type CoaResult = {
+  /** True when at least one router acknowledged tearing the session down. */
+  ok: boolean
+  /** One line for the audit log, naming what each router said. */
+  reason: string
+}
+
+/**
+ * Sends a Disconnect-Request for one identity to every router the company has.
+ *
+ * ALL OF THEM, IN PARALLEL, because nothing we hold says which router the
+ * customer is on — see the note at the top of this file. A NAK is the ordinary
+ * answer from a router that has never heard of them, not a failure.
+ */
+async function terminate(
+  identity: string | null | undefined,
+  companyId: number,
+  purpose: string
+): Promise<CoaResult> {
   if (!coaEnabled()) return { ok: false, reason: 'CoA disabled' }
   if (!identity) return { ok: false, reason: 'no identity' }
 
   try {
-    const session = await getActiveSession(identity)
-    if (!session) return { ok: false, reason: 'no active session to re-auth' }
-
-    const nas = await getNasRow(session.nasIp)
-    if (!nas) return { ok: false, reason: 'no NAS secret for ' + session.nasIp }
-
-    const parts: Buffer[] = [attr(1, session.username)] // User-Name
-    if (session.acctSessionId) parts.push(attr(44, session.acctSessionId)) // Acct-Session-Id
-    const nasBuf = ipToBuf(session.nasIp)
-    if (nasBuf) parts.push(attr(4, nasBuf)) // NAS-IP-Address
-    if (session.framedIp) {
-      const fb = ipToBuf(session.framedIp)
-      if (fb) parts.push(attr(8, fb)) // Framed-IP-Address
+    const targets = await companyTargets(companyId)
+    if (targets.length === 0) {
+      return { ok: false, reason: 'no reachable router for this company' }
     }
 
-    const packet = buildPacket(nas.secret, Buffer.concat(parts), randomInt(0, 256))
+    const outcomes = await Promise.all(
+      targets.map(async (t) => ({ name: t.shortname, outcome: await sendTo(t, identity) }))
+    )
 
-    const acked = await new Promise<boolean>((resolve) => {
-      const sock = dgram.createSocket('udp4')
-      const done = (v: boolean) => {
-        clearTimeout(timer)
-        try { sock.close() } catch { /* already closed */ }
-        resolve(v)
-      }
-      const timer = setTimeout(() => done(false), TIMEOUT_MS)
-      sock.on('message', (msg) => done(msg.length > 0 && msg[0] === DISCONNECT_ACK))
-      sock.on('error', () => done(false))
-      sock.send(packet, COA_PORT, session.nasIp, (err) => { if (err) done(false) })
-    })
+    const acked = outcomes.filter((o) => o.outcome === 'ack')
+    const detail = outcomes.map((o) => o.name + '=' + o.outcome).join(', ')
 
-    return acked
-      ? { ok: true, reason: 'disconnected; router will re-authenticate' }
-      : { ok: false, reason: 'no Disconnect-ACK from ' + session.nasIp }
+    return acked.length > 0
+      ? { ok: true, reason: purpose + ': session dropped by ' + acked.map((a) => a.name).join(', ') + ' (' + detail + ')' }
+      : { ok: false, reason: purpose + ': no router dropped a session (' + detail + ')' }
   } catch (err) {
     return { ok: false, reason: (err as Error).message }
   }
+}
+
+/**
+ * Forces a paid customer back online at once: the session is dropped and the
+ * re-auth that follows reads the expiry the payment just extended.
+ */
+export async function reconnectCustomer(
+  identity: string | null | undefined,
+  companyId: number
+): Promise<CoaResult> {
+  return terminate(identity, companyId, 'reconnect')
+}
+
+/**
+ * Cuts a customer off at once: the session is dropped and the re-auth that
+ * follows is refused, because the expiry is already in the past.
+ *
+ * Only called when the company has turned immediate disconnection on — see
+ * migration 0047 and lib/schema.ts#immediateDisconnect. Without it a cut-off
+ * behaves as it always has: the expiry is written and the session lives until
+ * it next re-authenticates.
+ */
+export async function disconnectCustomer(
+  identity: string | null | undefined,
+  companyId: number
+): Promise<CoaResult> {
+  return terminate(identity, companyId, 'cut off')
 }

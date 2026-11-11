@@ -616,10 +616,18 @@ export type ActiveSession = {
 /**
  * The customer's CURRENTLY OPEN accounting session, or null.
  *
- * `acctstoptime IS NULL` is an open session. Used by the reconnection path
- * (lib/radius/coa.ts) to find a live session to disconnect so the NAS re-auths
- * immediately after a payment — which only exists for a customer who is on the
- * network; a fully cut-off one has none and simply re-auths on its own.
+ * `acctstoptime IS NULL` is an open session.
+ *
+ * NOT USED BY THE CoA PATH ANY MORE (11 Nov 2026), and must not be again.
+ * lib/radius/coa.ts used to read this to decide where to send a
+ * Disconnect-Request, and the answer was wrong almost every time: a router
+ * reports its own LAN address in NAS-IP-Address, so of 530 distinct NAS
+ * addresses in open sessions only ten have a `nas` row and a secret. On top of
+ * that, interim accounting is off — acctupdatetime equals acctstarttime on
+ * every open row — so nothing here distinguishes a live session from one
+ * abandoned in 2021, and there are 83,379 of them. Kept for reading, because
+ * "is there an open row" is still a fair question; it is not an address to
+ * send anything to.
  */
 export async function getActiveSession(identity: string): Promise<ActiveSession | null> {
   const username = normaliseUsername(identity)
