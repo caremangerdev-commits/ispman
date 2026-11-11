@@ -53,7 +53,10 @@ ispman_walled_garden {
 			#  Empty unless BOTH: this router is switched on, and this
 			#  customer's expiry has passed. The %% are escaped for the
 			#  config parser; MySQL sees %d %b %Y %H:%i.
-			&Tmp-String-0 := "%{sql:SELECT g.pool FROM ispman_walled_garden g JOIN radcheck c ON c.username = '%{User-Name}' AND c.attribute = 'Expiration' WHERE g.nasname = '%{Packet-Src-IP-Address}' AND g.enabled = 1 AND STR_TO_DATE(c.value, '%%d %%b %%Y %%H:%%i') < NOW() LIMIT 1}"
+			#  The only_macs clause is the "try it on one device first"
+			#  gate: empty means every expired customer on this router,
+			#  a list means only those. See walled-garden.sql.
+			&Tmp-String-0 := "%{sql:SELECT g.pool FROM ispman_walled_garden g JOIN radcheck c ON c.username = '%{User-Name}' AND c.attribute = 'Expiration' WHERE g.nasname = '%{Packet-Src-IP-Address}' AND g.enabled = 1 AND (g.only_macs IS NULL OR g.only_macs = '' OR FIND_IN_SET('%{User-Name}', g.only_macs)) AND STR_TO_DATE(c.value, '%%d %%b %%Y %%H:%%i') < NOW() LIMIT 1}"
 		}
 
 		if (&control:Tmp-String-0 && &control:Tmp-String-0 != "") {

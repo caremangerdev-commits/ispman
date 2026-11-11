@@ -38,16 +38,44 @@ CREATE TABLE IF NOT EXISTS ispman_walled_garden (
 ALTER TABLE ispman_walled_garden
   ADD COLUMN IF NOT EXISTS session_timeout_secs INT NOT NULL DEFAULT 120;
 
--- THE PILOT, when its router is ready. Left commented out on purpose: running
--- this file creates the table and changes nothing.
+-- TRY IT ON ONE DEVICE BEFORE ALL OF THEM.
 --
--- UNTIY is the pilot because it is the smallest thing on the network — 10
--- customers, 2 of them currently expired. Santa Cruz (22 and 4) is the
--- fallback. WCN's CCR1036 (179 and 37) goes last.
+-- Empty means every expired customer on that router. A comma-separated list of
+-- identities means only those, and everyone else on the router keeps being
+-- turned away exactly as before.
 --
---   INSERT INTO ispman_walled_garden (nasname, pool, enabled, note)
---   VALUES ('10.250.0.14', 'walled', 1, 'UNTIY - pilot');
+-- This exists because the owner chose to pilot on his own CCR1036 rather than
+-- the smallest router on the network - he can walk up to that one, which beats
+-- being small. But it carries 179 customers with 37 currently expired, so
+-- without this the first attempt would reach all 37 at once.
 --
--- To pull it back out, without deleting anything:
+-- No spaces, and the same spelling radcheck uses: uppercase, colon-separated.
+--   UPDATE ispman_walled_garden
+--      SET only_macs = 'AA:BB:CC:DD:EE:FF,11:22:33:44:55:66'
+--    WHERE nasname = '10.250.0.3';
+ALTER TABLE ispman_walled_garden
+  ADD COLUMN IF NOT EXISTS only_macs TEXT NULL
+  COMMENT 'Empty = every expired customer on this router. Otherwise only these identities, for trying it on one device first';
+
+-- THE PILOT. Left commented out on purpose: running this file creates the
+-- table and changes nothing.
 --
---   UPDATE ispman_walled_garden SET enabled = 0 WHERE nasname = '10.250.0.14';
+-- WCN's CCR1036 (10.250.0.3), by the owner's choice. I had suggested UNTIY
+-- (10 customers) or Santa Cruz (22) because they are the smallest things on
+-- the network, but he picked the 1036 because he can physically reach it —
+-- being able to recover beats being small, which is the better argument.
+-- It carries 179 customers and 37 currently expired, hence only_macs.
+--
+-- Step 1, one device. Replace the MAC with a real one:
+--
+--   INSERT INTO ispman_walled_garden (nasname, pool, enabled, note, only_macs)
+--   VALUES ('10.250.0.3', 'SUSPENDED', 1, 'WCN CCR1036 - pilot', 'AA:BB:CC:DD:EE:FF');
+--
+-- Step 2, once that device sees the page and comes back after paying, open it
+-- to all 37:
+--
+--   UPDATE ispman_walled_garden SET only_macs = NULL WHERE nasname = '10.250.0.3';
+--
+-- To pull it back out at any point, without deleting anything:
+--
+--   UPDATE ispman_walled_garden SET enabled = 0 WHERE nasname = '10.250.0.3';
