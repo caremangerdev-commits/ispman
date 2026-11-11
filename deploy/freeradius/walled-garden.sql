@@ -28,9 +28,15 @@ CREATE TABLE IF NOT EXISTS ispman_walled_garden (
             COMMENT 'The /ip pool name on that router holding the restricted range',
   enabled   TINYINT(1)   NOT NULL DEFAULT 0
             COMMENT '0 disables without deleting the row, so a router can be pulled out of the garden instantly',
+  session_timeout_secs INT NOT NULL DEFAULT 120
+            COMMENT 'Returned as Session-Timeout: how soon a restricted customer re-asks, which is how fast they come back after paying. A DHCP renewal does not re-query RADIUS, so this is the only lever - see migration 0047',
   note      VARCHAR(255) NULL,
   added_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Added after the table was first created, so it is safe to re-run.
+ALTER TABLE ispman_walled_garden
+  ADD COLUMN IF NOT EXISTS session_timeout_secs INT NOT NULL DEFAULT 120;
 
 -- THE PILOT, when its router is ready. Left commented out on purpose: running
 -- this file creates the table and changes nothing.

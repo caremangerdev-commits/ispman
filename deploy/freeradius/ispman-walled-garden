@@ -65,6 +65,14 @@ ispman_walled_garden {
 				&Expiration !* ANY
 			}
 
+			#  How soon a restricted customer re-asks. Its own column on
+			#  the gate row, so it is per router and can be tuned without
+			#  touching this file. Only looked up for a customer already
+			#  identified as walled-garden above.
+			update control {
+				&Tmp-Integer-0 := "%{sql:SELECT session_timeout_secs FROM ispman_walled_garden WHERE nasname = '%{Packet-Src-IP-Address}' LIMIT 1}"
+			}
+
 			update reply {
 				#  The restricted pool on that router. Framed-Pool is
 				#  honoured by the RouterOS DHCP server, and is ignored
@@ -72,18 +80,24 @@ ispman_walled_garden {
 				#  sends one.
 				&Framed-Pool := &control:Tmp-String-0
 
-				#  RouterOS uses Session-Timeout as the MAXIMUM LEASE
-				#  TIME, so this is how long a cut-off customer waits to
-				#  come back after paying at the till.
+				#  HOW A CUT-OFF CUSTOMER GETS BACK ON AFTER PAYING, and
+				#  the only thing that makes it work.
 				#
-				#  Two minutes, and it matters. Today a cut-off customer
-				#  reconnects in seconds BECAUSE they are being rejected
-				#  and their device is retrying constantly. Once they
-				#  hold a lease they stop retrying, so without this the
-				#  page would be bought at the price of a slow
-				#  reconnection — the one trade nobody would thank us
-				#  for. Set from here rather than on thirteen routers.
-				&Session-Timeout := 120
+				#  A DHCP RENEWAL DOES NOT RE-QUERY RADIUS. Only a
+				#  DISCOVER from a client the router has no lease for
+				#  produces an Access-Request, so a short lease time on
+				#  the router changes nothing — it renews from its own
+				#  table more often and never asks us again. RouterOS
+				#  treats Session-Timeout as the maximum lease time and
+				#  re-authenticates when the next renewal would outrun
+				#  what is left, which is the supported way to force the
+				#  question. See migration 0047.
+				#
+				#  Short here on purpose, and shorter than the figure a
+				#  company sets for its active customers: everyone in
+				#  this pool is looking at a page asking them to pay, so
+				#  they are the people most likely to have just paid.
+				&Session-Timeout := &control:Tmp-Integer-0
 			}
 		}
 	}
