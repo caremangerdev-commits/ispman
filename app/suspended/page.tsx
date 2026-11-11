@@ -1,6 +1,29 @@
 import type { Metadata } from 'next'
 
-import { portalBaseDomain } from '@/lib/portal/config'
+/**
+ * Where to send somebody who wants to pay, or empty for no button.
+ *
+ * THIS IS PILOT SCAFFOLDING AND NOT THE ANSWER. The page cannot tell which
+ * company the reader belongs to — their traffic is masqueraded out of their
+ * router's WAN, so the server sees only the router's public address — and one
+ * server serves ten tenants, so a single URL here is right for at most one of
+ * them.
+ *
+ * It exists because the first version pointed at the portal's own apex,
+ * `pay.ispman.online`, which turned out to HAVE NO DNS RECORD AT ALL: only the
+ * wildcard `*.pay.ispman.online` is published, so `wcnet.pay.ispman.online`
+ * resolves and the bare name never has, for anyone. A cut-off customer who
+ * tapped the button got "Server Not Found" — a dead link offered to exactly
+ * the people least able to work around it.
+ *
+ * The real fix is one of the two already written down in
+ * deploy/freeradius/suspended-router-setup.md: give each company's routers
+ * their own redirect target so the page knows whose customer this is, or carry
+ * the customer's real address over the tunnel. Until one of those exists, this
+ * is set per installation or left unset, and unset means no button rather than
+ * a broken one.
+ */
+const payUrl = (process.env.SUSPENDED_PORTAL_URL ?? '').trim()
 
 export const metadata: Metadata = {
   title: 'Internet service suspended',
@@ -40,8 +63,6 @@ export const metadata: Metadata = {
  * read sensibly to somebody who reached it by accident.
  */
 export default function SuspendedPage() {
-  const portal = portalBaseDomain()
-
   return (
     <main className="card">
       <style>{`
@@ -71,6 +92,11 @@ export default function SuspendedPage() {
           border-radius: 11px; background: #2563eb; color: #fff;
           font-weight: 600; text-align: center; text-decoration: none;
         }
+        .call {
+          margin-top: 20px; padding: 14px 18px; border-radius: 11px;
+          background: #1b2740; border: 1px solid #2c3a57;
+          text-align: center; font-weight: 600; color: #e8edf6 !important;
+        }
         .note {
           margin: 18px 0 0; padding-top: 16px; border-top: 1px solid #243049;
           font-size: 0.8rem; color: #7f8da4;
@@ -98,9 +124,11 @@ export default function SuspendedPage() {
         <li>If it does not, call your provider.</li>
       </ol>
 
-      {portal ? (
-        <a className="cta" href={'http://' + portal}>Sign in to pay</a>
-      ) : null}
+      {payUrl ? (
+        <a className="cta" href={payUrl}>Sign in to pay</a>
+      ) : (
+        <p className="call">Call your provider to pay and get back online.</p>
+      )}
 
       <p className="note">
         You reached this page because your provider redirected you here. Your
