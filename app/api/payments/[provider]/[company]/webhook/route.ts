@@ -61,12 +61,20 @@ export async function POST(
 
   let event
   try {
-    event = gateway.parseWebhook({ rawBody, headers: req.headers, credentials })
+    event = await gateway.parseWebhook({ rawBody, headers: req.headers, credentials })
   } catch (err) {
     const status = err instanceof WebhookError ? err.status : 400
     const message = err instanceof Error ? err.message : String(err)
     console.error('[' + provider + ' webhook] rejected:', message)
     return NextResponse.json({ error: message }, { status })
+  }
+
+  // VERIFIED, BUT NOTHING TO RECORD. Dime posts the whole payment lifecycle to
+  // one endpoint — authorised, failed, voided, abandoned, settled — and only
+  // the captured one is money. 2xx so it is not retried: we did handle it, by
+  // deciding it was not ours to act on.
+  if (!event) {
+    return NextResponse.json({ ok: true, ignored: true })
   }
 
   // Defence in depth: the signed body's company must match the URL the hook was

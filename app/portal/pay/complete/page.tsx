@@ -5,33 +5,41 @@ import styles from '@/components/portal/portal.module.css'
 import { footerLine, PortalShell } from '@/components/portal/PortalShell'
 import { ServiceCard } from '@/components/portal/ServiceCard'
 import { getBillSettings } from '@/lib/data/bill-settings'
-import { getGatewayPaymentStatus } from '@/lib/data/payment-gateways'
+import { getEnabledGateway, getGatewayPaymentStatus } from '@/lib/data/payment-gateways'
 import { firstNameOf, getPortalAccount } from '@/lib/data/portal'
 import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
 import { getPortalSession } from '@/lib/portal/session'
 
 /**
- * Where Fygaro's Return URL brings a customer back to after paying.
+ * Where a gateway's return URL brings a customer back to after paying. One page
+ * for every provider, and for both the signed-in and the reconnection flows.
  *
- * Fygaro redirects here on a SUCCESSFUL payment, appending `reference` (its
- * payment id) and `customReference` (the companyId:customerId we signed into
- * the checkout). That redirect almost always arrives BEFORE the server-to-server
- * webhook has finished recording the payment — so a not-yet-recorded payment is
- * shown as "confirming", never as failed. The page re-checks until the webhook
- * lands, then shows the up-to-date account.
+ * THE REDIRECT ALWAYS BEATS THE WEBHOOK. Whichever provider is in use, the
+ * customer's browser comes back the instant they pay, usually before the
+ * server-to-server webhook has finished recording it — so a not-yet-recorded
+ * payment is shown as "confirming", never as failed. The page re-checks until
+ * the webhook lands, then shows the up-to-date account.
  *
- * Arriving with no `reference` means the customer came back WITHOUT completing
- * the payment (closed Fygaro, or cancelled) — shown as "not completed", with a
- * way back to try again.
+ * WHAT ARRIVES ON THE URL DEPENDS ON THE PROVIDER, which is why the no-reference
+ * case is not one case:
  *
- * The Return URL to paste into the Fygaro button is shown on the Online Payments
- * settings page. It is the same button for the account and reconnection flows,
- * so this one page serves both.
+ *   * Fygaro redirects here ONLY on success, appending `reference` (its payment
+ *     id) and `customReference` (the companyId:customerId we signed in). So no
+ *     reference genuinely means they came back without paying — cancelled, or
+ *     closed the page — and "not completed, nothing charged" is true.
+ *
+ *   * Dime is sent `redirectUrl` per payment and does not document appending
+ *     anything to it. So with Dime, no reference tells us NOTHING about whether
+ *     the money went through, and saying "nothing has been charged" could be a
+ *     lie to someone who just paid. It gets the confirming view instead, with
+ *     copy that asserts neither outcome, and the account itself is the answer.
+ *
+ * The provider is the company's enabled gateway, not a URL parameter: what
+ * happened is a fact about the company's setup, not something a visitor says.
  */
 export const dynamic = 'force-dynamic'
 
-const PROVIDER = 'fygaro'
 /** Re-checks (~4s apart) before we stop auto-refreshing and ask them to wait. */
 const MAX_TRIES = 5
 
@@ -49,7 +57,14 @@ export default async function PayCompletePage(props: {
   const company = await getPortalCompany()
   if (!company) notFound()
 
-  const [brand, sp] = await Promise.all([getPortalBrand(company.id, company.name), props.searchParams])
+  const [brand, sp, liveGateway] = await Promise.all([
+    getPortalBrand(company.id, company.name),
+    props.searchParams,
+    getEnabledGateway(company.id).catch(() => null),
+  ])
+  // Only Fygaro guarantees a reference on the way back, so only Fygaro can tell
+  // an abandoned payment from a completed one by its absence.
+  const refIsProof = (liveGateway?.provider ?? 'fygaro') === 'fygaro'
   const reference = str(sp.reference).trim()
   // Fygaro's docs spell it camelCase on the return URL; accept snake_case too.
   const customRef = (str(sp.customReference) || str(sp.custom_reference)).trim()
@@ -63,8 +78,10 @@ export default async function PayCompletePage(props: {
     </a>
   )
 
-  // No reference → they came back without paying (cancelled or closed Fygaro).
-  if (!reference) {
+  // No reference, on a provider where that IS proof → they came back without
+  // paying (cancelled or closed the page). Where it is not proof, fall through
+  // to the confirming view rather than telling a payer nothing was charged.
+  if (!reference && refIsProof) {
     return (
       <PortalShell brand={brand} footer={footer}>
         <section className={styles.card}>
@@ -86,10 +103,18 @@ export default async function PayCompletePage(props: {
     Boolean(session) && Boolean(parsed) &&
     parsed!.companyId === company.id && parsed!.customerId === session!.customerId
 
-  const status = await getGatewayPaymentStatus(company.id, PROVIDER, reference)
+  // With no reference there is nothing to look up — the account, re-read on each
+  // refresh below, is what tells the customer their payment landed.
+  const status = reference
+    ? await getGatewayPaymentStatus(company.id, liveGateway?.provider ?? 'fygaro', reference)
+    : null
   const settled = status === 'recorded'
+  // Shown to the signed-in owner once the payment is recorded — and also when
+  // there is no reference to wait on at all, where their own expiry and balance
+  // are the only honest answer to "did it go through?".
+  const showAccount = Boolean(session) && ((settled && mine) || !reference)
   const [account, bill] = await Promise.all([
-    settled && mine && session ? getPortalAccount(company.id, session.customerId) : Promise.resolve(null),
+    showAccount && session ? getPortalAccount(company.id, session.customerId) : Promise.resolve(null),
     getBillSettings(company.id),
   ])
 
@@ -137,8 +162,10 @@ export default async function PayCompletePage(props: {
   }
 
   // --- Not yet recorded: the webhook is still in flight (or needs staff). ---
-  // Fygaro only redirects here on success, so the money HAS gone through; we are
-  // only waiting to reconcile it. Never call this a failure.
+  // With a reference in hand the money HAS gone through — Fygaro only redirects
+  // on success — and we are merely waiting to reconcile it, so this is never
+  // called a failure. Without one, we do not know either way and say so plainly
+  // rather than guessing at the customer's expense.
   const keepTrying = status !== 'failed' && tries < MAX_TRIES
   const refreshTo =
     '/pay/complete?reference=' + encodeURIComponent(reference) +
@@ -146,24 +173,46 @@ export default async function PayCompletePage(props: {
     '&t=' + (tries + 1)
 
   return (
-    <PortalShell brand={brand} signedIn={Boolean(session)} footer={footer}>
+    <PortalShell
+      brand={brand}
+      signedIn={Boolean(session)}
+      firstName={account ? firstNameOf(account.name) : null}
+      footer={footer}
+    >
       <section className={styles.card}>
-        <h1 className={styles.title}>Payment received</h1>
+        <h1 className={styles.title}>{reference ? 'Payment received' : 'Checking your account'}</h1>
         {keepTrying ? (
           <>
             <p className={styles.lede}>
-              We’re confirming it with your account now. This usually takes a few seconds…
+              {reference
+                ? 'We’re confirming it with your account now. This usually takes a few seconds…'
+                : 'If your payment went through, it will show on your account in a moment.'}
             </p>
             <p className={styles.credit}>This page updates on its own.</p>
             <AutoRefresh to={refreshTo} seconds={4} />
           </>
         ) : (
           <p className={styles.lede}>
-            Your payment went through and is safe. It’s taking a little longer than usual to show on
-            your account. Check back shortly — if it hasn’t updated, contact {company.name}.
+            {reference
+              ? 'Your payment went through and is safe. It’s taking a little longer than usual to show on your account. Check back shortly — if it hasn’t updated, contact ' + company.name + '.'
+              : 'Your account is shown below as it stands now. If you paid and it has not updated, contact ' + company.name + ' — nothing is lost.'}
           </p>
         )}
       </section>
+
+      {account ? (
+        <ServiceCard
+          expiry={account.expiry}
+          days={account.daysUntilExpiry}
+          paidOn={account.paidOn}
+          today={account.today}
+          balance={account.balance}
+          credit={account.credit}
+          symbol={bill.currencySymbol}
+          companyName={company.name}
+          canPay
+        />
+      ) : null}
 
       {backHome(false)}
     </PortalShell>

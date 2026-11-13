@@ -13,10 +13,27 @@ import { tenantClient } from '@/lib/supabase/tenant'
 /** PostgREST codes for "table does not exist". */
 const MISSING_TABLE = new Set(['PGRST205', '42P01'])
 
+/** PostgREST codes for "column does not exist" — migration 0048 not applied. */
+const MISSING_COLUMN = new Set(['PGRST204', '42703'])
+
+/**
+ * The credential columns, and the same list without 0048's.
+ *
+ * TWO SELECTS, NOT A CAPABILITY PROBE. webhook_secret is one nullable column
+ * that only Dime reads, so it does not earn a slot in lib/schema.ts's probe
+ * batch; asking for it and falling back once if it is not there costs a round
+ * trip only on a system where 0048 has yet to be applied. Fygaro never reads
+ * it, so that system keeps working exactly as before — Dime is simply not
+ * enableable until the column exists.
+ */
+const COLS = 'provider, public_key, secret_key, webhook_secret, checkout_url, enabled'
+const COLS_PRE_0048 = 'provider, public_key, secret_key, checkout_url, enabled'
+
 function toCredentials(row: {
   provider: string
   public_key: string | null
   secret_key: string | null
+  webhook_secret?: string | null
   checkout_url: string | null
   enabled: boolean | null
 }): GatewayCredentials {
@@ -24,6 +41,7 @@ function toCredentials(row: {
     provider: row.provider,
     publicKey: row.public_key,
     secretKey: row.secret_key,
+    webhookSecret: row.webhook_secret ?? null,
     checkoutUrl: row.checkout_url,
     enabled: row.enabled ?? false,
   }
@@ -38,19 +56,25 @@ export async function getGatewayCredentials(
   provider: string
 ): Promise<GatewayCredentials | null> {
   const db = tenantClient()
-  const { data, error } = await db
-    .from('payment_gateways')
-    .select('provider, public_key, secret_key, checkout_url, enabled')
-    .eq('company_id', companyId)
-    .eq('provider', provider)
-    .maybeSingle()
+  const read = (cols: string) =>
+    db
+      .from('payment_gateways')
+      .select(cols)
+      .eq('company_id', companyId)
+      .eq('provider', provider)
+      .maybeSingle()
+
+  let { data, error } = await read(COLS)
+  if (error && MISSING_COLUMN.has(error.code ?? '')) {
+    ;({ data, error } = await read(COLS_PRE_0048))
+  }
 
   if (error) {
     if (MISSING_TABLE.has(error.code ?? '')) return null
     throw new Error('Could not read payment gateway credentials: ' + error.message)
   }
   if (!data) return null
-  return toCredentials(data as Parameters<typeof toCredentials>[0])
+  return toCredentials(data as unknown as Parameters<typeof toCredentials>[0])
 }
 
 /** What the settings page may show about a saved gateway. The secret is NEVER
@@ -61,6 +85,8 @@ export type GatewaySettingsView = {
   enabled: boolean
   /** True when a secret is stored. The value itself is never read out. */
   secretSet: boolean
+  /** True when a separate webhook signing secret is stored (Dime). */
+  webhookSecretSet: boolean
 }
 
 /** A gateway's non-secret settings for the UI, or null when none is saved. */
@@ -75,6 +101,7 @@ export async function getGatewaySettings(
     checkoutUrl: creds.checkoutUrl,
     enabled: creds.enabled,
     secretSet: Boolean(creds.secretKey && creds.secretKey.trim()),
+    webhookSecretSet: Boolean(creds.webhookSecret && creds.webhookSecret.trim()),
   }
 }
 
@@ -99,31 +126,59 @@ export async function saveGatewayCredentials(input: {
   checkoutUrl: string | null
   /** undefined = keep the stored secret; a value = replace it. */
   secretKey?: string
+  /** Same write-only rule as secretKey. Only providers with a second secret send it. */
+  webhookSecret?: string
   enabled: boolean
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const db = tenantClient()
 
-  const { data: existing, error: readError } = await db
+  const existingCreds = await getGatewayCredentials(input.companyId, input.provider).catch(
+    () => null
+  )
+
+  // Does this system have 0048? One cheap probe, so a save on a pre-0048
+  // system still works for Fygaro instead of failing on an unknown column.
+  const { error: probeError } = await db
     .from('payment_gateways')
-    .select('secret_key')
-    .eq('company_id', input.companyId)
-    .eq('provider', input.provider)
-    .maybeSingle()
-  if (readError && !MISSING_TABLE.has(readError.code ?? '')) {
-    return { ok: false, error: 'Could not read the gateway: ' + readError.message }
-  }
-  if (readError) {
+    .select('webhook_secret')
+    .limit(1)
+  const hasWebhookColumn = !(probeError && MISSING_COLUMN.has(probeError.code ?? ''))
+  if (probeError && MISSING_TABLE.has(probeError.code ?? '')) {
     return { ok: false, error: 'Online payments are not set up on this system yet. Apply migration 0034.' }
   }
 
-  const priorSecret = (existing as { secret_key: string | null } | null)?.secret_key ?? null
+  const priorSecret = existingCreds?.secretKey ?? null
   const nextSecret = input.secretKey && input.secretKey.trim() ? input.secretKey.trim() : priorSecret
 
+  const priorWebhook = existingCreds?.webhookSecret ?? null
+  const nextWebhook =
+    input.webhookSecret && input.webhookSecret.trim() ? input.webhookSecret.trim() : priorWebhook
+
+  const gateway = gatewayFor(input.provider)
+  const label = gateway?.label ?? input.provider
+
   if (input.enabled && !(nextSecret && nextSecret.trim())) {
-    return { ok: false, error: 'Add the Fygaro secret before turning online payments on.' }
+    return { ok: false, error: 'Add the ' + label + ' secret before turning online payments on.' }
+  }
+  // Dime signs its webhooks with a secret of its own. Enabling without it would
+  // take payments we could never verify the notification for — the money would
+  // arrive and never be recorded.
+  if (input.enabled && gateway?.provider === 'dime') {
+    if (!hasWebhookColumn) {
+      return {
+        ok: false,
+        error: 'Dime needs migration 0048 applied before it can be turned on.',
+      }
+    }
+    if (!(nextWebhook && nextWebhook.trim())) {
+      return {
+        ok: false,
+        error: 'Add the Dime webhook signing secret before turning online payments on.',
+      }
+    }
   }
 
-  const row = {
+  const row: Record<string, unknown> = {
     company_id: input.companyId,
     provider: input.provider,
     public_key: input.publicKey,
@@ -132,8 +187,9 @@ export async function saveGatewayCredentials(input: {
     enabled: input.enabled,
     updated_at: new Date().toISOString(),
   }
+  if (hasWebhookColumn) row.webhook_secret = nextWebhook
 
-  const { error } = existing
+  const { error } = existingCreds
     ? await db
         .from('payment_gateways')
         .update(row)
@@ -141,6 +197,30 @@ export async function saveGatewayCredentials(input: {
         .eq('provider', input.provider)
     : await db.from('payment_gateways').insert(row)
   if (error) return { ok: false, error: 'Could not save the gateway: ' + error.message }
+
+  // ONE ENABLED GATEWAY PER COMPANY. getEnabledGateway takes the first enabled
+  // row it finds, so two enabled rows would make which provider a customer pays
+  // through arbitrary. Turning one on turns the others off, which is what
+  // "switch from Fygaro to Dime" means in practice. Its credentials are kept,
+  // so switching back is one toggle.
+  if (input.enabled) {
+    const { error: exclusiveError } = await db
+      .from('payment_gateways')
+      .update({ enabled: false, updated_at: new Date().toISOString() })
+      .eq('company_id', input.companyId)
+      .neq('provider', input.provider)
+      .eq('enabled', true)
+    if (exclusiveError) {
+      return {
+        ok: false,
+        error:
+          input.provider +
+          ' was saved, but the other gateway could not be switched off: ' +
+          exclusiveError.message +
+          '. Turn it off by hand before taking payments.',
+      }
+    }
+  }
 
   return { ok: true }
 }
@@ -184,17 +264,67 @@ export async function getEnabledGateway(
   const db = tenantClient()
   const { data, error } = await db
     .from('payment_gateways')
-    .select('provider, public_key, secret_key, checkout_url, enabled')
+    .select(COLS)
     .eq('company_id', companyId)
     .eq('enabled', true)
     .limit(1)
 
-  if (error) {
-    if (MISSING_TABLE.has(error.code ?? '')) return null
-    throw new Error('Could not read payment gateways: ' + error.message)
+  let rowsData: unknown = data
+  let readError = error
+  if (readError && MISSING_COLUMN.has(readError.code ?? '')) {
+    const retry = await db
+      .from('payment_gateways')
+      .select(COLS_PRE_0048)
+      .eq('company_id', companyId)
+      .eq('enabled', true)
+      .limit(1)
+    rowsData = retry.data
+    readError = retry.error
   }
-  const rows = (data ?? []) as Parameters<typeof toCredentials>[0][]
+
+  if (readError) {
+    if (MISSING_TABLE.has(readError.code ?? '')) return null
+    throw new Error('Could not read payment gateways: ' + readError.message)
+  }
+  const rows = (rowsData ?? []) as unknown as Parameters<typeof toCredentials>[0][]
   return rows.length ? toCredentials(rows[0]) : null
+}
+
+/**
+ * The email address to put on a payer's order, for a provider that insists on
+ * one (Dime). The customer's own address first; failing that the company's, so
+ * the receipt at least reaches the operator; failing that nothing, and the
+ * gateway refuses the payment rather than inventing an address.
+ *
+ * NOT the opt-out-aware path in lib/messaging — that decides whether we may
+ * send a customer email. This is a field on an order, and a customer who opted
+ * out of our mail has not opted out of their own payment receipt.
+ */
+async function payerFor(
+  companyId: number,
+  customerId: number
+): Promise<{ email: string | null; name: string | null }> {
+  const db = tenantClient()
+
+  const { data: cust } = await db
+    .from('customers')
+    .select('first_name, last_name, email')
+    .eq('company_id', companyId)
+    .eq('id', customerId)
+    .maybeSingle()
+  const row = cust as { first_name: string | null; last_name: string | null; email: string | null } | null
+
+  const name = [row?.first_name, row?.last_name].filter(Boolean).join(' ').trim() || null
+  const own = (row?.email ?? '').trim()
+  if (own) return { email: own, name }
+
+  const { data: companyRow } = await db
+    .from('companies')
+    .select('email')
+    .eq('id', companyId)
+    .maybeSingle()
+  const fallback = ((companyRow as { email: string | null } | null)?.email ?? '').trim()
+  return { email: fallback || null, name }
 }
 
 /**
@@ -206,6 +336,12 @@ export async function createGatewayCheckout(input: {
   customerId: number
   amount: number
   currency?: string
+  /**
+   * Where the payer lands after paying, for providers that take it per payment
+   * (Dime). Fygaro's return URL is set on the button in its own dashboard and
+   * this is ignored.
+   */
+  returnUrl?: string | null
 }): Promise<{ ok: true; url: string; provider: string } | { ok: false; error: string }> {
   const creds = await getEnabledGateway(input.companyId)
   if (!creds) return { ok: false, error: 'No online payment method is set up.' }
@@ -214,12 +350,21 @@ export async function createGatewayCheckout(input: {
   if (!gateway) return { ok: false, error: 'Unknown payment gateway: ' + creds.provider }
 
   try {
-    const url = gateway.createCheckoutUrl(
+    // Only fetched for the providers that need it: Dime refuses an order with
+    // no payer email, Fygaro ignores both fields.
+    const payer = gateway.provider === 'fygaro'
+      ? { email: null, name: null }
+      : await payerFor(input.companyId, input.customerId)
+
+    const url = await gateway.createCheckoutUrl(
       {
         companyId: input.companyId,
         customerId: input.customerId,
         amount: input.amount,
         currency: input.currency ?? 'JMD',
+        email: payer.email,
+        name: payer.name,
+        returnUrl: input.returnUrl ?? null,
       },
       creds
     )

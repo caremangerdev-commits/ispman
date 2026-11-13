@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 
 import { createGatewayCheckout } from '@/lib/data/payment-gateways'
@@ -15,6 +16,7 @@ import {
 } from '@/lib/data/portal-tickets'
 import { addTicketMessage } from '@/lib/data/tickets'
 import { classifyPhone } from '@/lib/phone'
+import { externalHost } from '@/lib/portal/config'
 import { getPortalCompany } from '@/lib/portal/context'
 import { NEEDS_SMS } from '@/lib/portal/messages'
 import { requestOtp, verifyOtp } from '@/lib/portal/otp'
@@ -188,6 +190,7 @@ export async function startCheckout(formData: FormData): Promise<void> {
     companyId: company.id,
     customerId: session.customerId,
     amount,
+    returnUrl: await payReturnUrl(),
   })
   if (!checkout.ok) redirect('/?e=' + encodeURIComponent(checkout.error))
 
@@ -200,6 +203,21 @@ export async function logout(): Promise<void> {
 }
 
 const fd = (formData: FormData, key: string) => String(formData.get(key) ?? '').trim()
+
+/**
+ * The absolute URL the gateway should return the payer to, for providers that
+ * take one per payment (Dime). Built from the host the customer actually asked
+ * for, so a tenant subdomain returns to its own portal rather than the apex.
+ *
+ * Fygaro ignores it — its return URL is a field on the payment button in
+ * Fygaro's own dashboard, which is why /pay/complete exists as a fixed path.
+ */
+async function payReturnUrl(): Promise<string | null> {
+  const host = externalHost(await headers())
+  if (!host) return null
+  const scheme = host.startsWith('localhost') || host.startsWith('127.0.0.1') ? 'http' : 'https'
+  return scheme + '://' + host + '/pay/complete'
+}
 
 // --- Change your phone number (verify the NEW number by SMS first) ----------
 
@@ -368,7 +386,12 @@ export async function reconnectCheckout(formData: FormData): Promise<void> {
   const amount = Math.round(Number(formData.get('amount')) * 100) / 100
   if (!Number.isFinite(amount) || amount <= 0) redirect(back('Enter an amount greater than zero.'))
 
-  const checkout = await createGatewayCheckout({ companyId: company.id, customerId, amount })
+  const checkout = await createGatewayCheckout({
+    companyId: company.id,
+    customerId,
+    amount,
+    returnUrl: await payReturnUrl(),
+  })
   if (!checkout.ok) redirect(back(checkout.error))
   redirect(checkout.url)
 }

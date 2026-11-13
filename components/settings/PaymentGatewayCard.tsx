@@ -1,34 +1,47 @@
 'use client'
 
-import { useActionState, useState } from 'react'
+import { useActionState, useId, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
-import { saveFygaroGateway, type GatewayFormResult } from '@/app/actions/payment-gateways'
+import { saveGateway, type GatewayFormResult } from '@/app/actions/payment-gateways'
 import { settingsInput } from '@/components/settings/Modal'
 
 /**
- * Fygaro gateway settings on the Online Payments page.
+ * One gateway's settings on the Online Payments page. The page renders one card
+ * per provider; a company pays through one at a time, so turning a card on
+ * turns the others off (enforced in lib/data/payment-gateways.ts).
  *
- * The SECRET IS WRITE-ONLY: the card is told only whether one is saved, never
- * its value. The field is left blank to keep the stored secret and filled only
- * to replace it. The webhook URL is shown so an operator can paste it into
- * Fygaro's dashboard — it is not a secret, it only selects which company's key
- * verifies the delivery.
+ * SECRETS ARE WRITE-ONLY: the card is told only whether one is saved, never its
+ * value. A field left blank keeps what is stored and is filled only to replace
+ * it. The webhook URL is shown so an operator can paste it into the provider's
+ * dashboard — it is not a secret, it only selects which company's key verifies
+ * the delivery.
+ *
+ * THE COPY DIFFERS BY PROVIDER because the two work differently: Fygaro has one
+ * standing payment button and one secret, Dime mints a checkout per payment and
+ * has a separate webhook signing secret. Describing them in one set of generic
+ * labels would leave an operator guessing which key goes where.
  */
 
+export type GatewaySettings = {
+  publicKey: string | null
+  checkoutUrl: string | null
+  enabled: boolean
+  secretSet: boolean
+  webhookSecretSet: boolean
+}
+
 export type PaymentGatewayCardProps = {
+  provider: 'fygaro' | 'dime'
   available: boolean
-  settings: {
-    publicKey: string | null
-    checkoutUrl: string | null
-    enabled: boolean
-    secretSet: boolean
-  } | null
-  /** The absolute webhook URL to paste into Fygaro, e.g. https://host/api/payments/fygaro/12/webhook. */
+  settings: GatewaySettings | null
+  /** The absolute webhook URL to paste into the provider, e.g. https://host/api/payments/dime/12/webhook. */
   webhookUrl: string
-  /** The Return URL to set on the Fygaro button, or null when the portal domain is unset. */
+  /** Where the payer is returned after paying, or null when the portal domain is unset. */
   returnUrl: string | null
 }
+
+const DIME_SANDBOX_API = 'https://sandbox.api.dimepay.app/dapi/v2'
 
 function Notice({ state }: { state: GatewayFormResult | null }) {
   if (!state) return null
@@ -86,18 +99,35 @@ function CopyField({ value }: { value: string }) {
   )
 }
 
-export function PaymentGatewayCard({ available, settings, webhookUrl, returnUrl }: PaymentGatewayCardProps) {
-  const [state, action] = useActionState<GatewayFormResult | null, FormData>(saveFygaroGateway, null)
+function Hint({ children }: { children: React.ReactNode }) {
+  return <p className="text-[11px] text-gray-600">{children}</p>
+}
+
+export function PaymentGatewayCard({
+  provider,
+  available,
+  settings,
+  webhookUrl,
+  returnUrl,
+}: PaymentGatewayCardProps) {
+  const [state, action] = useActionState<GatewayFormResult | null, FormData>(saveGateway, null)
+  const uid = useId()
+  const id = (name: string) => provider + '-' + name + '-' + uid
+
   const secretSet = Boolean(settings?.secretSet)
+  const webhookSecretSet = Boolean(settings?.webhookSecretSet)
+  const isDime = provider === 'dime'
+  const label = isDime ? 'Dime Pay' : 'Fygaro'
 
   return (
     <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-white">Fygaro</h2>
+          <h2 className="text-sm font-semibold text-white">{label}</h2>
           <p className="mt-1 text-xs text-gray-500">
-            Card payments from the customer portal. Paste the keys from your Fygaro payment-button
-            and webhook settings, then turn it on.
+            {isDime
+              ? 'Card payments from the customer portal. Paste your Dime client key, API secret and webhook signing secret, then turn it on.'
+              : 'Card payments from the customer portal. Paste the keys from your Fygaro payment-button and webhook settings, then turn it on.'}
           </p>
         </div>
         <span
@@ -118,57 +148,123 @@ export function PaymentGatewayCard({ available, settings, webhookUrl, returnUrl 
       ) : null}
 
       <form action={action} className="mt-4 space-y-4">
+        <input type="hidden" name="provider" value={provider} />
+
         <div className="space-y-1.5">
-          <label htmlFor="public_key" className="block text-xs font-medium text-gray-400">
-            API public key
+          <label htmlFor={id('public_key')} className="block text-xs font-medium text-gray-400">
+            {isDime ? 'Client key' : 'API public key'}
           </label>
           <input
-            id="public_key"
+            id={id('public_key')}
             name="public_key"
             defaultValue={settings?.publicKey ?? ''}
-            placeholder="pk_live_…"
+            placeholder={isDime ? 'Your Dime client key' : 'pk_live_…'}
             disabled={!available}
             className={settingsInput + ' font-mono'}
           />
-          <p className="text-[11px] text-gray-600">Fygaro&apos;s API public key — the JWT key id. Not secret.</p>
+          <Hint>
+            {isDime
+              ? 'Sent with every request as the X-Dime-Client header. Not secret.'
+              : 'Fygaro’s API public key — the JWT key id. Not secret.'}
+          </Hint>
         </div>
 
         <div className="space-y-1.5">
-          <label htmlFor="checkout_url" className="block text-xs font-medium text-gray-400">
-            Payment button URL
+          <label htmlFor={id('secret_key')} className="block text-xs font-medium text-gray-400">
+            {isDime ? 'API secret' : 'Secret'}
           </label>
           <input
-            id="checkout_url"
-            name="checkout_url"
-            type="url"
-            defaultValue={settings?.checkoutUrl ?? ''}
-            placeholder="https://www.fygaro.com/…/pay/…"
-            disabled={!available}
-            className={settingsInput + ' font-mono'}
-          />
-          <p className="text-[11px] text-gray-600">
-            Your Variable-Amount payment button&apos;s link. A signed amount is appended per payment.
-          </p>
-        </div>
-
-        <div className="space-y-1.5">
-          <label htmlFor="secret_key" className="block text-xs font-medium text-gray-400">
-            Secret
-          </label>
-          <input
-            id="secret_key"
+            id={id('secret_key')}
             name="secret_key"
             type="password"
             autoComplete="off"
-            placeholder={secretSet ? '•••••••• (saved — leave blank to keep)' : 'Paste the Fygaro secret'}
+            placeholder={
+              secretSet
+                ? '•••••••• (saved — leave blank to keep)'
+                : isDime
+                  ? 'Paste the Dime secret key'
+                  : 'Paste the Fygaro secret'
+            }
             disabled={!available}
             className={settingsInput + ' font-mono'}
           />
-          <p className="text-[11px] text-gray-600">
-            Signs the checkout link and verifies the webhook. Stored once and never shown again;
+          <Hint>
+            {isDime
+              ? 'Authorises the payment request to Dime. Never leaves this server.'
+              : 'Signs the checkout link and verifies the webhook.'}{' '}
+            Stored once and never shown again;
             {secretSet ? ' leave blank to keep the saved one.' : ' enter it to turn payments on.'}
-          </p>
+          </Hint>
         </div>
+
+        {isDime ? (
+          <div className="space-y-1.5">
+            <label
+              htmlFor={id('webhook_secret')}
+              className="block text-xs font-medium text-gray-400"
+            >
+              Webhook signing secret
+            </label>
+            <input
+              id={id('webhook_secret')}
+              name="webhook_secret"
+              type="password"
+              autoComplete="off"
+              placeholder={
+                webhookSecretSet
+                  ? '•••••••• (saved — leave blank to keep)'
+                  : 'Paste the signing secret'
+              }
+              disabled={!available}
+              className={settingsInput + ' font-mono'}
+            />
+            <Hint>
+              A different secret from the one above. Dime shows it once, when you add the webhook
+              below, and again if you rotate it. Without it a payment could arrive and never be
+              recorded, so Dime cannot be turned on until it is saved.
+            </Hint>
+          </div>
+        ) : null}
+
+        {isDime ? (
+          <div className="space-y-1.5">
+            <label htmlFor={id('checkout_url')} className="block text-xs font-medium text-gray-400">
+              Environment
+            </label>
+            <select
+              id={id('checkout_url')}
+              name="checkout_url"
+              defaultValue={settings?.checkoutUrl === DIME_SANDBOX_API ? DIME_SANDBOX_API : ''}
+              disabled={!available}
+              className={settingsInput}
+            >
+              <option value="">Live — take real payments</option>
+              <option value={DIME_SANDBOX_API}>Sandbox — test with Dime’s test cards</option>
+            </select>
+            <Hint>
+              Use Sandbox with your sandbox keys to prove the flow end to end before going live.
+              A sandbox payment extends real service, so test on a test account.
+            </Hint>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            <label htmlFor={id('checkout_url')} className="block text-xs font-medium text-gray-400">
+              Payment button URL
+            </label>
+            <input
+              id={id('checkout_url')}
+              name="checkout_url"
+              type="url"
+              defaultValue={settings?.checkoutUrl ?? ''}
+              placeholder="https://www.fygaro.com/…/pay/…"
+              disabled={!available}
+              className={settingsInput + ' font-mono'}
+            />
+            <Hint>
+              Your Variable-Amount payment button’s link. A signed amount is appended per payment.
+            </Hint>
+          </div>
+        )}
 
         <label className="flex items-center gap-2 text-sm text-gray-300">
           <input
@@ -180,6 +276,10 @@ export function PaymentGatewayCard({ available, settings, webhookUrl, returnUrl 
           />
           Accept online payments from the portal
         </label>
+        <Hint>
+          Only one gateway takes payments at a time. Turning this on turns the other off and keeps
+          its keys, so switching back is one tick.
+        </Hint>
 
         <Notice state={state} />
         <Save disabled={!available} />
@@ -188,10 +288,11 @@ export function PaymentGatewayCard({ available, settings, webhookUrl, returnUrl 
       <div className="mt-6 space-y-1.5 border-t border-gray-800 pt-4">
         <p className="text-xs font-medium text-gray-400">Webhook URL</p>
         <CopyField value={webhookUrl} />
-        <p className="text-[11px] text-gray-600">
-          Paste this into Fygaro&apos;s webhook settings. Fygaro POSTs here on every successful
-          payment; the signature is checked against your secret above.
-        </p>
+        <Hint>
+          {isDime
+            ? 'Add this as a webhook endpoint in Dime and subscribe it to the payment events. Dime shows the signing secret once when you create it — paste it above. Only a captured payment is recorded; the other events are acknowledged and ignored.'
+            : 'Paste this into Fygaro’s webhook settings. Fygaro POSTs here on every successful payment; the signature is checked against your secret above.'}
+        </Hint>
       </div>
 
       <div className="mt-4 space-y-1.5">
@@ -199,17 +300,17 @@ export function PaymentGatewayCard({ available, settings, webhookUrl, returnUrl 
         {returnUrl ? (
           <>
             <CopyField value={returnUrl} />
-            <p className="text-[11px] text-gray-600">
-              Set this as the Return URL on your Fygaro payment button. After paying, the customer
-              is brought back here to a confirmation on their account — Fygaro adds the reference to
-              it automatically.
-            </p>
+            <Hint>
+              {isDime
+                ? 'Sent to Dime with every payment — nothing to configure. Shown here so you know where a payer lands.'
+                : 'Set this as the Return URL on your Fygaro payment button. After paying, the customer is brought back here to a confirmation on their account — Fygaro adds the reference to it automatically.'}
+            </Hint>
           </>
         ) : (
-          <p className="text-[11px] text-gray-600">
+          <Hint>
             Available once the customer portal domain is configured on this server. Until then,
-            customers stay on Fygaro&apos;s own confirmation after paying.
-          </p>
+            customers stay on {label}’s own confirmation after paying.
+          </Hint>
         )}
       </div>
     </section>

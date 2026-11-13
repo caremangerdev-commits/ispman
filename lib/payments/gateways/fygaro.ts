@@ -73,7 +73,9 @@ export const fygaro: PaymentGateway = {
   provider: 'fygaro',
   label: 'Fygaro',
 
-  createCheckoutUrl(req: CheckoutRequest, creds: GatewayCredentials): string {
+  // Async only to satisfy the interface — Fygaro's link is minted locally, with
+  // no I/O at all. Dime is the provider that made the interface a promise.
+  async createCheckoutUrl(req: CheckoutRequest, creds: GatewayCredentials): Promise<string> {
     if (!creds.publicKey || !creds.secretKey || !creds.checkoutUrl) {
       throw new Error('Fygaro is not fully configured for this company.')
     }

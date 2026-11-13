@@ -6,17 +6,45 @@
 // arrives as GatewayCredentials, read per company from payment_gateways
 // (lib/data/payment-gateways.ts), the same shape as the SMS device creds.
 //
-// Fygaro is the first implementation; a second provider is a new file that
-// implements this interface plus a row with a different `provider`. The webhook
-// route and the checkout orchestrator know only this interface.
+// Fygaro was the first implementation; Dime is the second. A third provider is
+// a new file plus one line in index.ts. The webhook route and the checkout
+// orchestrator know only this interface.
+//
+// TWO THINGS THE SECOND PROVIDER CHANGED, both visible here:
+//
+//   * createCheckoutUrl IS ASYNC. Fygaro mints its URL locally — sign a JWT,
+//     append it to a standing button URL — so it needed no I/O. Dime has to
+//     create the order server-side first (POST /payments/hosted-page) and build
+//     the URL from the token it returns. Returning a promise is the only shape
+//     both fit.
+//
+//   * parseWebhook MAY RETURN NULL. Fygaro POSTs only on a successful payment,
+//     so every delivery was a payment to record. Dime POSTs the whole lifecycle
+//     — authorised, succeeded, failed, voided, abandoned, settled — on the same
+//     endpoint. null means "this verified, and there is nothing to record":
+//     the route answers 2xx and writes nothing. Throwing would answer non-2xx
+//     and earn a retry of an event we deliberately ignored.
 
 export type GatewayCredentials = {
   provider: string
-  /** Non-secret key id (Fygaro: the API public key / JWT `kid`). */
+  /** Non-secret key id (Fygaro: the JWT `kid`. Dime: the X-Dime-Client key). */
   publicKey: string | null
-  /** The secret that signs the checkout link and verifies the webhook. */
+  /**
+   * Fygaro: the one HMAC secret, signing the checkout link AND verifying the
+   * webhook. Dime: the API secret only (Authorization: Bearer) — its webhook is
+   * verified with webhookSecret.
+   */
   secretKey: string | null
-  /** The hosted checkout URL a customer is sent to. */
+  /**
+   * A separate webhook signing secret, for providers that have one. Dime: the
+   * endpoint's signing_secret. Null for Fygaro, which has no second secret, and
+   * null before migration 0048 is applied.
+   */
+  webhookSecret: string | null
+  /**
+   * The standing hosted checkout URL, for providers that have a per-company
+   * one. Fygaro: the payment button. Dime: unused — minted per payment.
+   */
   checkoutUrl: string | null
   enabled: boolean
 }
@@ -28,6 +56,21 @@ export type CheckoutRequest = {
   amount: number
   /** ISO 4217, e.g. 'JMD'. */
   currency: string
+  /**
+   * The payer's email, where the provider demands one. Dime rejects an order
+   * without it; Fygaro never asks. The orchestrator supplies the customer's own
+   * address, or a per-company stand-in when the record has none
+   * (lib/data/payment-gateways.ts#payerEmailFor).
+   */
+  email?: string | null
+  /** The payer's name, for the provider's receipt. Optional everywhere. */
+  name?: string | null
+  /**
+   * Where to send the payer after paying, for providers that take it per
+   * payment. Dime: `redirectUrl`. Fygaro ignores it — its return URL is a field
+   * on the payment button in Fygaro's own dashboard, not something we can set.
+   */
+  returnUrl?: string | null
 }
 
 /** A verified payment, normalised out of a provider's webhook. */
@@ -55,15 +98,21 @@ export interface PaymentGateway {
   readonly label: string
   /**
    * Builds the hosted-checkout URL a customer is sent to for one payment.
-   * Throws when the credentials are incomplete.
+   * Throws when the credentials are incomplete, or when the provider's own
+   * order call fails.
    */
-  createCheckoutUrl(req: CheckoutRequest, creds: GatewayCredentials): string
+  createCheckoutUrl(req: CheckoutRequest, creds: GatewayCredentials): Promise<string>
   /**
    * Verifies a webhook's signature and parses it into a normalised payment.
+   *
+   * Returns null when the delivery is genuine but carries nothing to record —
+   * a lifecycle event for an unrelated stage, or an event type we do not act
+   * on. The caller acknowledges those with a 2xx and writes nothing.
+   *
    * Throws WebhookError on a bad signature or an unparseable body; the caller
    * turns that into a non-2xx and records nothing.
    */
-  parseWebhook(req: WebhookRequest): GatewayPayment
+  parseWebhook(req: WebhookRequest): GatewayPayment | null | Promise<GatewayPayment | null>
 }
 
 /** A rejection carrying the HTTP status the webhook route should answer with. */
