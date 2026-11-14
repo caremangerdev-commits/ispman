@@ -38,7 +38,16 @@ export default async function OnlinePaymentsPage() {
   // X-Forwarded-Host.
   const h = await headers()
   const host = externalHost(h) ?? 'your-domain'
-  const proto = h.get('x-forwarded-proto') ?? 'https'
+  // HTTPS UNLESS WE ARE PLAINLY IN DEV.
+  //
+  // X-Forwarded-Proto arrives as "http" from this Apache even on the TLS
+  // vhost, so trusting it printed an http:// webhook URL for an operator to
+  // paste into their gateway. Dime refuses a non-HTTPS endpoint outright and
+  // Fygaro would be posting payment notifications in clear. The scheme a
+  // gateway must call us on is a property of the deployment, not of whatever
+  // header happened to survive the proxy, so only a local host gets http.
+  const local = /^(localhost|127\.0\.0\.1)(:|$)/.test(host)
+  const proto = local ? (h.get('x-forwarded-proto') ?? 'http') : 'https'
   const webhookUrlFor = (provider: string) =>
     proto + '://' + host + '/api/payments/' + provider + '/' + company.id + '/webhook'
 
