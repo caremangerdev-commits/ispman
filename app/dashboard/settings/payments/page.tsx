@@ -88,6 +88,20 @@ export default async function OnlinePaymentsPage() {
           : 'No gateway is on, so the portal shows no pay button.'}
       </p>
 
+      {/* The step-by-step guide, where someone staring at these boxes will
+          actually look for it rather than in an email they were sent once. */}
+      <a
+        href="https://ispman.online/help/dime-pay/"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-400 transition hover:text-blue-300"
+      >
+        Read the step-by-step guide to setting this up
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3 w-3">
+          <path d="M7 17 17 7M9 7h8v8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </a>
+
       {PROVIDERS.map((provider, i) => (
         <PaymentGatewayCard
           key={provider}
