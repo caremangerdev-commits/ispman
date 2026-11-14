@@ -191,6 +191,10 @@ export async function startCheckout(formData: FormData): Promise<void> {
     customerId: session.customerId,
     amount,
     returnUrl: await payReturnUrl(),
+    // The tick on the portal. No tick, no surcharge — whatever the company has
+    // configured. The amount worked out here is the server's own, not the
+    // figure the page posted, so the tick is consent, never an instruction.
+    feeAgreedAt: formData.get('fee_agreed') ? new Date() : null,
   })
   if (!checkout.ok) redirect('/?e=' + encodeURIComponent(checkout.error))
 
@@ -391,6 +395,7 @@ export async function reconnectCheckout(formData: FormData): Promise<void> {
     customerId,
     amount,
     returnUrl: await payReturnUrl(),
+    feeAgreedAt: formData.get('fee_agreed') ? new Date() : null,
   })
   if (!checkout.ok) redirect(back(checkout.error))
   redirect(checkout.url)

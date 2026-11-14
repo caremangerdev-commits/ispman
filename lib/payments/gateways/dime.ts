@@ -86,6 +86,12 @@ function hostsFor(creds: GatewayCredentials): { api: string; pay: string } {
 /** The metadata key our own reference travels under. */
 const REF_KEY = 'ispman_ref'
 
+/**
+ * The metadata key the agreed surcharge travels under, when the customer has
+ * agreed to carry a share of the card fee. Absent on almost every payment.
+ */
+const SURCHARGE_KEY = 'ispman_surcharge'
+
 /** `companyId:customerId` — what comes back to tell us who paid. */
 function encodeReference(companyId: number, customerId: number): string {
   return companyId + ':' + customerId
@@ -160,6 +166,13 @@ export const dime: PaymentGateway = {
       // order.metadata.details on the webhook, which is where parseWebhook
       // looks for it. Nothing else in the payload identifies our customer.
       metadata: { [REF_KEY]: encodeReference(req.companyId, req.customerId) },
+    }
+    // Only present when the customer agreed to carry a share of the card fee,
+    // so the webhook can credit the bill rather than the whole charge.
+    const surcharge = Number(req.surcharge)
+    if (Number.isFinite(surcharge) && surcharge > 0) {
+      ;(body.metadata as Record<string, unknown>)[SURCHARGE_KEY] = round2(surcharge).toFixed(2)
+      body.description = 'Internet service (includes card fee)'
     }
     if (req.returnUrl) body.redirectUrl = req.returnUrl
     if (req.name) body.billingPerson = { name: req.name, email }
@@ -306,12 +319,17 @@ export const dime: PaymentGateway = {
     const payload = obj(body.payload)
     const containers = [obj(txn.order), obj(txn.entity), obj(payload?.order), txn, payload]
     let ref: { companyId: number; customerId: number } | null = null
+    let surcharge = 0
     for (const c of containers) {
       if (!c) continue
       const meta = obj(c.metadata)
       for (const source of [obj(meta?.details), meta, obj(c.details)]) {
         ref = decodeReference(source?.[REF_KEY])
-        if (ref) break
+        if (ref) {
+          const s = Number(source?.[SURCHARGE_KEY])
+          if (Number.isFinite(s) && s > 0) surcharge = round2(s)
+          break
+        }
       }
       if (ref) break
     }
@@ -326,12 +344,19 @@ export const dime: PaymentGateway = {
       throw new WebhookError('Webhook order metadata carried no usable ' + REF_KEY + '.', 400)
     }
 
+    // Dime's own fee on this transaction, for reconciliation. Its figure, not
+    // ours — and never used to decide what the customer is credited.
+    const reported = Number(txn.fees)
+    const fee = Number.isFinite(reported) && reported >= 0 ? round2(reported) : null
+
     return {
       reference,
       amount,
       currency,
       companyId: ref.companyId,
       customerId: ref.customerId,
+      surcharge,
+      fee,
     }
   },
 }

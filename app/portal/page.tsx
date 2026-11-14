@@ -7,7 +7,7 @@ import { footerLine, PortalShell } from '@/components/portal/PortalShell'
 import { getBillSettings } from '@/lib/data/bill-settings'
 import { getCustomerPayments } from '@/lib/data/customers'
 import { activeIncidentForCustomer } from '@/lib/data/incidents'
-import { getEnabledGateway } from '@/lib/data/payment-gateways'
+import { getEnabledGateway, portalCardFee } from '@/lib/data/payment-gateways'
 import { firstNameOf, getPortalAccount, type PortalCompany } from '@/lib/data/portal'
 import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
@@ -34,12 +34,13 @@ export default async function PortalHome(props: {
   // cookie in a render (only actions may); just fall back to the sign-in.
   if (!account) return <SignIn brand={brand} company={company} />
 
-  const [payments, gateway, incident, caps, bill, sp] = await Promise.all([
+  const [payments, gateway, incident, caps, bill, cardFee, sp] = await Promise.all([
     getCustomerPayments(company.id, session.customerId),
     getEnabledGateway(company.id),
     activeIncidentForCustomer(company.id, account.accessPoint),
     getSchemaCapabilities(),
     getBillSettings(company.id),
+    portalCardFee(company.id),
     props.searchParams,
   ])
   const error = typeof sp.e === 'string' ? sp.e : null
@@ -62,6 +63,7 @@ export default async function PortalHome(props: {
         symbol={bill.currencySymbol}
         paymentNote={bill.paymentNote ?? account.paymentNote}
         bankDetails={bill.bankDetails}
+        cardFee={cardFee}
         error={error}
       />
     </PortalShell>

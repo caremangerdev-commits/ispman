@@ -8,6 +8,7 @@ import {
 } from '@/lib/data/payment-gateways'
 import { gatewayFor, WebhookError } from '@/lib/payments/gateways'
 import { recordServicePayment, type ServiceLogger } from '@/lib/payments/service-payment'
+import { billPortion } from '@/lib/payments/surcharge'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -86,14 +87,30 @@ export async function POST(
     return NextResponse.json({ error: 'Company mismatch.' }, { status: 400 })
   }
 
+  // WHAT BUYS SERVICE, which is not always what the card was charged.
+  //
+  // Where the customer agreed to carry a share of the card fee, that share
+  // rode through the gateway and back on the payment. It is not money for
+  // service — crediting it would hand them the fee back as free days. The
+  // surcharge is taken as agreed AT CHECKOUT rather than recomputed here: the
+  // company's settings may have changed since, and a customer is held to what
+  // they actually agreed to.
+  const surcharge = Number(event.surcharge) > 0 ? Number(event.surcharge) : 0
+  const bill = billPortion(event.amount, surcharge)
+
   // Idempotency on the gateway's immutable transaction id.
   const claim = await claimGatewayPayment({
     companyId,
     provider,
     reference: event.reference,
     customReference: event.companyId + ':' + event.customerId,
+    // The LEDGER records what the card was charged, the surcharge inside it,
+    // and what the gateway took. Those three are what make a bank statement
+    // reconcile; the customer's account only ever sees `bill`.
     amount: event.amount,
     currency: event.currency,
+    surcharge: surcharge || null,
+    fee: event.fee ?? null,
   })
   if (claim.action === 'duplicate') {
     return NextResponse.json({ ok: true, duplicate: true })
@@ -145,11 +162,14 @@ export async function POST(
         email: provider,
       },
       customerId: event.customerId,
-      paidAmount: event.amount,
+      paidAmount: bill,
       // Paid now. The core stamps the instant in the company's zone, as the till does.
       paymentDate: new Date(),
       method: toPaymentMethod('online'),
-      notes: '',
+      notes: surcharge > 0
+        ? 'Card charged ' + event.amount.toFixed(2) + ', of which ' + surcharge.toFixed(2) +
+          ' was the agreed card fee.'
+        : '',
       // Online payments make none of the cashier's short-payment choices and
       // pay no one-off charges or reconnection fee: service only.
       accessDecisionRaw: '',

@@ -29,6 +29,8 @@ export type GatewaySettings = {
   enabled: boolean
   secretSet: boolean
   webhookSecretSet: boolean
+  feeRate: number | null
+  feeFixed: number | null
 }
 
 export type PaymentGatewayCardProps = {
@@ -288,6 +290,71 @@ export function PaymentGatewayCard({
             </Hint>
           </div>
         )}
+
+        {/*
+          WHAT THIS GATEWAY CHARGES, on the gateway and not the company,
+          because a rate belongs to an agreement. Fygaro's terms are not Dime's,
+          and a company that switches provider must not keep costing payments
+          against the old one's numbers. Only read when the Card fee card below
+          sets a customer share above zero.
+        */}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <label htmlFor={id('fee_rate')} className="block text-xs font-medium text-gray-400">
+              Their percentage fee
+            </label>
+            <div className="relative">
+              <input
+                id={id('fee_rate')}
+                name="fee_rate"
+                type="number"
+                min="0"
+                max="20"
+                step="0.001"
+                defaultValue={settings?.feeRate ?? ''}
+                placeholder={isDime ? '3.7' : ''}
+                autoComplete="off"
+                disabled={!available}
+                className={settingsInput + ' pr-7 font-mono'}
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">
+                %
+              </span>
+            </div>
+            <Hint>
+              {isDime
+                ? 'Dime publish 3.7% for online payments. Use what your own agreement says.'
+                : 'From your Fygaro agreement.'}
+            </Hint>
+          </div>
+
+          <div className="space-y-1.5">
+            <label htmlFor={id('fee_fixed')} className="block text-xs font-medium text-gray-400">
+              Plus, per payment
+            </label>
+            <input
+              id={id('fee_fixed')}
+              name="fee_fixed"
+              type="number"
+              min="0"
+              step="0.01"
+              defaultValue={settings?.feeFixed ?? ''}
+              placeholder={isDime ? '45.53' : ''}
+              autoComplete="off"
+              disabled={!available}
+              className={settingsInput + ' font-mono'}
+            />
+            <Hint>
+              {isDime
+                ? 'Dime add 45.53 to every online payment. This is what makes small part-payments costly.'
+                : 'A fixed amount on every payment, if your agreement has one.'}
+            </Hint>
+          </div>
+        </div>
+        <Hint>
+          Only used if you ask customers to carry some of the fee, below. Leaving these blank means
+          you absorb it, which is what happens today.
+        </Hint>
 
         <label className="flex items-center gap-2 text-sm text-gray-300">
           <input

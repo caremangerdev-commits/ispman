@@ -2,9 +2,14 @@ import type { Metadata } from 'next'
 import { headers } from 'next/headers'
 import { redirect } from 'next/navigation'
 
+import { CardFeeCard } from '@/components/settings/CardFeeCard'
 import { PaymentGatewayCard } from '@/components/settings/PaymentGatewayCard'
-import { getGatewaySettings } from '@/lib/data/payment-gateways'
+import { getBillSettings } from '@/lib/data/bill-settings'
+import {
+  cardFeeShare, getEnabledGateway, getGatewaySettings, sampleBillFor,
+} from '@/lib/data/payment-gateways'
 import { portalUrlForCompany } from '@/lib/data/portal'
+import { gatewayFor } from '@/lib/payments/gateways'
 import { externalHost } from '@/lib/portal/config'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
@@ -51,19 +56,23 @@ export default async function OnlinePaymentsPage() {
   const webhookUrlFor = (provider: string) =>
     proto + '://' + host + '/api/payments/' + provider + '/' + company.id + '/webhook'
 
-  const [saved, portalUrl] = await Promise.all([
+  const [saved, portalUrl, share, live, bill, sampleBill] = await Promise.all([
     Promise.all(
       PROVIDERS.map((p) =>
         caps.paymentGateways ? getGatewaySettings(company.id, p) : Promise.resolve(null)
       )
     ),
     portalUrlForCompany(company.id),
+    caps.paymentGateways ? cardFeeShare(company.id) : Promise.resolve(0),
+    caps.paymentGateways ? getEnabledGateway(company.id).catch(() => null) : Promise.resolve(null),
+    getBillSettings(company.id),
+    sampleBillFor(company.id),
   ])
   // Where the customer is brought back after paying — the portal's own
   // confirmation page. Null when the portal domain or this company's slug is unset.
   const returnUrl = portalUrl ? portalUrl + '/pay/complete' : null
 
-  const live = PROVIDERS.find((p, i) => saved[i]?.enabled) ?? null
+  const liveProvider = PROVIDERS.find((p, i) => saved[i]?.enabled) ?? null
 
   return (
     <div className="max-w-2xl space-y-4">
@@ -74,8 +83,8 @@ export default async function OnlinePaymentsPage() {
       </p>
 
       <p className="text-xs text-gray-600">
-        {live
-          ? 'Taking payments through ' + (live === 'dime' ? 'Dime Pay' : 'Fygaro') + '.'
+        {liveProvider
+          ? 'Taking payments through ' + (liveProvider === 'dime' ? 'Dime Pay' : 'Fygaro') + '.'
           : 'No gateway is on, so the portal shows no pay button.'}
       </p>
 
@@ -89,6 +98,22 @@ export default async function OnlinePaymentsPage() {
           returnUrl={returnUrl}
         />
       ))}
+
+      <CardFeeCard
+        available={caps.paymentGateways}
+        share={share}
+        live={
+          live
+            ? {
+                label: gatewayFor(live.provider)?.label ?? live.provider,
+                rate: live.feeRate,
+                fixed: live.feeFixed,
+              }
+            : null
+        }
+        currencySymbol={bill.currencySymbol}
+        sampleBill={sampleBill}
+      />
     </div>
   )
 }

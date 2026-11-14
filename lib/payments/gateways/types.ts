@@ -47,13 +47,43 @@ export type GatewayCredentials = {
    */
   checkoutUrl: string | null
   enabled: boolean
+  /**
+   * What THIS gateway charges THIS company, from its own agreement (migration
+   * 0049). Percentage and a fixed amount per payment: Dime's published online
+   * rate is 3.7% + JMD 45.53.
+   *
+   * ON THE GATEWAY, NOT THE COMPANY, because a rate belongs to an agreement —
+   * Fygaro's terms are not Dime's, and a company that switches provider must
+   * not keep charging against the old one's numbers.
+   *
+   * Null means not on record, which means no surcharge can be worked out and
+   * the operator absorbs the fee. The platform never guesses a rate and
+   * charges a customer against the guess.
+   */
+  feeRate: number | null
+  feeFixed: number | null
 }
 
 export type CheckoutRequest = {
   companyId: number
   customerId: number
-  /** Amount in major units (e.g. JMD dollars), two decimals. */
+  /**
+   * What the CARD IS CHARGED, in major units (e.g. JMD dollars), two decimals.
+   * Where a surcharge applies this is the bill plus the surcharge, not the
+   * bill — see `surcharge`.
+   */
   amount: number
+  /**
+   * How much of `amount` is the customer's agreed share of the card fee, and
+   * therefore does NOT buy service. Zero for almost every payment.
+   *
+   * CARRIED THROUGH THE GATEWAY AND BACK, so the webhook can credit the bill
+   * rather than the total. It is round-tripped as data rather than recomputed
+   * on the way back, because the company's settings may have changed between
+   * the customer agreeing and the payment landing, and what they agreed to is
+   * what they are held to.
+   */
+  surcharge?: number
   /** ISO 4217, e.g. 'JMD'. */
   currency: string
   /**
@@ -77,11 +107,23 @@ export type CheckoutRequest = {
 export type GatewayPayment = {
   /** The provider's immutable transaction id — the idempotency key. */
   reference: string
+  /** What the card was charged, bill plus any surcharge. */
   amount: number
   currency: string
   /** Round-tripped through the checkout link, so we know who paid. */
   companyId: number
   customerId: number
+  /**
+   * The surcharge agreed at checkout, round-tripped back. The customer's
+   * account is credited `amount - surcharge`; crediting the full amount would
+   * hand them back the card fee they just agreed to pay, as free service.
+   */
+  surcharge?: number
+  /**
+   * What the gateway took, as the gateway itself reported it — not a figure we
+   * worked out. Recorded so a bank statement reconciles. Null when unknown.
+   */
+  fee?: number | null
 }
 
 export type WebhookRequest = {

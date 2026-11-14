@@ -8,35 +8,54 @@
 
 import { gatewayFor } from '@/lib/payments/gateways'
 import { type GatewayCredentials } from '@/lib/payments/gateways/types'
+import { splitCardFee, type CardFee, type SurchargeBreakdown } from '@/lib/payments/surcharge'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 /** PostgREST codes for "table does not exist". */
 const MISSING_TABLE = new Set(['PGRST205', '42P01'])
 
-/** PostgREST codes for "column does not exist" — migration 0048 not applied. */
+/** PostgREST codes for "column does not exist" — a later migration not applied. */
 const MISSING_COLUMN = new Set(['PGRST204', '42703'])
 
 /**
- * The credential columns, and the same list without 0048's.
+ * The credential columns, newest migration first, each falling back to the one
+ * below it.
  *
- * TWO SELECTS, NOT A CAPABILITY PROBE. webhook_secret is one nullable column
- * that only Dime reads, so it does not earn a slot in lib/schema.ts's probe
- * batch; asking for it and falling back once if it is not there costs a round
- * trip only on a system where 0048 has yet to be applied. Fygaro never reads
- * it, so that system keeps working exactly as before — Dime is simply not
- * enableable until the column exists.
+ * SELECTS THAT STEP BACK, NOT CAPABILITY PROBES. These are a handful of
+ * nullable columns that only the gateway code reads, so they do not each earn
+ * a slot in lib/schema.ts's probe batch; asking for them and stepping back
+ * once costs a round trip only on a system where the migration has yet to be
+ * applied. Everything an older system did keeps working — the newer feature is
+ * simply unavailable until its column exists.
  */
-const COLS = 'provider, public_key, secret_key, webhook_secret, checkout_url, enabled'
-const COLS_PRE_0048 = 'provider, public_key, secret_key, checkout_url, enabled'
+const COL_SETS = [
+  // 0049: this gateway's own fee, for the surcharge split.
+  'provider, public_key, secret_key, webhook_secret, checkout_url, enabled, fee_rate, fee_fixed',
+  // 0048: Dime's separate webhook signing secret.
+  'provider, public_key, secret_key, webhook_secret, checkout_url, enabled',
+  // 0034: the original shape.
+  'provider, public_key, secret_key, checkout_url, enabled',
+]
 
-function toCredentials(row: {
+type GatewayRow = {
   provider: string
   public_key: string | null
   secret_key: string | null
   webhook_secret?: string | null
   checkout_url: string | null
   enabled: boolean | null
-}): GatewayCredentials {
+  fee_rate?: string | number | null
+  fee_fixed?: string | number | null
+}
+
+/** PostgREST returns NUMERIC as a string; a missing column as undefined. */
+function num(v: string | number | null | undefined): number | null {
+  if (v === null || v === undefined) return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+function toCredentials(row: GatewayRow): GatewayCredentials {
   return {
     provider: row.provider,
     publicKey: row.public_key,
@@ -44,7 +63,28 @@ function toCredentials(row: {
     webhookSecret: row.webhook_secret ?? null,
     checkoutUrl: row.checkout_url,
     enabled: row.enabled ?? false,
+    feeRate: num(row.fee_rate),
+    feeFixed: num(row.fee_fixed),
   }
+}
+
+/**
+ * Runs a select against payment_gateways, stepping back through COL_SETS when
+ * the database is older than the code. Returns null for a missing TABLE, which
+ * reads as "no gateway configured" everywhere.
+ */
+async function selectGateways(
+  build: (cols: string) => PromiseLike<{ data: unknown; error: { code?: string; message: string } | null }>
+): Promise<GatewayRow[] | null> {
+  let lastError: { code?: string; message: string } | null = null
+  for (const cols of COL_SETS) {
+    const { data, error } = await build(cols)
+    if (!error) return (data ?? []) as GatewayRow[]
+    lastError = error
+    if (MISSING_TABLE.has(error.code ?? '')) return null
+    if (!MISSING_COLUMN.has(error.code ?? '')) break
+  }
+  throw new Error('Could not read payment gateways: ' + (lastError?.message ?? 'unknown error'))
 }
 
 /**
@@ -56,25 +96,16 @@ export async function getGatewayCredentials(
   provider: string
 ): Promise<GatewayCredentials | null> {
   const db = tenantClient()
-  const read = (cols: string) =>
+  const rows = await selectGateways((cols) =>
     db
       .from('payment_gateways')
       .select(cols)
       .eq('company_id', companyId)
       .eq('provider', provider)
-      .maybeSingle()
-
-  let { data, error } = await read(COLS)
-  if (error && MISSING_COLUMN.has(error.code ?? '')) {
-    ;({ data, error } = await read(COLS_PRE_0048))
-  }
-
-  if (error) {
-    if (MISSING_TABLE.has(error.code ?? '')) return null
-    throw new Error('Could not read payment gateway credentials: ' + error.message)
-  }
-  if (!data) return null
-  return toCredentials(data as unknown as Parameters<typeof toCredentials>[0])
+      .limit(1)
+  )
+  if (!rows || !rows.length) return null
+  return toCredentials(rows[0])
 }
 
 /** What the settings page may show about a saved gateway. The secret is NEVER
@@ -87,6 +118,9 @@ export type GatewaySettingsView = {
   secretSet: boolean
   /** True when a separate webhook signing secret is stored (Dime). */
   webhookSecretSet: boolean
+  /** This gateway's own fee, from the operator's agreement (0049). */
+  feeRate: number | null
+  feeFixed: number | null
 }
 
 /** A gateway's non-secret settings for the UI, or null when none is saved. */
@@ -102,6 +136,8 @@ export async function getGatewaySettings(
     enabled: creds.enabled,
     secretSet: Boolean(creds.secretKey && creds.secretKey.trim()),
     webhookSecretSet: Boolean(creds.webhookSecret && creds.webhookSecret.trim()),
+    feeRate: creds.feeRate,
+    feeFixed: creds.feeFixed,
   }
 }
 
@@ -128,6 +164,9 @@ export async function saveGatewayCredentials(input: {
   secretKey?: string
   /** Same write-only rule as secretKey. Only providers with a second secret send it. */
   webhookSecret?: string
+  /** This gateway's fee from the operator's agreement (0049). null clears it. */
+  feeRate?: number | null
+  feeFixed?: number | null
   enabled: boolean
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const db = tenantClient()
@@ -136,8 +175,8 @@ export async function saveGatewayCredentials(input: {
     () => null
   )
 
-  // Does this system have 0048? One cheap probe, so a save on a pre-0048
-  // system still works for Fygaro instead of failing on an unknown column.
+  // Which columns does this system have? Two cheap probes, so a save on an
+  // older system still works instead of failing on an unknown column.
   const { error: probeError } = await db
     .from('payment_gateways')
     .select('webhook_secret')
@@ -146,6 +185,9 @@ export async function saveGatewayCredentials(input: {
   if (probeError && MISSING_TABLE.has(probeError.code ?? '')) {
     return { ok: false, error: 'Online payments are not set up on this system yet. Apply migration 0034.' }
   }
+
+  const { error: feeProbe } = await db.from('payment_gateways').select('fee_rate').limit(1)
+  const hasFeeColumns = !(feeProbe && MISSING_COLUMN.has(feeProbe.code ?? ''))
 
   const priorSecret = existingCreds?.secretKey ?? null
   const nextSecret = input.secretKey && input.secretKey.trim() ? input.secretKey.trim() : priorSecret
@@ -188,6 +230,12 @@ export async function saveGatewayCredentials(input: {
     updated_at: new Date().toISOString(),
   }
   if (hasWebhookColumn) row.webhook_secret = nextWebhook
+  if (hasFeeColumns) {
+    // Unlike the secrets these are not write-only: the page shows them, so an
+    // emptied box means "I do not know this rate" and must actually clear it.
+    if (input.feeRate !== undefined) row.fee_rate = input.feeRate
+    if (input.feeFixed !== undefined) row.fee_fixed = input.feeFixed
+  }
 
   const { error } = existingCreds
     ? await db
@@ -262,32 +310,112 @@ export async function getEnabledGateway(
   companyId: number
 ): Promise<GatewayCredentials | null> {
   const db = tenantClient()
-  const { data, error } = await db
-    .from('payment_gateways')
-    .select(COLS)
-    .eq('company_id', companyId)
-    .eq('enabled', true)
-    .limit(1)
-
-  let rowsData: unknown = data
-  let readError = error
-  if (readError && MISSING_COLUMN.has(readError.code ?? '')) {
-    const retry = await db
+  const rows = await selectGateways((cols) =>
+    db
       .from('payment_gateways')
-      .select(COLS_PRE_0048)
+      .select(cols)
       .eq('company_id', companyId)
       .eq('enabled', true)
       .limit(1)
-    rowsData = retry.data
-    readError = retry.error
-  }
+  )
+  return rows && rows.length ? toCredentials(rows[0]) : null
+}
 
-  if (readError) {
-    if (MISSING_TABLE.has(readError.code ?? '')) return null
-    throw new Error('Could not read payment gateways: ' + readError.message)
+/**
+ * How much of the card fee a company's customers carry, 0–100 (migration
+ * 0049). Zero — the operator absorbs it — on any system without the column,
+ * so an un-migrated database behaves exactly as it always did.
+ */
+export async function cardFeeShare(companyId: number): Promise<number> {
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('settings')
+    .select('card_fee_customer_share')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error) return 0
+  const raw = Number((data as { card_fee_customer_share: number | null } | null)?.card_fee_customer_share)
+  if (!Number.isFinite(raw)) return 0
+  return Math.min(100, Math.max(0, Math.round(raw)))
+}
+
+/**
+ * A realistic amount to cost the card fee out against on the settings page —
+ * the company's own default monthly rate, so an operator sees their own
+ * numbers rather than somebody else's. Falls back to a round figure when the
+ * company has not set one.
+ */
+export async function sampleBillFor(companyId: number): Promise<number> {
+  const { data, error } = await tenantClient()
+    .from('settings')
+    .select('default_monthly_rate')
+    .eq('company_id', companyId)
+    .maybeSingle()
+  if (error) return 1000
+  const n = Number((data as { default_monthly_rate: number | null } | null)?.default_monthly_rate)
+  return Number.isFinite(n) && n > 0 ? n : 1000
+}
+
+/**
+ * What the portal needs to show a customer the card fee before they pay: the
+ * live gateway's rate and the company's share, or NULL when there is nothing
+ * to show — no gateway, no rate on record, or the operator absorbing it.
+ *
+ * Null is the answer on every ordinary installation, and the portal then looks
+ * exactly as it always has.
+ */
+export async function portalCardFee(companyId: number): Promise<CardFee | null> {
+  const [creds, share] = await Promise.all([
+    getEnabledGateway(companyId).catch(() => null),
+    cardFeeShare(companyId),
+  ])
+  if (!creds || creds.feeRate === null || share <= 0) return null
+  return { rate: creds.feeRate, fixed: creds.feeFixed ?? 0, customerShare: share }
+}
+
+/** Stores how much of the card fee this company's customers carry. */
+export async function setCardFeeShare(
+  companyId: number,
+  share: number
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const next = Math.min(100, Math.max(0, Math.round(share)))
+  const { error } = await tenantClient()
+    .from('settings')
+    .update({ card_fee_customer_share: next })
+    .eq('company_id', companyId)
+  if (error) {
+    if (MISSING_COLUMN.has(error.code ?? '')) {
+      return { ok: false, error: 'This needs migration 0049 applied first.' }
+    }
+    return { ok: false, error: 'Could not save the card fee share: ' + error.message }
   }
-  const rows = (rowsData ?? []) as unknown as Parameters<typeof toCredentials>[0][]
-  return rows.length ? toCredentials(rows[0]) : null
+  return { ok: true }
+}
+
+/**
+ * What a customer would actually be charged for a given bill, and who carries
+ * what — against the company's LIVE gateway and its own rate.
+ *
+ * THE ONE PLACE THE PORTAL AND THE CHECKOUT BOTH ASK, so the figure a customer
+ * agrees to on screen is the figure their card is charged. Returns a plain
+ * "no surcharge" breakdown whenever anything is missing: no gateway, no rate
+ * on record, or a share of zero.
+ */
+export async function quoteCardFee(
+  companyId: number,
+  bill: number
+): Promise<SurchargeBreakdown & { provider: string | null }> {
+  const [creds, share] = await Promise.all([
+    getEnabledGateway(companyId).catch(() => null),
+    cardFeeShare(companyId),
+  ])
+
+  const fee: CardFee | null =
+    creds && creds.feeRate !== null
+      ? { rate: creds.feeRate, fixed: creds.feeFixed ?? 0, customerShare: share }
+      : null
+
+  return { ...splitCardFee(bill, fee), provider: creds?.provider ?? null }
 }
 
 /**
@@ -342,12 +470,29 @@ export async function createGatewayCheckout(input: {
    * this is ignored.
    */
   returnUrl?: string | null
-}): Promise<{ ok: true; url: string; provider: string } | { ok: false; error: string }> {
+  /**
+   * The customer agreed, on the portal, to carry a share of the card fee.
+   * REQUIRED before any surcharge is charged: without it the customer pays
+   * their bill and nothing more, whatever the company has configured. An
+   * agreement is the whole point of asking.
+   */
+  feeAgreedAt?: Date | null
+}): Promise<
+  | { ok: true; url: string; provider: string; charged: number; surcharge: number }
+  | { ok: false; error: string }
+> {
   const creds = await getEnabledGateway(input.companyId)
   if (!creds) return { ok: false, error: 'No online payment method is set up.' }
 
   const gateway = gatewayFor(creds.provider)
   if (!gateway) return { ok: false, error: 'Unknown payment gateway: ' + creds.provider }
+
+  // What the customer actually pays. Worked out HERE, not trusted from the
+  // caller, so a posted form cannot talk the surcharge down to nothing — or up.
+  const quote = await quoteCardFee(input.companyId, input.amount)
+  const agreed = Boolean(input.feeAgreedAt)
+  const surcharge = agreed ? quote.surcharge : 0
+  const charged = round2(input.amount + surcharge)
 
   try {
     // Only fetched for the providers that need it: Dime refuses an order with
@@ -360,7 +505,10 @@ export async function createGatewayCheckout(input: {
       {
         companyId: input.companyId,
         customerId: input.customerId,
-        amount: input.amount,
+        // THE CARD IS CHARGED THE TOTAL. What buys service is the bill, and
+        // the webhook subtracts the surcharge again to find it.
+        amount: charged,
+        surcharge,
         currency: input.currency ?? 'JMD',
         email: payer.email,
         name: payer.name,
@@ -368,11 +516,13 @@ export async function createGatewayCheckout(input: {
       },
       creds
     )
-    return { ok: true, url, provider: creds.provider }
+    return { ok: true, url, provider: creds.provider, charged, surcharge }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
+
+const round2 = (n: number) => Math.round(n * 100) / 100
 
 export type GatewayClaim = { action: 'record'; rowId: number } | { action: 'duplicate' }
 
@@ -391,21 +541,36 @@ export async function claimGatewayPayment(input: {
   customReference: string | null
   amount: number
   currency: string
+  /** The customer's agreed share of the card fee, inside `amount` (0049). */
+  surcharge?: number | null
+  /** What the gateway took, as it reported it (0049). */
+  fee?: number | null
 }): Promise<GatewayClaim> {
   const db = tenantClient()
-  const { data, error } = await db
-    .from('gateway_payments')
-    .insert({
-      company_id: input.companyId,
-      provider: input.provider,
-      reference: input.reference,
-      custom_reference: input.customReference,
-      amount: input.amount,
-      currency: input.currency,
-      status: 'received',
-    })
-    .select('id')
-    .single()
+
+  const base = {
+    company_id: input.companyId,
+    provider: input.provider,
+    reference: input.reference,
+    custom_reference: input.customReference,
+    amount: input.amount,
+    currency: input.currency,
+    status: 'received',
+  }
+  const withFees = {
+    ...base,
+    surcharge: input.surcharge ?? null,
+    fee: input.fee ?? null,
+    consented_at: input.surcharge ? new Date().toISOString() : null,
+  }
+
+  // 0049's columns if they exist, the old shape if not. A payment must land
+  // even on a system that has not been migrated yet; it just lands without the
+  // reconciliation figures.
+  let { data, error } = await db.from('gateway_payments').insert(withFees).select('id').single()
+  if (error && MISSING_COLUMN.has(error.code ?? '')) {
+    ;({ data, error } = await db.from('gateway_payments').insert(base).select('id').single())
+  }
 
   if (!error && data) return { action: 'record', rowId: (data as { id: number }).id }
 

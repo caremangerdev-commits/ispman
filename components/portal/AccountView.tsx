@@ -5,6 +5,7 @@ import { ServiceCard } from '@/components/portal/ServiceCard'
 import type { CustomerPayment } from '@/lib/data/customers'
 import type { Incident } from '@/lib/data/incidents'
 import type { PortalAccount } from '@/lib/data/portal'
+import type { CardFee } from '@/lib/payments/surcharge'
 import { payAmount, payLabel, portalMoney, serviceState } from '@/lib/portal/service-state'
 
 /**
@@ -59,6 +60,7 @@ export function AccountView({
   paymentNote,
   bankDetails,
   error,
+  cardFee = null,
 }: {
   company: string
   account: PortalAccount
@@ -70,6 +72,8 @@ export function AccountView({
   paymentNote: string | null
   bankDetails: string | null
   error: string | null
+  /** The card fee the customer carries, or null when the company absorbs it. */
+  cardFee?: CardFee | null
 }) {
   const state = account.daysUntilExpiry === null ? null : serviceState(account.daysUntilExpiry)
   const amount = payAmount(account.balance, account.monthlyCharge)
@@ -119,6 +123,7 @@ export function AccountView({
                 label={payLabel(state, amount, symbol)}
                 symbol={symbol}
                 error={error}
+                cardFee={cardFee}
               />
             ) : error ? (
               <p className={styles.error} role="alert">{error}</p>

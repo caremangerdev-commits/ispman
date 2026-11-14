@@ -375,6 +375,66 @@ textarea.input { font-size: 16px; resize: vertical; }
   display: grid;
   gap: 14px;
 }
+
+/* ---- The card fee, where a company passes part of it on ---------------- */
+/* Quiet, not alarming: it is a legitimate charge the customer agreed to, but
+   it must be impossible to miss, and the total has to be the biggest number
+   on the card because that is what leaves their account. */
+.feeNote {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.14));
+  border-radius: 12px;
+  margin: 14px 0;
+  padding: 14px;
+}
+.feeRows {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+.feeRows > div {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+.feeRows dt {
+  font-size: 14px;
+  opacity: 0.75;
+}
+.feeRows dd {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+.feeTotal {
+  border-top: 1px solid var(--line, rgba(255, 255, 255, 0.14));
+  margin-top: 4px;
+  padding-top: 8px;
+}
+.feeTotal dt {
+  font-weight: 600;
+  opacity: 1;
+}
+.feeTotal dd {
+  font-size: 19px;
+  font-weight: 700;
+}
+.feeAgree {
+  align-items: flex-start;
+  cursor: pointer;
+  display: flex;
+  font-size: 14px;
+  gap: 10px;
+  line-height: 1.45;
+  margin-top: 12px;
+}
+.feeAgree input {
+  flex: none;
+  height: 20px;
+  margin: 1px 0 0;
+  width: 20px;
+}
 .title {
   font-size: 24px;
   font-weight: 700;

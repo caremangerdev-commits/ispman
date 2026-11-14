@@ -6,7 +6,7 @@ import styles from '@/components/portal/portal.module.css'
 import { footerLine, PortalShell } from '@/components/portal/PortalShell'
 import { ServiceCard } from '@/components/portal/ServiceCard'
 import { getBillSettings } from '@/lib/data/bill-settings'
-import { getEnabledGateway } from '@/lib/data/payment-gateways'
+import { getEnabledGateway, portalCardFee } from '@/lib/data/payment-gateways'
 import { findCustomerIdByMac, getPortalAccount } from '@/lib/data/portal'
 import { getPortalBrand } from '@/lib/portal/brand'
 import { getPortalCompany } from '@/lib/portal/context'
@@ -36,11 +36,12 @@ export default async function ReconnectPage(props: {
   const error = typeof sp.e === 'string' ? sp.e : null
 
   const customerId = mac ? await findCustomerIdByMac(company.id, mac) : null
-  const [account, gateway, brand, bill] = await Promise.all([
+  const [account, gateway, brand, bill, cardFee] = await Promise.all([
     customerId ? getPortalAccount(company.id, customerId) : Promise.resolve(null),
     getEnabledGateway(company.id),
     getPortalBrand(company.id, company.name),
     getBillSettings(company.id),
+    portalCardFee(company.id),
   ])
   const footer = footerLine(company.name, company.phone)
 
@@ -97,6 +98,7 @@ export default async function ReconnectPage(props: {
             label={payLabel(state ?? 'bad', amount, symbol)}
             symbol={symbol}
             error={error}
+            cardFee={cardFee}
           />
         ) : error ? (
           <p className={styles.error} role="alert">{error}</p>
