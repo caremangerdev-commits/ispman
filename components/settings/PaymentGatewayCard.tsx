@@ -147,7 +147,22 @@ export function PaymentGatewayCard({
         </p>
       ) : null}
 
-      <form action={action} className="mt-4 space-y-4">
+      {/*
+        autoComplete="off" ON THE FORM AND EVERY FIELD, and "new-password" on
+        the secrets.
+
+        Chrome's password manager reads a card like this one as a login form —
+        a text box followed by a password box — and fills them with the
+        operator's own email and saved password. Caught on JMEDIA, 13 Nov 2026:
+        the Fygaro card came up pre-filled with superadmin@ispman.com and a
+        saved password. One absent-minded Save and the company's public key is
+        an email address, its gateway secret is a staff password, and card
+        payments stop working for that tenant until somebody notices.
+
+        "new-password" is the only value Chrome reliably declines to autofill;
+        plain "off" is advisory and it ignores it on password inputs.
+      */}
+      <form action={action} autoComplete="off" className="mt-4 space-y-4">
         <input type="hidden" name="provider" value={provider} />
 
         <div className="space-y-1.5">
@@ -159,6 +174,10 @@ export function PaymentGatewayCard({
             name="public_key"
             defaultValue={settings?.publicKey ?? ''}
             placeholder={isDime ? 'Your Dime client key' : 'pk_live_…'}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="none"
+            spellCheck={false}
             disabled={!available}
             className={settingsInput + ' font-mono'}
           />
@@ -177,7 +196,7 @@ export function PaymentGatewayCard({
             id={id('secret_key')}
             name="secret_key"
             type="password"
-            autoComplete="off"
+            autoComplete="new-password"
             placeholder={
               secretSet
                 ? '•••••••• (saved — leave blank to keep)'
@@ -209,7 +228,7 @@ export function PaymentGatewayCard({
               id={id('webhook_secret')}
               name="webhook_secret"
               type="password"
-              autoComplete="off"
+              autoComplete="new-password"
               placeholder={
                 webhookSecretSet
                   ? '•••••••• (saved — leave blank to keep)'
@@ -257,6 +276,10 @@ export function PaymentGatewayCard({
               type="url"
               defaultValue={settings?.checkoutUrl ?? ''}
               placeholder="https://www.fygaro.com/…/pay/…"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
               disabled={!available}
               className={settingsInput + ' font-mono'}
             />
