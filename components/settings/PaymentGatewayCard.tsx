@@ -128,7 +128,7 @@ export function PaymentGatewayCard({
           <h2 className="text-sm font-semibold text-white">{label}</h2>
           <p className="mt-1 text-xs text-gray-500">
             {isDime
-              ? 'Card payments from the customer portal. Paste your Dime client key, API secret and webhook signing secret, then turn it on.'
+              ? 'Card payments from the customer portal. Paste your Dime client key and API secret, then tell us and we will switch the payment notices on.'
               : 'Card payments from the customer portal. Paste the keys from your Fygaro payment-button and webhook settings, then turn it on.'}
           </p>
         </div>
@@ -240,9 +240,10 @@ export function PaymentGatewayCard({
               className={settingsInput + ' font-mono'}
             />
             <Hint>
-              A different secret from the one above. Dime shows it once, when you add the webhook
-              below, and again if you rotate it. Without it a payment could arrive and never be
-              recorded, so Dime cannot be turned on until it is saved.
+              A different secret from the one above. You do not set this up yourself — once your
+              keys are saved, tell us and we will switch the payment notices on and fill this in.
+              Without it a payment could arrive and never be recorded, so Dime cannot be turned on
+              until it is saved.
             </Hint>
           </div>
         ) : null}
@@ -380,7 +381,7 @@ export function PaymentGatewayCard({
         <CopyField value={webhookUrl} />
         <Hint>
           {isDime
-            ? 'Add this as a webhook endpoint in Dime and subscribe it to the payment events. Dime shows the signing secret once when you create it — paste it above. Only a captured payment is recorded; the other events are acknowledged and ignored.'
+            ? 'Where Dime sends word of a payment. We set this up for you once your keys are saved — nothing to do here. Shown so you know the address your payments come back to.'
             : 'Paste this into Fygaro’s webhook settings. Fygaro POSTs here on every successful payment; the signature is checked against your secret above.'}
         </Hint>
       </div>

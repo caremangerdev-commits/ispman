@@ -18,10 +18,13 @@ import { splitCardFee } from '@/lib/payments/surcharge'
  * amount, is the difference between an informed decision and a nasty surprise
  * at the till.
  *
- * It also shows a small part-payment, because that is where the fixed fee
- * bites and nobody thinks to check: the same settings that add 6% to a full
- * month's bill can add 27% to a J$200 top-up, and the people topping up J$200
- * are the ones who can least afford it.
+ * It also costs out a part-payment, because that is where the fixed part of
+ * the fee bites and nobody thinks to check: the same settings that add a few
+ * percent to a full month's bill can add a quarter to a small top-up, and the
+ * people making small payments are the ones who can least afford it. The
+ * stand-in is a tenth of the bill rather than a fixed figure — this runs in
+ * any currency, and a number that reads as "small" in one reads as nothing in
+ * another.
  */
 
 export type CardFeeCardProps = {
@@ -79,7 +82,10 @@ export function CardFeeCard({ available, share, live, currencySymbol, sampleBill
     const fee = { rate: live.rate, fixed: live.fixed ?? 0, customerShare }
     return {
       full: splitCardFee(bill, fee),
-      small: splitCardFee(200, fee),
+      // A tenth of the bill, as a stand-in for a part-payment. Derived rather
+      // than a fixed figure: this runs in any currency, and a number that
+      // means "small" in one means nothing in another.
+      small: splitCardFee(Math.max(1, Math.round(bill / 10)), fee),
       customerShare,
     }
   }, [pct, amount, live])
@@ -144,8 +150,8 @@ export function CardFeeCard({ available, share, live, currencySymbol, sampleBill
           {noRate ? (
             <p className="mt-3 text-[11px] text-amber-300/90">
               {live
-                ? 'Enter ' + live.label + '’s percentage and fixed fee above, and this will show exactly what a customer would be charged.'
-                : 'Turn on a gateway and enter its fees above, and this will show exactly what a customer would be charged.'}
+                ? 'Enter ' + live.label + '’s percentage and fixed fee above and save, and this will show exactly what a customer would be charged.'
+                : 'Turn on a gateway, enter its fees above and save, and this will show exactly what a customer would be charged.'}
             </p>
           ) : quote ? (
             <>
@@ -169,13 +175,14 @@ export function CardFeeCard({ available, share, live, currencySymbol, sampleBill
                 <Row label="You bank" value={money(quote.full.expectedNet)} strong />
               </div>
 
-              {quote.customerShare > 0 ? (
+              {quote.customerShare > 0 && quote.small ? (
                 <p className="mt-3 rounded border border-amber-900/40 bg-amber-950/20 px-3 py-2 text-[11px] text-amber-200/90">
-                  A {money(200)} part-payment on these settings: the customer is charged{' '}
+                  The fixed part of the fee lands the same whatever the payment, so the smaller the
+                  payment the bigger the share. A part-payment of{' '}
+                  <span className="font-mono">{money(quote.small.bill)}</span> would be charged{' '}
                   <span className="font-mono">{money(quote.small.total)}</span> —{' '}
-                  {money(quote.small.surcharge)} on top, or{' '}
-                  {((quote.small.surcharge / 200) * 100).toFixed(0)}%. The fixed fee lands the same
-                  whatever the payment, so small top-ups carry the most.
+                  {((quote.small.surcharge / quote.small.bill) * 100).toFixed(0)}% on top. Type a
+                  smaller amount above to see any other case.
                 </p>
               ) : null}
             </>
@@ -186,11 +193,10 @@ export function CardFeeCard({ available, share, live, currencySymbol, sampleBill
         <div className="rounded-lg border border-red-900/40 bg-red-950/20 px-3 py-2.5">
           <p className="text-[11px] leading-relaxed text-red-200/90">
             <span className="font-semibold">Before you set this above 0.</span> Charging a customer
-            more for paying by card is a surcharge. Dime&apos;s own calculator assumes merchants do
-            it, but Mastercard has said publicly in Jamaica that merchants are wrong to make
-            customers pay more for using a card, and card agreements commonly forbid it. Confirm
-            with whoever holds your merchant account, in writing, first. Some providers allow a cash
-            discount where they will not allow a card surcharge.
+            more for paying by card is a surcharge. Many card agreements do not allow it, and where
+            they do, the card networks cap how much may be added. Confirm with whoever holds your
+            merchant account, in writing, before you turn this on. Some providers allow a discount
+            for cash where they will not allow a card surcharge.
           </p>
         </div>
 
