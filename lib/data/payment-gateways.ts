@@ -677,3 +677,61 @@ export async function alertUnsettledOnlinePayment(input: {
     console.error('[online payment alert] could not raise the bell:', (err as Error).message)
   }
 }
+
+/**
+ * What the card was actually charged, for payments that carried a surcharge.
+ *
+ * WHY THIS EXISTS. A payment with a split card fee credits the account with
+ * the BILL only — a customer who pays a J$3,500 bill with a J$89 fee on top
+ * has J$3,500 of service, not J$3,589. That is right for the balance and
+ * wrong for the statement: their bank shows J$3,589.16 and their payment
+ * history would show J$3,500, which reads as J$89 gone missing.
+ *
+ * So the payment history shows all three figures. The charged amount and the
+ * surcharge live on gateway_payments, keyed back to the payments row by
+ * payment_id, and this reads them for a page of history in one query.
+ *
+ * Returns an empty map rather than throwing. Every caller is drawing a
+ * statement the customer is already entitled to see; a missing surcharge
+ * column on an older database, or an unreadable row, must degrade to the
+ * plain amount and not blank the page.
+ */
+export async function surchargesForPayments(
+  companyId: number,
+  paymentIds: number[]
+): Promise<Map<number, { charged: number; surcharge: number }>> {
+  const out = new Map<number, { charged: number; surcharge: number }>()
+  const ids = paymentIds.filter((id) => Number.isFinite(id))
+  if (ids.length === 0) return out
+
+  const db = tenantClient()
+  try {
+    const { data, error } = await db
+      .from('gateway_payments')
+      .select('payment_id, amount, surcharge')
+      .eq('company_id', companyId)
+      .in('payment_id', ids)
+      .gt('surcharge', 0)
+    if (error) {
+      // Pre-0049 database: no surcharge column, so no surcharges to show.
+      if (!/surcharge/i.test(error.message)) {
+        console.error('[surcharges] could not read gateway_payments:', error.message)
+      }
+      return out
+    }
+    for (const row of (data ?? []) as {
+      payment_id: number | null
+      amount: number | string | null
+      surcharge: number | string | null
+    }[]) {
+      const id = Number(row.payment_id)
+      const charged = Number(row.amount)
+      const surcharge = Number(row.surcharge)
+      if (!Number.isFinite(id) || !(surcharge > 0) || !(charged > 0)) continue
+      out.set(id, { charged, surcharge })
+    }
+  } catch (err) {
+    console.error('[surcharges] could not read gateway_payments:', (err as Error).message)
+  }
+  return out
+}

@@ -306,6 +306,16 @@ export default async function CustomerDetailPage({
                   </span>
                 </div>
 
+                {/* The account was credited the bill only. Staff fielding a
+                    "my bank says I paid more" call need the other two
+                    figures in front of them. */}
+                {Number(p.surcharge) > 0 ? (
+                  <div className="mt-0.5 text-right text-xs tabular-nums text-gray-500">
+                    card fee {formatCurrency(p.surcharge ?? 0, symbol)}, charged{' '}
+                    {formatCurrency(p.charged ?? 0, symbol)}
+                  </div>
+                ) : null}
+
                 <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
                   <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-300">
                     {p.payment_type ?? 'other'}
@@ -353,6 +363,13 @@ export default async function CustomerDetailPage({
                     </td>
                     <td className="px-5 py-2 text-right font-medium tabular-nums text-gray-100">
                       {formatCurrency(p.amount, symbol)}
+                      {Number(p.surcharge) > 0 ? (
+                        <span className="mt-0.5 block text-[11px] font-normal leading-snug text-gray-500">
+                          card fee {formatCurrency(p.surcharge ?? 0, symbol)}
+                          <br />
+                          charged {formatCurrency(p.charged ?? 0, symbol)}
+                        </span>
+                      ) : null}
                     </td>
                     <td className="px-5 py-2 text-right tabular-nums text-gray-400">
                       {p.months_paid ?? '—'}

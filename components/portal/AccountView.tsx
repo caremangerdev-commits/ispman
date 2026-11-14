@@ -140,6 +140,18 @@ export function AccountView({
                   <li key={p.id}>
                     <span className={styles.payDate}>{formatDay(p.payment_date)}</span>
                     <span className={styles.payAmt}>{portalMoney(Number(p.amount), symbol)}</span>
+                    {Number(p.surcharge) > 0 ? (
+                      // The account was credited the bill only, so without
+                      // these two lines the customer's bank statement shows a
+                      // bigger number than their history and the fee looks
+                      // like money that went missing.
+                      <span className={styles.paySplit}>
+                        <span>+ card fee {portalMoney(Number(p.surcharge), symbol)}</span>
+                        <span>
+                          charged to card {portalMoney(Number(p.charged), symbol)}
+                        </span>
+                      </span>
+                    ) : null}
                   </li>
                 ))}
               </ul>

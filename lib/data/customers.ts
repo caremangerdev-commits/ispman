@@ -5,6 +5,7 @@ import { fetchAllRows } from '@/lib/supabase/paging'
 import { tenantClient } from '@/lib/supabase/tenant'
 import { batchGetRadiusStatus, radiusConfigured } from '@/lib/radius-db'
 import { lastNetworkEvents } from '@/lib/data/network-events'
+import { surchargesForPayments } from '@/lib/data/payment-gateways'
 import { localDateOnly } from '@/lib/format'
 import { applyFilters, type CustomerFilters } from '@/lib/customer-filter'
 import {
@@ -460,6 +461,14 @@ export type CustomerPayment = {
   payment_date: string
   agent: string | null
   notes: string | null
+  /**
+   * What the card was charged, when a card fee was added on top. Null for
+   * every payment taken at the till and for online payments where the company
+   * absorbed the fee — in those `amount` is the whole story.
+   */
+  charged?: number | null
+  /** The card fee the customer agreed to, when there was one. */
+  surcharge?: number | null
 }
 
 export async function getCustomerPayments(
@@ -475,7 +484,20 @@ export async function getCustomerPayments(
     .order('payment_date', { ascending: false })
 
   if (error) throw new Error('Failed to load payments: ' + error.message)
-  return (data ?? []) as unknown as CustomerPayment[]
+  const rows = (data ?? []) as unknown as CustomerPayment[]
+
+  // A payment that carried a card fee credited the account with the bill only,
+  // so the row's amount is less than what left the customer's card. Attach the
+  // two other figures so a statement can show all three and nothing looks lost.
+  const extra = await surchargesForPayments(
+    companyId,
+    rows.map((r) => Number(r.id))
+  )
+  if (extra.size === 0) return rows
+  return rows.map((r) => {
+    const hit = extra.get(Number(r.id))
+    return hit ? { ...r, charged: hit.charged, surcharge: hit.surcharge } : r
+  })
 }
 
 export type CustomerTicket = {
