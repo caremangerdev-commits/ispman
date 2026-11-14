@@ -25,7 +25,30 @@ import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase/env'
 // /api/tunnels/peers also refuses anything that is not a loopback call.
 const PUBLIC_PATHS = ['/login', '/auth', '/api/sms/dispatch', '/api/billing/tick', '/api/tunnels/peers']
 
+/**
+ * A payment gateway's webhook: /api/payments/{provider}/{company}/webhook.
+ *
+ * THE SAME TRAP THE SMS TICKER FELL INTO, and it cost a real payment to find.
+ * A gateway POSTs here with no cookie, this proxy redirected it to /login, the
+ * gateway's HTTP client followed the redirect and read a 200 — so Dime's
+ * delivery log showed success, the route never ran, nothing was recorded, and
+ * nothing was logged anywhere. A payment taken and silently dropped is the
+ * worst shape this bug can have.
+ *
+ * MATCHED BY SUFFIX, NOT PREFIX, on purpose: /api/payments/export is a staff
+ * route and must stay behind the session. Only the webhook leaf is exempt.
+ *
+ * It authorizes itself, as everything on this list must: the route verifies
+ * the gateway's HMAC signature over the raw body against that company's stored
+ * secret before it will act on a delivery, and answers 401 when it does not
+ * verify (lib/payments/gateways).
+ */
+function isGatewayWebhook(pathname: string) {
+  return pathname.startsWith('/api/payments/') && pathname.endsWith('/webhook')
+}
+
 function isPublicPath(pathname: string) {
+  if (isGatewayWebhook(pathname)) return true
   return PUBLIC_PATHS.some(
     (path) => pathname === path || pathname.startsWith(`${path}/`)
   )
