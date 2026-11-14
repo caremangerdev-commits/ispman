@@ -7,7 +7,7 @@
 // exactly as it did before the migration — the house pattern.
 
 import { gatewayFor } from '@/lib/payments/gateways'
-import { type GatewayCredentials } from '@/lib/payments/gateways/types'
+import { type CardFeeTerms, type GatewayCredentials } from '@/lib/payments/gateways/types'
 import { splitCardFee, type CardFee, type SurchargeBreakdown } from '@/lib/payments/surcharge'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -404,7 +404,9 @@ export async function setCardFeeShare(
 export async function quoteCardFee(
   companyId: number,
   bill: number
-): Promise<SurchargeBreakdown & { provider: string | null }> {
+): Promise<
+  SurchargeBreakdown & { provider: string | null; terms: CardFeeTerms | null }
+> {
   const [creds, share] = await Promise.all([
     getEnabledGateway(companyId).catch(() => null),
     cardFeeShare(companyId),
@@ -415,7 +417,13 @@ export async function quoteCardFee(
       ? { rate: creds.feeRate, fixed: creds.feeFixed ?? 0, customerShare: share }
       : null
 
-  return { ...splitCardFee(bill, fee), provider: creds?.provider ?? null }
+  return {
+    ...splitCardFee(bill, fee),
+    provider: creds?.provider ?? null,
+    // The terms this quote was worked out from, for the payment to carry. Only
+    // meaningful when a surcharge actually applies.
+    terms: fee ? { rate: fee.rate, fixed: fee.fixed, share } : null,
+  }
 }
 
 /**
@@ -509,6 +517,9 @@ export async function createGatewayCheckout(input: {
         // the webhook subtracts the surcharge again to find it.
         amount: charged,
         surcharge,
+        // The terms behind that surcharge, carried so the payment stays
+        // explicable after the company edits its rate.
+        feeTerms: surcharge > 0 ? quote.terms : null,
         currency: input.currency ?? 'JMD',
         email: payer.email,
         name: payer.name,
@@ -545,6 +556,8 @@ export async function claimGatewayPayment(input: {
   surcharge?: number | null
   /** What the gateway took, as it reported it (0049). */
   fee?: number | null
+  /** The fee terms the surcharge was quoted under (0050). */
+  feeTerms?: CardFeeTerms | null
 }): Promise<GatewayClaim> {
   const db = tenantClient()
 
@@ -563,13 +576,23 @@ export async function claimGatewayPayment(input: {
     fee: input.fee ?? null,
     consented_at: input.surcharge ? new Date().toISOString() : null,
   }
+  const withTerms = {
+    ...withFees,
+    fee_rate: input.feeTerms?.rate ?? null,
+    fee_fixed: input.feeTerms?.fixed ?? null,
+    fee_share: input.feeTerms ? Math.round(input.feeTerms.share) : null,
+  }
 
-  // 0049's columns if they exist, the old shape if not. A payment must land
-  // even on a system that has not been migrated yet; it just lands without the
-  // reconciliation figures.
-  let { data, error } = await db.from('gateway_payments').insert(withFees).select('id').single()
-  if (error && MISSING_COLUMN.has(error.code ?? '')) {
-    ;({ data, error } = await db.from('gateway_payments').insert(base).select('id').single())
+  // Newest shape first, stepping back a migration at a time. A payment must
+  // land even on a database that has not caught up; it just lands with fewer
+  // of the reconciliation figures.
+  let data: { id: number } | null = null
+  let error: { code?: string | null; message?: string } | null = null
+  for (const row of [withTerms, withFees, base]) {
+    const res = await db.from('gateway_payments').insert(row).select('id').single()
+    data = res.data as { id: number } | null
+    error = res.error
+    if (!error || !MISSING_COLUMN.has(error.code ?? '')) break
   }
 
   if (!error && data) return { action: 'record', rowId: (data as { id: number }).id }

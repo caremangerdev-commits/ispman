@@ -111,6 +111,9 @@ export async function POST(
     currency: event.currency,
     surcharge: surcharge || null,
     fee: event.fee ?? null,
+    // The terms the surcharge was quoted under, so this payment stays
+    // explicable after the company edits its rate.
+    feeTerms: surcharge > 0 ? event.feeTerms ?? null : null,
   })
   if (claim.action === 'duplicate') {
     return NextResponse.json({ ok: true, duplicate: true })

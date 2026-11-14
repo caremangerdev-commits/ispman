@@ -47,6 +47,7 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 
 import {
   WebhookError,
+  type CardFeeTerms,
   type CheckoutRequest,
   type GatewayCredentials,
   type GatewayPayment,
@@ -91,6 +92,31 @@ const REF_KEY = 'ispman_ref'
  * agreed to carry a share of the card fee. Absent on almost every payment.
  */
 const SURCHARGE_KEY = 'ispman_surcharge'
+
+/**
+ * The metadata key the fee terms travel under, as `rate:fixed:share`, e.g.
+ * '3.7:45.53:50'. One short string rather than three keys, because Dime's
+ * metadata is a flat bag we hand back to ourselves and every key is another
+ * thing to spell right in two places.
+ *
+ * Only ever present alongside SURCHARGE_KEY.
+ */
+const FEE_TERMS_KEY = 'ispman_fee'
+
+function encodeFeeTerms(terms: CardFeeTerms): string {
+  return [terms.rate, terms.fixed, Math.round(terms.share)].join(':')
+}
+
+/** Null unless all three parts are present and sane — a half-read snapshot is worse than none. */
+function decodeFeeTerms(raw: unknown): CardFeeTerms | null {
+  if (typeof raw !== 'string') return null
+  const parts = raw.split(':')
+  if (parts.length !== 3) return null
+  const [rate, fixed, share] = parts.map(Number)
+  if (![rate, fixed, share].every((n) => Number.isFinite(n) && n >= 0)) return null
+  if (rate > 20 || fixed > 10000 || share > 100) return null
+  return { rate, fixed, share }
+}
 
 /** `companyId:customerId` — what comes back to tell us who paid. */
 function encodeReference(companyId: number, customerId: number): string {
@@ -172,6 +198,9 @@ export const dime: PaymentGateway = {
     const surcharge = Number(req.surcharge)
     if (Number.isFinite(surcharge) && surcharge > 0) {
       ;(body.metadata as Record<string, unknown>)[SURCHARGE_KEY] = round2(surcharge).toFixed(2)
+      if (req.feeTerms) {
+        ;(body.metadata as Record<string, unknown>)[FEE_TERMS_KEY] = encodeFeeTerms(req.feeTerms)
+      }
       body.description = 'Internet service (includes card fee)'
     }
     if (req.returnUrl) body.redirectUrl = req.returnUrl
@@ -320,6 +349,7 @@ export const dime: PaymentGateway = {
     const containers = [obj(txn.order), obj(txn.entity), obj(payload?.order), txn, payload]
     let ref: { companyId: number; customerId: number } | null = null
     let surcharge = 0
+    let feeTerms: CardFeeTerms | null = null
     for (const c of containers) {
       if (!c) continue
       const meta = obj(c.metadata)
@@ -328,6 +358,7 @@ export const dime: PaymentGateway = {
         if (ref) {
           const s = Number(source?.[SURCHARGE_KEY])
           if (Number.isFinite(s) && s > 0) surcharge = round2(s)
+          feeTerms = decodeFeeTerms(source?.[FEE_TERMS_KEY])
           break
         }
       }
@@ -357,6 +388,7 @@ export const dime: PaymentGateway = {
       customerId: ref.customerId,
       surcharge,
       fee,
+      feeTerms,
     }
   },
 }

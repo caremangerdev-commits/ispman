@@ -64,6 +64,19 @@ export type GatewayCredentials = {
   feeFixed: number | null
 }
 
+/**
+ * The fee terms one payment was quoted under. A snapshot, not a pointer: the
+ * company's current rate is no use for explaining a payment from March.
+ */
+export type CardFeeTerms = {
+  /** Percentage, as a percentage: 3.7 means 3.7%. */
+  rate: number
+  /** Fixed amount per transaction, in the company's currency. */
+  fixed: number
+  /** The share of the fee, 0–100, the customer agreed to carry. */
+  share: number
+}
+
 export type CheckoutRequest = {
   companyId: number
   customerId: number
@@ -84,6 +97,13 @@ export type CheckoutRequest = {
    * what they are held to.
    */
   surcharge?: number
+  /**
+   * The fee terms the surcharge was worked out from, carried along so the
+   * payment can be re-derived later. Frozen at checkout for the same reason
+   * the surcharge is: the company may edit its rate afterwards, and a past
+   * payment has to stay explicable in the terms it was actually charged under.
+   */
+  feeTerms?: CardFeeTerms | null
   /** ISO 4217, e.g. 'JMD'. */
   currency: string
   /**
@@ -124,6 +144,8 @@ export type GatewayPayment = {
    * worked out. Recorded so a bank statement reconciles. Null when unknown.
    */
   fee?: number | null
+  /** The fee terms the surcharge was quoted under, round-tripped back. */
+  feeTerms?: CardFeeTerms | null
 }
 
 export type WebhookRequest = {
