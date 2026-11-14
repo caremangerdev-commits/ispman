@@ -252,7 +252,19 @@ export const dime: PaymentGateway = {
     // dropped a real payment on the floor — answered 200, recorded nothing.
     // Dime sends succeeded when the money is taken; settled is its own later
     // event about the payout, which we ignore.
-    if (str(body.event_type) !== 'payment.succeeded') return null
+    //
+    // LOGGED, NOT SILENT. A delivery we drop looks identical to one we never
+    // received: 200, no row, no trace. One line per ignored event is the
+    // difference between "working" and "quietly losing money", and it costs a
+    // log line per lifecycle event.
+    const eventType = str(body.event_type)
+    if (eventType !== 'payment.succeeded') {
+      console.log(
+        '[dime webhook] ignored ' + (eventType ?? 'an event with no event_type') +
+          ' (' + (str(body.event_id) ?? 'no id') + '); body keys: ' + Object.keys(body).join(',')
+      )
+      return null
+    }
 
     const txn = obj(obj(body.payload)?.transaction)
     if (!txn) throw new WebhookError('payment.succeeded carried no transaction.', 400)
@@ -260,7 +272,10 @@ export const dime: PaymentGateway = {
     // A payment that failed or was reversed never reaches us as `succeeded`,
     // but if Dime ever sends one, these are not money in hand.
     const status = str(txn.status)
-    if (status === 'FAILED' || status === 'VOID' || status === 'ABANDONED') return null
+    if (status === 'FAILED' || status === 'VOID' || status === 'ABANDONED') {
+      console.log('[dime webhook] ignored a succeeded event whose transaction read ' + status)
+      return null
+    }
 
     // The immutable transaction token is the idempotency key the ledger is
     // built on. resource_id carries the same value; prefer the transaction's own.
