@@ -244,40 +244,71 @@ export const dime: PaymentGateway = {
     // Only a captured payment is money we can record. Everything else on this
     // endpoint — authorised, failed, voided, abandoned, settled, and any event
     // type Dime adds later — is acknowledged and dropped.
+    //
+    // THE EVENT TYPE IS THE SIGNAL, NOT THE TRANSACTION'S STATUS. Verified
+    // against a live sandbox payment, 13 Nov 2026: payment.succeeded was
+    // delivered at 00:26:17 and the transaction only reached COMPLETE at
+    // 00:26:30, when payment.settled fired. Gating on COMPLETE here therefore
+    // dropped a real payment on the floor — answered 200, recorded nothing.
+    // Dime sends succeeded when the money is taken; settled is its own later
+    // event about the payout, which we ignore.
     if (str(body.event_type) !== 'payment.succeeded') return null
 
     const txn = obj(obj(body.payload)?.transaction)
     if (!txn) throw new WebhookError('payment.succeeded carried no transaction.', 400)
 
-    // A succeeded event whose transaction is not COMPLETE is a stage we do not
-    // act on, not a malformed delivery.
-    if (str(txn.status) !== 'COMPLETE') return null
+    // A payment that failed or was reversed never reaches us as `succeeded`,
+    // but if Dime ever sends one, these are not money in hand.
+    const status = str(txn.status)
+    if (status === 'FAILED' || status === 'VOID' || status === 'ABANDONED') return null
 
     // The immutable transaction token is the idempotency key the ledger is
     // built on. resource_id carries the same value; prefer the transaction's own.
     const reference = str(txn.token) ?? str(body.resource_id)
     if (!reference) throw new WebhookError('Webhook carried no transaction token.', 400)
 
-    // final_amount is what was actually taken once Dime has settled the figure;
-    // amount is what was asked for. Prefer the former when present.
-    const raw = typeof txn.final_amount === 'number' ? txn.final_amount : Number(txn.amount)
-    const amount = round2(raw)
+    // WHAT THE CUSTOMER PAID — `amount`, never `final_amount`.
+    //
+    // final_amount is the NET figure after Dime's fee, not a corrected total.
+    // The sandbox payment of 13 Nov 2026 read amount 1900, fees 126.71,
+    // final_amount 1773.29. Crediting final_amount would have short-changed the
+    // customer by the processor's fee on every single payment and cut their
+    // service off early. The fee is Dime's business with the operator; what the
+    // customer handed over is what buys them service.
+    const amount = round2(Number(txn.amount))
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new WebhookError('Webhook amount was not a positive number.', 400)
     }
 
     const currency = str(txn.currency) ?? ''
 
-    // Our reference comes back under the order's metadata, in the `details`
-    // object — Dime's own spelling for the metadata a merchant sent.
-    const order = obj(txn.order)
-    const details = obj(obj(order?.metadata)?.details)
-    const ref = decodeReference(details?.[REF_KEY])
+    // Our reference comes back under the order's metadata. Dime spells the
+    // order two ways depending on which view you are looking at — `order` in
+    // the webhook payload, `entity` on GET /transactions — and nests what we
+    // sent under `metadata.details`. Check every shape rather than trust one:
+    // losing this means a paid customer we cannot identify, which is worse than
+    // any amount of defensive code.
+    const payload = obj(body.payload)
+    const containers = [obj(txn.order), obj(txn.entity), obj(payload?.order), txn, payload]
+    let ref: { companyId: number; customerId: number } | null = null
+    for (const c of containers) {
+      if (!c) continue
+      const meta = obj(c.metadata)
+      for (const source of [obj(meta?.details), meta, obj(c.details)]) {
+        ref = decodeReference(source?.[REF_KEY])
+        if (ref) break
+      }
+      if (ref) break
+    }
     if (!ref) {
-      throw new WebhookError(
-        'Webhook order metadata carried no usable ' + REF_KEY + '.',
-        400
+      // Loud, and non-2xx: Dime retries, and the delivery shows as failed on
+      // their side instead of looking like a payment we chose to ignore.
+      console.error(
+        '[dime webhook] no ' + REF_KEY + ' in event ' + str(body.event_id) +
+          ' for transaction ' + reference + '; payload keys: ' +
+          Object.keys(txn).join(',')
       )
+      throw new WebhookError('Webhook order metadata carried no usable ' + REF_KEY + '.', 400)
     }
 
     return {
