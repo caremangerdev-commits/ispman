@@ -43,8 +43,6 @@ export type PaymentGatewayCardProps = {
   returnUrl: string | null
 }
 
-const DIME_SANDBOX_API = 'https://sandbox.api.dimepay.app/dapi/v2'
-
 function Notice({ state }: { state: GatewayFormResult | null }) {
   if (!state) return null
   return (
@@ -117,7 +115,9 @@ export function PaymentGatewayCard({
   const id = (name: string) => provider + '-' + name + '-' + uid
 
   const secretSet = Boolean(settings?.secretSet)
-  const webhookSecretSet = Boolean(settings?.webhookSecretSet)
+  // Dime's payment notices register themselves on save; this is the only
+  // outward sign that it worked, so the operator is told either way.
+  const webhookLive = Boolean(settings?.webhookSecretSet)
   const isDime = provider === 'dime'
   const label = isDime ? 'Dime Pay' : 'Fygaro'
 
@@ -218,57 +218,7 @@ export function PaymentGatewayCard({
           </Hint>
         </div>
 
-        {isDime ? (
-          <div className="space-y-1.5">
-            <label
-              htmlFor={id('webhook_secret')}
-              className="block text-xs font-medium text-gray-400"
-            >
-              Webhook signing secret
-            </label>
-            <input
-              id={id('webhook_secret')}
-              name="webhook_secret"
-              type="password"
-              autoComplete="new-password"
-              placeholder={
-                webhookSecretSet
-                  ? '•••••••• (saved — leave blank to keep)'
-                  : 'Paste the signing secret'
-              }
-              disabled={!available}
-              className={settingsInput + ' font-mono'}
-            />
-            <Hint>
-              A different secret from the one above. You do not set this up yourself — once your
-              keys are saved, tell us and we will switch the payment notices on and fill this in.
-              Without it a payment could arrive and never be recorded, so Dime cannot be turned on
-              until it is saved.
-            </Hint>
-          </div>
-        ) : null}
-
-        {isDime ? (
-          <div className="space-y-1.5">
-            <label htmlFor={id('checkout_url')} className="block text-xs font-medium text-gray-400">
-              Environment
-            </label>
-            <select
-              id={id('checkout_url')}
-              name="checkout_url"
-              defaultValue={settings?.checkoutUrl === DIME_SANDBOX_API ? DIME_SANDBOX_API : ''}
-              disabled={!available}
-              className={settingsInput}
-            >
-              <option value="">Live — take real payments</option>
-              <option value={DIME_SANDBOX_API}>Sandbox — test with Dime’s test cards</option>
-            </select>
-            <Hint>
-              Use Sandbox with your sandbox keys to prove the flow end to end before going live.
-              A sandbox payment extends real service, so test on a test account.
-            </Hint>
-          </div>
-        ) : (
+        {isDime ? null : (
           <div className="space-y-1.5">
             <label htmlFor={id('checkout_url')} className="block text-xs font-medium text-gray-400">
               Payment button URL
@@ -381,7 +331,9 @@ export function PaymentGatewayCard({
         <CopyField value={webhookUrl} />
         <Hint>
           {isDime
-            ? 'Where Dime sends word of a payment. We set this up for you once your keys are saved — nothing to do here. Shown so you know the address your payments come back to.'
+            ? webhookLive
+              ? 'Dime tells us here the moment a customer pays, and we record it on their account. Set up already — nothing to do.'
+              : 'Where Dime tells us a customer has paid. We set this up for you when you save your keys above.'
             : 'Paste this into Fygaro’s webhook settings. Fygaro POSTs here on every successful payment; the signature is checked against your secret above.'}
         </Hint>
       </div>

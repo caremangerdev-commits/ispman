@@ -7,6 +7,7 @@
 // exactly as it did before the migration — the house pattern.
 
 import { gatewayFor } from '@/lib/payments/gateways'
+import { registerDimeWebhook } from '@/lib/payments/gateways/dime'
 import { type CardFeeTerms, type GatewayCredentials } from '@/lib/payments/gateways/types'
 import { splitCardFee, type CardFee, type SurchargeBreakdown } from '@/lib/payments/surcharge'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -164,6 +165,12 @@ export async function saveGatewayCredentials(input: {
   secretKey?: string
   /** Same write-only rule as secretKey. Only providers with a second secret send it. */
   webhookSecret?: string
+  /**
+   * Where the gateway should send word of a payment. The caller supplies it
+   * because only a request knows the host. Given it, Dime's webhook is
+   * registered here instead of by hand — see registerDimeWebhook.
+   */
+  webhookUrl?: string
   /** This gateway's fee from the operator's agreement (0049). null clears it. */
   feeRate?: number | null
   feeFixed?: number | null
@@ -193,11 +200,53 @@ export async function saveGatewayCredentials(input: {
   const nextSecret = input.secretKey && input.secretKey.trim() ? input.secretKey.trim() : priorSecret
 
   const priorWebhook = existingCreds?.webhookSecret ?? null
-  const nextWebhook =
+  let nextWebhook =
     input.webhookSecret && input.webhookSecret.trim() ? input.webhookSecret.trim() : priorWebhook
 
   const gateway = gatewayFor(input.provider)
   const label = gateway?.label ?? input.provider
+
+  // DIME'S WEBHOOK REGISTERS ITSELF.
+  //
+  // It used to be four steps for the operator: copy a URL out of this page,
+  // paste it into Dime, tick the right events, copy the signing secret back.
+  // Every one of them fails silently — Dime reports the delivery, nothing
+  // lands here, and a customer who paid stays cut off. Fygaro ran that way on
+  // this platform for months and never recorded a single payment.
+  //
+  // We have the keys and the URL at exactly this moment, so we do it here.
+  // Only when the keys are new or no secret is stored: re-registering on every
+  // save would rotate the secret for no reason.
+  if (
+    gateway?.provider === 'dime' && input.webhookUrl &&
+    nextSecret && input.publicKey && hasWebhookColumn
+  ) {
+    const keysChanged =
+      nextSecret !== priorSecret ||
+      input.publicKey !== (existingCreds?.publicKey ?? null) ||
+      input.checkoutUrl !== (existingCreds?.checkoutUrl ?? null)
+    if (!nextWebhook || keysChanged) {
+      const registered = await registerDimeWebhook(
+        {
+          publicKey: input.publicKey,
+          secretKey: nextSecret,
+          checkoutUrl: input.checkoutUrl,
+        },
+        input.webhookUrl
+      )
+      if (registered) {
+        nextWebhook = registered.secret
+      } else if (input.enabled) {
+        // Refuse rather than save a gateway that looks on and cannot record.
+        return {
+          ok: false,
+          error:
+            'Dime would not accept the payment notices for this company. ' +
+            'Check the client key and API secret, then save again.',
+        }
+      }
+    }
+  }
 
   if (input.enabled && !(nextSecret && nextSecret.trim())) {
     return { ok: false, error: 'Add the ' + label + ' secret before turning online payments on.' }
@@ -215,7 +264,9 @@ export async function saveGatewayCredentials(input: {
     if (!(nextWebhook && nextWebhook.trim())) {
       return {
         ok: false,
-        error: 'Add the Dime webhook signing secret before turning online payments on.',
+        error:
+          'Could not set up the payment notices with Dime. ' +
+          'Check the client key and API secret, then save again.',
       }
     }
   }

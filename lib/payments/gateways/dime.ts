@@ -392,3 +392,106 @@ export const dime: PaymentGateway = {
     }
   },
 }
+
+/**
+ * Registers the webhook endpoint with Dime and returns its signing secret.
+ *
+ * WHY THIS IS CODE AND NOT A STEP IN A GUIDE. Dime has to be told where to
+ * send word of a payment, and the secret it hands back is what proves a later
+ * delivery really came from Dime. Asked of a human, that is four fiddly steps
+ * — copy a URL, pick the right events, copy a secret back — and every one of
+ * them fails SILENTLY: Dime's log says delivered, nothing is recorded here,
+ * and a customer who paid stays cut off. That is not a hypothetical. It is
+ * what Fygaro did on this platform for months.
+ *
+ * The app knows the URL, holds the keys and knows the company, so it does the
+ * whole thing itself the moment credentials are saved. Nobody sees the secret.
+ *
+ * IDEMPOTENT. Saving the same keys twice must not litter Dime with duplicate
+ * endpoints, each delivering the same payment again. An endpoint already
+ * registered for this URL is deleted and remade, because Dime shows a signing
+ * secret once and there is no way to read back the one we are missing.
+ *
+ * Returns null when Dime declines, leaving the caller to store nothing and
+ * tell the operator — a half-registered gateway must not look switched on.
+ */
+export async function registerDimeWebhook(
+  creds: Pick<GatewayCredentials, 'publicKey' | 'secretKey' | 'checkoutUrl'>,
+  webhookUrl: string
+): Promise<{ secret: string; token: string } | null> {
+  if (!creds.publicKey || !creds.secretKey) return null
+  if (!/^https:\/\//i.test(webhookUrl)) {
+    console.error('[dime webhook] refusing to register a non-HTTPS URL:', webhookUrl)
+    return null
+  }
+
+  const { api } = hostsFor(creds as GatewayCredentials)
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    'X-Dime-Client': creds.publicKey,
+    Authorization: 'Bearer ' + creds.secretKey,
+  }
+
+  const call = async (path: string, init: RequestInit) => {
+    const res = await fetch(api + path, {
+      ...init,
+      headers,
+      signal: AbortSignal.timeout(20_000),
+    })
+    const text = await res.text()
+    let body: unknown = null
+    try { body = text ? JSON.parse(text) : null } catch { body = null }
+    return { ok: res.ok, status: res.status, body }
+  }
+
+  try {
+    // Clear any endpoint already pointing at this company's URL. Dime would
+    // happily keep both and deliver every payment twice.
+    const existing = await call('/webhook-endpoints', { method: 'GET' })
+    if (existing.ok) {
+      const list = obj(existing.body)
+      const rows = Array.isArray(list?.data)
+        ? (list.data as unknown[])
+        : Array.isArray(existing.body)
+          ? (existing.body as unknown[])
+          : []
+      for (const row of rows) {
+        const r = obj(row)
+        if (str(r?.url) === webhookUrl && str(r?.token)) {
+          await call('/webhook-endpoints/' + str(r?.token), { method: 'DELETE' })
+        }
+      }
+    }
+
+    const made = await call('/webhook-endpoints', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: webhookUrl,
+        description: 'ISPMan',
+        // parseWebhook acts on payment.succeeded alone and acknowledges the
+        // rest, but the lifecycle events are worth receiving: they are what
+        // makes a failed or abandoned payment visible rather than a silence.
+        enabled_events: [
+          'payment.succeeded', 'payment.authorised', 'payment.failed',
+        ],
+      }),
+    })
+
+    const out = obj(made.body)
+    const secret = str(out?.signing_secret)
+    const token = str(out?.token)
+    if (!made.ok || !secret) {
+      const err = obj(out?.error)
+      console.error(
+        '[dime webhook] could not register %s: HTTP %d %s',
+        webhookUrl, made.status, str(err?.message) ?? '(no message)'
+      )
+      return null
+    }
+    return { secret, token: token ?? '' }
+  } catch (e) {
+    console.error('[dime webhook] registration failed:', (e as Error).message)
+    return null
+  }
+}

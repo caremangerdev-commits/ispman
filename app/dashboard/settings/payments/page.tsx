@@ -10,7 +10,7 @@ import {
 } from '@/lib/data/payment-gateways'
 import { portalUrlForCompany } from '@/lib/data/portal'
 import { gatewayFor } from '@/lib/payments/gateways'
-import { externalHost } from '@/lib/portal/config'
+import { webhookUrlFor } from '@/lib/payments/webhook-url'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
 import { canOpenSetting } from '@/lib/settings-nav'
@@ -40,21 +40,9 @@ export default async function OnlinePaymentsPage() {
 
   // The webhook is reached by the provider's servers on the staff domain the
   // operator is viewing this on — behind Apache the real host is in
-  // X-Forwarded-Host.
+  // X-Forwarded-Host. lib/payments/webhook-url.ts is the one definition, so
+  // the address shown here is the address the save action registers.
   const h = await headers()
-  const host = externalHost(h) ?? 'your-domain'
-  // HTTPS UNLESS WE ARE PLAINLY IN DEV.
-  //
-  // X-Forwarded-Proto arrives as "http" from this Apache even on the TLS
-  // vhost, so trusting it printed an http:// webhook URL for an operator to
-  // paste into their gateway. Dime refuses a non-HTTPS endpoint outright and
-  // Fygaro would be posting payment notifications in clear. The scheme a
-  // gateway must call us on is a property of the deployment, not of whatever
-  // header happened to survive the proxy, so only a local host gets http.
-  const local = /^(localhost|127\.0\.0\.1)(:|$)/.test(host)
-  const proto = local ? (h.get('x-forwarded-proto') ?? 'http') : 'https'
-  const webhookUrlFor = (provider: string) =>
-    proto + '://' + host + '/api/payments/' + provider + '/' + company.id + '/webhook'
 
   const [saved, portalUrl, share, live, bill, sampleBill] = await Promise.all([
     Promise.all(
@@ -108,7 +96,7 @@ export default async function OnlinePaymentsPage() {
           provider={provider}
           available={caps.paymentGateways}
           settings={saved[i]}
-          webhookUrl={webhookUrlFor(provider)}
+          webhookUrl={webhookUrlFor(h, provider, company.id)}
           returnUrl={returnUrl}
         />
       ))}

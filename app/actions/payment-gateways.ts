@@ -1,12 +1,14 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { headers } from 'next/headers'
 
 import { logEvent } from '@/lib/audit'
 import {
   cardFeeShare, getEnabledGateway, getGatewaySettings, saveGatewayCredentials, setCardFeeShare,
 } from '@/lib/data/payment-gateways'
 import { gatewayFor } from '@/lib/payments/gateways'
+import { webhookUrlFor } from '@/lib/payments/webhook-url'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { getSession } from '@/lib/session'
@@ -20,9 +22,13 @@ import { getSession } from '@/lib/session'
  * session's, never the form's. Same gate as the rest of settings
  * (company_admin).
  *
- * BOTH SECRETS ARE WRITE-ONLY. The page never renders either; a blank field
- * means "leave it as it is" (lib/data/payment-gateways.ts#saveGatewayCredentials),
- * so a save that only toggles the switch keeps what is stored.
+ * THE SECRET IS WRITE-ONLY. The page never renders it; a blank field means
+ * "leave it as it is" (lib/data/payment-gateways.ts#saveGatewayCredentials), so
+ * a save that only toggles the switch keeps what is stored.
+ *
+ * THE WEBHOOK SECRET IS NEVER TYPED. Dime issues it when we register this
+ * company's webhook address, which saveGatewayCredentials does on this save —
+ * so there is no form field for it and nothing for an operator to copy.
  *
  * TURNING ONE ON TURNS THE OTHER OFF. A company pays through one gateway at a
  * time; the exclusivity is enforced in saveGatewayCredentials, not here, so it
@@ -82,7 +88,6 @@ export async function saveGateway(
   const checkoutUrl = field(formData, 'checkout_url')
   // Blank means "keep the stored secret"; a value replaces it.
   const typedSecret = field(formData, 'secret_key')
-  const typedWebhookSecret = field(formData, 'webhook_secret')
   const enabled = formData.get('enabled') === 'on'
 
   if (checkoutUrl && !/^https?:\/\//i.test(checkoutUrl)) {
@@ -106,7 +111,9 @@ export async function saveGateway(
     publicKey,
     checkoutUrl,
     secretKey: typedSecret ?? undefined,
-    webhookSecret: typedWebhookSecret ?? undefined,
+    // Lets Dime's webhook register itself against this company's address
+    // rather than asking the operator to copy it across by hand.
+    webhookUrl: webhookUrlFor(await headers(), provider, company.id),
     feeRate,
     feeFixed,
     enabled,
@@ -119,7 +126,6 @@ export async function saveGateway(
   if ((before?.publicKey ?? null) !== publicKey) changes.push('public key changed')
   if ((before?.checkoutUrl ?? null) !== checkoutUrl) changes.push('URL changed')
   if (typedSecret) changes.push('secret replaced')
-  if (typedWebhookSecret) changes.push('webhook secret replaced')
   if ((before?.feeRate ?? null) !== feeRate) changes.push('fee rate ' + (feeRate ?? 'cleared'))
   if ((before?.feeFixed ?? null) !== feeFixed) changes.push('fixed fee ' + (feeFixed ?? 'cleared'))
 
