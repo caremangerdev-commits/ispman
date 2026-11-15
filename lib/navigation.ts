@@ -80,6 +80,16 @@ const SECTIONS: NavSection[] = [
     ],
   },
   {
+    // NETWORK, its own section rather than an item under Settings: Router
+    // Tunnels is a setup screen an admin visits twice, this is a status screen
+    // a technician opens when a customer calls. Same routers, opposite jobs.
+    heading: 'Network',
+    requireAny: ['view_network_infrastructure'],
+    items: [
+      { label: 'Routers', href: '/dashboard/network', icon: 'router', permission: 'view_network_infrastructure' },
+    ],
+  },
+  {
     heading: 'Support',
     requireAny: ['view_support_tickets', 'create_ticket', 'manage_company_settings'],
     items: [
@@ -129,6 +139,7 @@ const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/tickets\/[^/]+$/, title: 'Ticket Details' },
   { match: /^\/dashboard\/tickets$/, title: 'Tickets' },
   { match: /^\/dashboard\/incidents$/, title: 'Outages' },
+  { match: /^\/dashboard\/network$/, title: 'Network' },
   { match: /^\/dashboard\/leads\/new$/, title: 'Add Prospect' },
   { match: /^\/dashboard\/leads\/[^/]+$/, title: 'Prospect' },
   { match: /^\/dashboard\/leads$/, title: 'Prospects' },

@@ -712,3 +712,117 @@ export async function deleteNasRows(nasname: string): Promise<number> {
   )
   return (result as mysql.ResultSetHeader).affectedRows ?? 0
 }
+
+// ---------------------------------------------------------------------------
+// What a router has been doing — for the Network page
+// ---------------------------------------------------------------------------
+
+/** One router's recent accounting, as the Network page shows it. */
+export type RouterActivity = {
+  /** Customers with at least one session on this router in the last 24 h. */
+  customersDay: number
+  /** Sessions that began in the last hour. */
+  sessionsHour: number
+  /** The newest session start this router has reported. */
+  lastSessionAt: Date | null
+  /**
+   * 24 booleans, oldest first: did any session begin in that clock hour.
+   * Index 23 is the hour we are in now.
+   */
+  hours: boolean[]
+  /**
+   * True when this router sends interim accounting updates.
+   *
+   * WHY IT IS ON THE CARD. Without them a session stays open in radacct for
+   * ever — 83,379 of them are, some from 2021 — so "how many are online right
+   * now" cannot be answered for this router at all, and the page says so
+   * rather than printing a number that is years of residue. One setting on the
+   * router's DHCP server turns them on, and the number appears by itself.
+   */
+  interim: boolean
+}
+
+const EMPTY_ACTIVITY: RouterActivity = {
+  customersDay: 0,
+  sessionsHour: 0,
+  lastSessionAt: null,
+  hours: new Array(24).fill(false),
+  interim: false,
+}
+
+/**
+ * Recent accounting for a set of routers, keyed by NAS address.
+ *
+ * ADDRESSED BY TUNNEL IP. A router on the tunnel reports its tunnel address in
+ * NAS-IP-Address, which is also its `nas` row, so the join is exact. A router
+ * still on the old public path reports its own LAN address and will not match
+ * anything here — it comes back absent, which the page shows as "no
+ * accounting", not as "down".
+ *
+ * TWO QUERIES, NOT TWENTY-FOUR CONDITIONAL SUMS. Both are bounded to 24 hours
+ * and both hit the index on acctstarttime; the second groups by hour, which a
+ * wall of CASE WHEN columns would do no faster and nobody could read.
+ */
+export async function routerActivity(nasIps: string[]): Promise<Map<string, RouterActivity>> {
+  const out = new Map<string, RouterActivity>()
+  const ips = nasIps.map((s) => s.trim()).filter(Boolean)
+  if (!ips.length) return out
+
+  const marks = ips.map(() => '?').join(', ')
+
+  const [totals] = await withRetry(() =>
+    radiusPool().query(
+      `SELECT nasipaddress,
+              COUNT(DISTINCT username)                                    AS customers_day,
+              COALESCE(SUM(acctstarttime > NOW() - INTERVAL 1 HOUR), 0)   AS sessions_hour,
+              MAX(acctstarttime)                                          AS last_session,
+              COALESCE(SUM(acctupdatetime > acctstarttime), 0)            AS interim_rows
+         FROM radacct
+        WHERE acctstarttime > NOW() - INTERVAL 24 HOUR
+          AND nasipaddress IN (${marks})
+        GROUP BY nasipaddress`,
+      ips
+    )
+  )
+
+  for (const r of totals as {
+    nasipaddress: string
+    customers_day: string | number
+    sessions_hour: string | number
+    last_session: Date | null
+    interim_rows: string | number
+  }[]) {
+    out.set(r.nasipaddress.trim(), {
+      customersDay: Number(r.customers_day ?? 0),
+      sessionsHour: Number(r.sessions_hour ?? 0),
+      lastSessionAt: r.last_session ? new Date(r.last_session) : null,
+      hours: new Array(24).fill(false),
+      interim: Number(r.interim_rows ?? 0) > 0,
+    })
+  }
+
+  const [buckets] = await withRetry(() =>
+    radiusPool().query(
+      `SELECT nasipaddress,
+              TIMESTAMPDIFF(HOUR, acctstarttime, NOW()) AS hours_ago
+         FROM radacct
+        WHERE acctstarttime > NOW() - INTERVAL 24 HOUR
+          AND nasipaddress IN (${marks})
+        GROUP BY nasipaddress, hours_ago`,
+      ips
+    )
+  )
+
+  for (const r of buckets as { nasipaddress: string; hours_ago: string | number }[]) {
+    const row = out.get(r.nasipaddress.trim())
+    if (!row) continue
+    const back = Number(r.hours_ago ?? 0)
+    // hours_ago 0 is the hour we are in; the array reads oldest to newest.
+    const i = 23 - back
+    if (i >= 0 && i < 24) row.hours[i] = true
+  }
+
+  return out
+}
+
+export { EMPTY_ACTIVITY }
