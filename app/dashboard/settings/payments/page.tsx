@@ -6,7 +6,7 @@ import { CardFeeCard } from '@/components/settings/CardFeeCard'
 import { PaymentGatewayCard } from '@/components/settings/PaymentGatewayCard'
 import { getBillSettings } from '@/lib/data/bill-settings'
 import {
-  cardFeeShare, getEnabledGateway, getGatewaySettings, sampleBillFor,
+  cardFeeShare, gatewayWebhookStatus, getEnabledGateway, getGatewaySettings, sampleBillFor,
 } from '@/lib/data/payment-gateways'
 import { portalUrlForCompany } from '@/lib/data/portal'
 import { gatewayFor } from '@/lib/payments/gateways'
@@ -44,10 +44,19 @@ export default async function OnlinePaymentsPage() {
   // the address shown here is the address the save action registers.
   const h = await headers()
 
-  const [saved, portalUrl, share, live, bill, sampleBill] = await Promise.all([
+  // Asked of each provider in parallel with everything else: one slow gateway
+  // should cost this page its own 8 seconds, not stack with the rest.
+  const [saved, webhookStates, portalUrl, share, live, bill, sampleBill] = await Promise.all([
     Promise.all(
       PROVIDERS.map((p) =>
         caps.paymentGateways ? getGatewaySettings(company.id, p) : Promise.resolve(null)
+      )
+    ),
+    Promise.all(
+      PROVIDERS.map((p) =>
+        caps.paymentGateways
+          ? gatewayWebhookStatus(company.id, p, webhookUrlFor(h, p, company.id)).catch(() => null)
+          : Promise.resolve(null)
       )
     ),
     portalUrlForCompany(company.id),
@@ -97,6 +106,7 @@ export default async function OnlinePaymentsPage() {
           available={caps.paymentGateways}
           settings={saved[i]}
           webhookUrl={webhookUrlFor(h, provider, company.id)}
+          webhookStatus={webhookStates[i]}
           returnUrl={returnUrl}
         />
       ))}

@@ -5,6 +5,7 @@ import { useFormStatus } from 'react-dom'
 
 import { saveGateway, type GatewayFormResult } from '@/app/actions/payment-gateways'
 import { settingsInput } from '@/components/settings/Modal'
+import type { DimeWebhookStatus } from '@/lib/payments/gateways/dime'
 
 /**
  * One gateway's settings on the Online Payments page. The page renders one card
@@ -39,8 +40,43 @@ export type PaymentGatewayCardProps = {
   settings: GatewaySettings | null
   /** The absolute webhook URL to paste into the provider, e.g. https://host/api/payments/dime/12/webhook. */
   webhookUrl: string
+  /** What the provider itself says about that address right now (Dime only). */
+  webhookStatus: DimeWebhookStatus | null
   /** Where the payer is returned after paying, or null when the portal domain is unset. */
   returnUrl: string | null
+}
+
+/**
+ * What the gateway itself reports about the webhook, in the operator's words.
+ *
+ * SAYS "COULD NOT CHECK" OUT LOUD. A tick that appears whether or not the check
+ * ran is worse than no tick: it is the reassurance without the fact. Only
+ * 'live' is green, only 'missing' and 'inactive' are a fault, and a gateway we
+ * could not reach says so plainly.
+ */
+function WebhookState({ status }: { status: DimeWebhookStatus | null }) {
+  if (!status) return null
+
+  const [dot, text] =
+    status.state === 'live'
+      ? ['bg-green-400', 'Registered with Dime and active.']
+      : status.state === 'inactive'
+        ? ['bg-amber-400', 'Registered with Dime but switched off there. Payments will not be recorded.']
+        : status.state === 'missing'
+          ? ['bg-red-400', 'Dime has no notice set up for this address. Save your keys again to put it back.']
+          : ['bg-gray-500', 'Could not check with Dime just now. ' + status.reason]
+
+  return (
+    <p className="flex items-start gap-2 text-[11px] text-gray-400">
+      <span className={'mt-1 h-1.5 w-1.5 shrink-0 rounded-full ' + dot} aria-hidden="true" />
+      <span>
+        {text}
+        {status.state === 'live' && status.events.length
+          ? ' Events: ' + status.events.join(', ') + '.'
+          : null}
+      </span>
+    </p>
+  )
 }
 
 function Notice({ state }: { state: GatewayFormResult | null }) {
@@ -108,6 +144,7 @@ export function PaymentGatewayCard({
   available,
   settings,
   webhookUrl,
+  webhookStatus,
   returnUrl,
 }: PaymentGatewayCardProps) {
   const [state, action] = useActionState<GatewayFormResult | null, FormData>(saveGateway, null)
@@ -115,9 +152,6 @@ export function PaymentGatewayCard({
   const id = (name: string) => provider + '-' + name + '-' + uid
 
   const secretSet = Boolean(settings?.secretSet)
-  // Dime's payment notices register themselves on save; this is the only
-  // outward sign that it worked, so the operator is told either way.
-  const webhookLive = Boolean(settings?.webhookSecretSet)
   const isDime = provider === 'dime'
   const label = isDime ? 'Dime Pay' : 'Fygaro'
 
@@ -329,11 +363,10 @@ export function PaymentGatewayCard({
       <div className="mt-6 space-y-1.5 border-t border-gray-800 pt-4">
         <p className="text-xs font-medium text-gray-400">Webhook URL</p>
         <CopyField value={webhookUrl} />
+        <WebhookState status={webhookStatus} />
         <Hint>
           {isDime
-            ? webhookLive
-              ? 'Dime tells us here the moment a customer pays, and we record it on their account. Set up already — nothing to do.'
-              : 'Where Dime tells us a customer has paid. We set this up for you when you save your keys above.'
+            ? 'Where Dime tells us a customer has paid. Set up for you when you save your keys above.'
             : 'Paste this into Fygaro’s webhook settings. Fygaro POSTs here on every successful payment; the signature is checked against your secret above.'}
         </Hint>
       </div>

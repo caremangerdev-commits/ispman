@@ -7,7 +7,9 @@
 // exactly as it did before the migration — the house pattern.
 
 import { gatewayFor } from '@/lib/payments/gateways'
-import { registerDimeWebhook } from '@/lib/payments/gateways/dime'
+import {
+  dimeWebhookStatus, registerDimeWebhook, type DimeWebhookStatus,
+} from '@/lib/payments/gateways/dime'
 import { type CardFeeTerms, type GatewayCredentials } from '@/lib/payments/gateways/types'
 import { splitCardFee, type CardFee, type SurchargeBreakdown } from '@/lib/payments/surcharge'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -86,6 +88,24 @@ async function selectGateways(
     if (!MISSING_COLUMN.has(error.code ?? '')) break
   }
   throw new Error('Could not read payment gateways: ' + (lastError?.message ?? 'unknown error'))
+}
+
+/**
+ * What Dime currently reports about this company's webhook.
+ *
+ * ASKED OF DIME, NOT OF OUR OWN ROW, because the row only remembers that a
+ * registration once worked. Null for any other provider, and for Dime before
+ * keys are saved, so the page shows nothing rather than a false alarm.
+ */
+export async function gatewayWebhookStatus(
+  companyId: number,
+  provider: string,
+  webhookUrl: string
+): Promise<DimeWebhookStatus | null> {
+  if (provider !== 'dime') return null
+  const creds = await getGatewayCredentials(companyId, provider).catch(() => null)
+  if (!creds || !creds.publicKey || !creds.secretKey) return null
+  return dimeWebhookStatus(creds, webhookUrl)
 }
 
 /**

@@ -495,3 +495,76 @@ export async function registerDimeWebhook(
     return null
   }
 }
+
+/**
+ * What Dime says about this company's webhook, asked of Dime, now.
+ *
+ * THE STORED SECRET IS NOT PROOF. It only records that a registration call
+ * once succeeded. An endpoint deleted or switched off in Dime's own dashboard
+ * leaves the secret sitting here, the settings page claiming all is well, and
+ * payments arriving nowhere — the exact failure the automatic registration was
+ * written to prevent, with a reassuring label on top. So the page asks Dime.
+ *
+ * NEVER THROWS. A gateway that is slow or down must not take the settings page
+ * with it; 'unknown' says we could not ask, which is not the same as 'missing'
+ * and is not shown as a fault.
+ */
+export type DimeWebhookStatus =
+  | { state: 'live'; events: string[] }
+  | { state: 'inactive' }
+  | { state: 'missing' }
+  | { state: 'unknown'; reason: string }
+
+export async function dimeWebhookStatus(
+  creds: Pick<GatewayCredentials, 'publicKey' | 'secretKey' | 'checkoutUrl'>,
+  webhookUrl: string
+): Promise<DimeWebhookStatus> {
+  if (!creds.publicKey || !creds.secretKey) {
+    return { state: 'unknown', reason: 'No keys saved yet.' }
+  }
+
+  const { api } = hostsFor(creds as GatewayCredentials)
+  try {
+    const res = await fetch(api + '/webhook-endpoints', {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'X-Dime-Client': creds.publicKey,
+        Authorization: 'Bearer ' + creds.secretKey,
+      },
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (!res.ok) {
+      return {
+        state: 'unknown',
+        reason: res.status === 401 || res.status === 403
+          ? 'Dime did not accept the keys.'
+          : 'Dime answered ' + res.status + '.',
+      }
+    }
+
+    const body: unknown = await res.json().catch(() => null)
+    const wrapper = obj(body)
+    const rows = Array.isArray(wrapper?.data)
+      ? (wrapper.data as unknown[])
+      : Array.isArray(body)
+        ? (body as unknown[])
+        : []
+
+    const mine = rows.map(obj).find((r) => str(r?.url) === webhookUrl)
+    if (!mine) return { state: 'missing' }
+    // Dime has used both spellings; absent means active rather than off.
+    const active = mine.is_active ?? mine.enabled ?? true
+    if (active === false) return { state: 'inactive' }
+
+    const events = Array.isArray(mine.enabled_events)
+      ? (mine.enabled_events as unknown[]).map(str).filter((s): s is string => Boolean(s))
+      : []
+    return { state: 'live', events }
+  } catch (e) {
+    const msg = (e as Error).name === 'TimeoutError'
+      ? 'Dime did not answer in time.'
+      : 'Could not reach Dime.'
+    return { state: 'unknown', reason: msg }
+  }
+}
