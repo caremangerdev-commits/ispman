@@ -128,7 +128,7 @@ export function PaymentGatewayCard({
           <h2 className="text-sm font-semibold text-white">{label}</h2>
           <p className="mt-1 text-xs text-gray-500">
             {isDime
-              ? 'Card payments from the customer portal. Paste your Dime client key and API secret, then tell us and we will switch the payment notices on.'
+              ? 'Card payments from the customer portal. Paste your Dime client key and API secret, and the rest is arranged for you on save.'
               : 'Card payments from the customer portal. Paste the keys from your Fygaro payment-button and webhook settings, then turn it on.'}
           </p>
         </div>
