@@ -415,14 +415,20 @@ export const dime: PaymentGateway = {
  * Returns null when Dime declines, leaving the caller to store nothing and
  * tell the operator — a half-registered gateway must not look switched on.
  */
+export type DimeRegistration =
+  | { ok: true; secret: string; token: string }
+  | { ok: false; reason: string }
+
 export async function registerDimeWebhook(
   creds: Pick<GatewayCredentials, 'publicKey' | 'secretKey' | 'checkoutUrl'>,
   webhookUrl: string
-): Promise<{ secret: string; token: string } | null> {
-  if (!creds.publicKey || !creds.secretKey) return null
+): Promise<DimeRegistration> {
+  if (!creds.publicKey || !creds.secretKey) {
+    return { ok: false, reason: 'No client key or API secret to register with.' }
+  }
   if (!/^https:\/\//i.test(webhookUrl)) {
     console.error('[dime webhook] refusing to register a non-HTTPS URL:', webhookUrl)
-    return null
+    return { ok: false, reason: 'This system is not served over HTTPS, which Dime requires.' }
   }
 
   const { api } = hostsFor(creds as GatewayCredentials)
@@ -483,16 +489,29 @@ export async function registerDimeWebhook(
     const token = str(out?.token)
     if (!made.ok || !secret) {
       const err = obj(out?.error)
+      const message = str(err?.message) ?? str(out?.message) ?? '(no message)'
       console.error(
         '[dime webhook] could not register %s: HTTP %d %s',
-        webhookUrl, made.status, str(err?.message) ?? '(no message)'
+        webhookUrl, made.status, message
       )
-      return null
+      // 401 ON KEYS THAT LOOK FINE IS ALMOST ALWAYS A SANDBOX KEY. Dime's own
+      // wording ("Invalid API key provided") sends an operator back to check
+      // for a typo they will not find, because the key is correct — for the
+      // other environment. Say the likely cause instead.
+      return {
+        ok: false,
+        reason:
+          made.status === 401 || made.status === 403
+            ? 'Dime did not accept these keys. A key made in Dime\u2019s sandbox will not ' +
+              'work here \u2014 create one under API Access Keys, outside the sandbox, ' +
+              'and paste that.'
+            : 'Dime answered ' + made.status + ': ' + message,
+      }
     }
-    return { secret, token: token ?? '' }
+    return { ok: true, secret, token: token ?? '' }
   } catch (e) {
     console.error('[dime webhook] registration failed:', (e as Error).message)
-    return null
+    return { ok: false, reason: 'Could not reach Dime just now. Try saving again.' }
   }
 }
 

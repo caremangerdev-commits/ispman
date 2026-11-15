@@ -254,16 +254,13 @@ export async function saveGatewayCredentials(input: {
         },
         input.webhookUrl
       )
-      if (registered) {
+      if (registered.ok) {
         nextWebhook = registered.secret
       } else if (input.enabled) {
-        // Refuse rather than save a gateway that looks on and cannot record.
-        return {
-          ok: false,
-          error:
-            'Dime would not accept the payment notices for this company. ' +
-            'Check the client key and API secret, then save again.',
-        }
+        // Refuse rather than save a gateway that looks on and cannot record,
+        // and pass on what Dime actually said: "check the keys" sends someone
+        // hunting for a typo that is not there.
+        return { ok: false, error: registered.reason }
       }
     }
   }
