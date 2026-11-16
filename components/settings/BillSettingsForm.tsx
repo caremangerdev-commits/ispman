@@ -62,11 +62,18 @@ export function BillSettingsForm({
    * on, and whether this company can send email at all right now — the
    * switch does nothing while email itself is off.
    */
-  emailBills: { available: boolean; on: boolean; emailBlocked: string | null }
+  emailBills: {
+    available: boolean
+    on: boolean
+    emailBlocked: string | null
+    monthlyAvailable: boolean
+    monthlyOn: boolean
+  }
 }) {
   const [state, action] = useActionState<BillSettingsResult | null, FormData>(saveBillSettings, null)
   const [template, setTemplate] = useState<BillTemplate>(settings.template)
   const [emailOn, setEmailOn] = useState(emailBills.on)
+  const [monthlyOn, setMonthlyOn] = useState(emailBills.monthlyOn)
   const [registered, setRegistered] = useState(settings.taxRegistered)
   const [rate, setRate] = useState(settings.taxRate ? String(settings.taxRate) : '')
   const [label, setLabel] = useState(settings.taxLabelOverride ?? '')
@@ -170,6 +177,33 @@ export function BillSettingsForm({
           <p className="text-[11px] text-amber-400/90">
             Nothing will send yet: {emailBills.emailBlocked.charAt(0).toLowerCase() + emailBills.emailBlocked.slice(1)}
           </p>
+        ) : null}
+
+        {/*
+          THE SECOND SWITCH, shown only once the first is on. One toggle for
+          both would mean every company that allowed staff to email a bill
+          woke up to a thousand bills posted on its bill date — a change to
+          what they agreed to, made on their behalf.
+        */}
+        {emailBills.available && emailOn ? (
+          <div className="mt-4 border-t border-gray-800 pt-4">
+            <Toggle
+              name="notify_bill_monthly_enabled"
+              label="Also send every customer their bill each month, automatically"
+              checked={monthlyOn}
+              onChange={setMonthlyOn}
+              disabled={locked || !emailBills.monthlyAvailable}
+            />
+            <p className="text-[11px] leading-relaxed text-gray-600">
+              Off by default. When on, every customer with an email address is sent their bill on your
+              bill date, and for three days after in case the system was down. Each customer gets one
+              bill a month, no matter how often this runs. Customers with no email address on file, or
+              who have opted out, are skipped &mdash; staff can still email those one at a time.
+            </p>
+            {!emailBills.monthlyAvailable ? (
+              <p className="text-[11px] text-amber-400/90">Needs migration 0051.</p>
+            ) : null}
+          </div>
         ) : null}
       </Card>
 

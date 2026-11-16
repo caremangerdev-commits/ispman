@@ -78,6 +78,8 @@ export default async function BillDesignPage() {
           available: caps.emailBills,
           on: messaging.billEmail,
           emailBlocked: emailReady.ready ? null : emailReady.reason,
+          monthlyAvailable: caps.monthlyBills,
+          monthlyOn: messaging.billEmailMonthly,
         }}
       />
     </div>

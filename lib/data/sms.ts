@@ -52,6 +52,13 @@ export type MessagingSettings = {
   outageNotify: boolean
   /** 0042 — staff may email a customer their bill. Off by default; set under Settings > Bill Design. */
   billEmail: boolean
+  /**
+   * 0051 — every customer is emailed their bill on the company's bill date.
+   * Off by default, and meaningless without billEmail above: the monthly send
+   * is the same email by the same route, so a company that has not allowed
+   * bill emails at all cannot be sending them on a schedule.
+   */
+  billEmailMonthly: boolean
   emailFromName: string | null
   emailReplyTo: string | null
   emailFromDomain: string | null
@@ -92,6 +99,7 @@ export const SMS_SETTINGS_OFF: MessagingSettings = {
   ticketReplyNotify: false,
   outageNotify: false,
   billEmail: false,
+  billEmailMonthly: false,
   emailFromName: null,
   emailReplyTo: null,
   emailFromDomain: null,
@@ -135,6 +143,7 @@ type SettingRow = {
   notify_ticket_reply_enabled?: boolean | null
   notify_outage_enabled?: boolean | null
   notify_bill_enabled?: boolean | null
+  notify_bill_monthly_enabled?: boolean | null
   email_enabled?: boolean | null
   email_from_name?: string | null
   email_reply_to?: string | null
@@ -202,6 +211,7 @@ function toSettings(
     ticketReplyNotify: Boolean(s?.notify_ticket_reply_enabled),
     outageNotify: Boolean(s?.notify_outage_enabled),
     billEmail: Boolean(s?.notify_bill_enabled),
+    billEmailMonthly: Boolean(s?.notify_bill_enabled) && Boolean(s?.notify_bill_monthly_enabled),
     emailFromName: s?.email_from_name || null,
     emailReplyTo: s?.email_reply_to || null,
     emailFromDomain: s?.email_from_domain || null,
@@ -219,7 +229,8 @@ export async function getSmsSettings(companyId: number): Promise<MessagingSettin
   const cols = BASE_COLS + ', ' +
     (caps.messaging ? SWITCH_COLS_0022 + ', ' + MESSAGING_COLS : SWITCH_COLS_0021) +
     (caps.portalTier2 ? ', notify_ticket_reply_enabled, notify_outage_enabled' : '') +
-    (caps.emailBills ? ', notify_bill_enabled' : '')
+    (caps.emailBills ? ', notify_bill_enabled' : '') +
+    (caps.monthlyBills ? ', notify_bill_monthly_enabled' : '')
 
   const db = tenantClient()
   const [{ data, error }, { data: co }] = await Promise.all([

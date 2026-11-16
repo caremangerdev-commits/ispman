@@ -2,6 +2,7 @@ import 'server-only'
 
 import type { Brand } from '@/lib/brand'
 import { brandFor } from '@/lib/data/brand'
+import { loadBill } from '@/lib/data/bill'
 import { loadEnrichedCustomers } from '@/lib/data/customers'
 import { portalUrlForCompany } from '@/lib/data/portal'
 import { getSmsSettings, type MessagingSettings } from '@/lib/data/sms'
@@ -11,6 +12,7 @@ import type { ChannelAdapter, OutboundMessage } from '@/lib/messaging/adapter'
 import { parseAttachmentRef, renderAttachment } from '@/lib/messaging/attachments'
 import { channelReadiness, enqueueForRoute, type Readiness } from '@/lib/messaging/enqueue'
 import { presentMessage } from '@/lib/messaging/present'
+import { billEmail } from '@/lib/bill/email'
 import { allAdapters } from '@/lib/messaging/registry'
 import { CHANNELS, type Channel } from '@/lib/messaging/routes'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -159,6 +161,123 @@ async function sweepExpiryWarnings(
     queued += result.queued.length
   }
 
+  return queued
+}
+
+/**
+ * How many days after its bill date a company's bills may still go out.
+ *
+ * THE WORKER IS NOT GUARANTEED TO BE UP ON THE DAY. If this were "the bill
+ * date and only the bill date", a ticker stopped over a weekend would lose
+ * that month's bills with nothing to show for it — and nobody finds out until
+ * a customer asks where their bill is. A short tail covers an outage without
+ * turning "switch bill emails on" into "post this month's bill to everyone",
+ * which is what an open-ended window would do on the 20th.
+ */
+const BILL_CATCHUP_DAYS = 3
+
+/** Days in a month, so a bill date of 31 still lands in February. */
+function daysInMonth(year: number, month1: number): number {
+  return new Date(Date.UTC(year, month1, 0)).getUTCDate()
+}
+
+/**
+ * Emails this month's bill to every customer who can receive one.
+ *
+ * THE MONTHLY SEND. Until this existed a bill email was one person pressing a
+ * button on one customer — fine for a tenant with twelve customers, not for
+ * one with a thousand. Everything it needs was already here: the PDF the
+ * portal and the staff record draw (lib/bill/pdf.ts), the cover note
+ * (lib/bill/email.ts), the outbox, the opt-outs and the per-company switch.
+ * This is the step that was missing between them.
+ *
+ * ONCE PER CUSTOMER PER MONTH, enforced by the unique index on (company,
+ * channel, dedupe_key) with the month in the key — not by remembering whether
+ * this pass has run. The dispatcher ticks constantly; a guard that depended on
+ * timing would send twice the first time it was wrong.
+ *
+ * AND THE KEYS ARE READ BACK FIRST, before any bill is built. The index would
+ * refuse the duplicates anyway, but only after loading and rendering a
+ * thousand bills to throw them away, every tick, all day. One query up front
+ * makes the second and later passes of a bill day cost nothing.
+ *
+ * NO QUIET HOURS, unlike the expiry warnings above. Those are texts that light
+ * up a phone at the bedside; this is email, which waits to be opened. Holding
+ * it to daylight would also mean a ticker that was down from 8 to 20 lost the
+ * day — and the catch-up window exists precisely because losing a day is the
+ * failure that matters here.
+ */
+async function sweepMonthlyBills(
+  companyId: number,
+  companyName: string,
+  timezone: string,
+  billDate: number | null,
+  settings: MessagingSettings,
+  readiness: Readiness
+): Promise<number> {
+  if (!settings.billEmailMonthly || !billDate) return 0
+  if (!readiness.email.ready) return 0
+
+  const today = localDate(timezone)
+  const [y, m, d] = today.split('-').map(Number)
+  // A company billing on the 31st bills on the 28th in February: the last day
+  // of the month stands in for any date past its end, exactly as the billing
+  // engine treats it.
+  const due = Math.min(billDate, daysInMonth(y, m))
+  if (d < due || d > due + BILL_CATCHUP_DAYS) return 0
+
+  const month = today.slice(0, 7)
+  const keyFor = (customerId: number) => 'billmail:' + month + ':' + customerId
+
+  const db = tenantClient()
+  const { data: sentRows, error: sentError } = await db
+    .from('sms_outbox')
+    .select('dedupe_key')
+    .eq('company_id', companyId)
+    .like('dedupe_key', 'billmail:' + month + ':%')
+  if (sentError) {
+    console.error('[bills] %s: could not read what has gone: %s', companyName, sentError.message)
+    return 0
+  }
+  const already = new Set(
+    ((sentRows ?? []) as { dedupe_key: string | null }[]).map((r) => r.dedupe_key)
+  )
+
+  const customers = await loadEnrichedCustomers(companyId)
+
+  let queued = 0
+  for (const c of customers) {
+    if (already.has(keyFor(c.id))) continue
+    // Asked before the bill is built: a customer with no address or an opt-out
+    // is the common case in a tenant part-way through collecting them, and
+    // rendering a bill for one is pure waste.
+    if (c.email_opted_out) continue
+    if (!String(c.email ?? '').trim()) continue
+
+    const bill = await loadBill(companyId, c.id)
+    if (!bill) continue
+
+    const text = billEmail(bill, { firstName: c.first_name })
+    const result = await enqueueForRoute({
+      companyId,
+      kind: 'customer_bill',
+      settings,
+      readiness,
+      customer: {
+        id: c.id, phone: c.phone, email: c.email,
+        sms_opted_out: c.sms_opted_out, email_opted_out: c.email_opted_out,
+      },
+      // The wording is already final — these fill nothing in it, and are here
+      // so a placeholder typed into a company name is left as typed.
+      values: { '{{company}}': companyName },
+      text: { sms: '', email: text },
+      dedupeKey: keyFor(c.id),
+      attachment: { kind: 'bill', id: c.id, template: bill.template },
+    })
+    queued += result.queued.length
+  }
+
+  if (queued) console.log('[bills] %s: queued %d bill email(s) for %s', companyName, queued, month)
   return queued
 }
 
@@ -426,11 +545,14 @@ export async function runDispatch(only?: number): Promise<DispatchSummary[]> {
     }
 
     const { data: setting } = await db
-      .from('settings').select('timezone').eq('company_id', co.id).maybeSingle()
-    const timezone = (setting as { timezone?: string } | null)?.timezone || 'America/Jamaica'
+      .from('settings').select('timezone, bill_date').eq('company_id', co.id).maybeSingle()
+    const row = setting as { timezone?: string; bill_date?: number | null } | null
+    const timezone = row?.timezone || 'America/Jamaica'
 
     const recovered = await recoverStale(co.id)
-    const enqueued = await sweepExpiryWarnings(co.id, co.name, timezone, settings, readiness)
+    const enqueued =
+      (await sweepExpiryWarnings(co.id, co.name, timezone, settings, readiness)) +
+      (await sweepMonthlyBills(co.id, co.name, timezone, row?.bill_date ?? null, settings, readiness))
 
     let sent = 0
     let failed = 0

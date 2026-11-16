@@ -76,6 +76,14 @@ export async function saveBillSettings(
   // 0042: whether staff may email bills. Only written once the column exists;
   // before that the form shows the switch disabled and posts its default.
   if (caps.emailBills) patch.notify_bill_enabled = formData.get('notify_bill_enabled') === 'true'
+  // Never on while bill emails themselves are off: the form hides it, and a
+  // posted form could still carry the old value after the parent was turned
+  // off in the same save.
+  if (caps.monthlyBills) {
+    patch.notify_bill_monthly_enabled =
+      formData.get('notify_bill_monthly_enabled') === 'true' &&
+      formData.get('notify_bill_enabled') === 'true'
+  }
 
   // 0042: the invoice prefix. Refused, not cleaned, when it holds something it
   // may not — the company should see the number it will actually get.
@@ -103,7 +111,9 @@ export async function saveBillSettings(
   }
 
   const before = await getBillSettings(company.id)
-  const emailBefore = caps.emailBills ? (await getMessagingSettings(company.id)).billEmail : false
+  const messagingBefore = caps.emailBills ? await getMessagingSettings(company.id) : null
+  const emailBefore = messagingBefore?.billEmail ?? false
+  const monthlyBefore = messagingBefore?.billEmailMonthly ?? false
 
   const db = tenantClient()
   const { data: existing } = await db.from('settings').select('id').eq('company_id', company.id).maybeSingle()
@@ -126,6 +136,13 @@ export async function saveBillSettings(
   ]
   if ('invoice_prefix' in patch) compare.push(['invoice prefix', before.invoicePrefix, patch.invoice_prefix])
   if ('tax_rate' in patch) compare.push(['tax rate', before.taxRate, patch.tax_rate])
+  if ('notify_bill_monthly_enabled' in patch) {
+    compare.push([
+      'monthly bill emails',
+      monthlyBefore ? 'on' : 'off',
+      patch.notify_bill_monthly_enabled ? 'on' : 'off',
+    ])
+  }
   if ('notify_bill_enabled' in patch) {
     compare.push(['email bills', emailBefore ? 'on' : 'off', patch.notify_bill_enabled ? 'on' : 'off'])
   }

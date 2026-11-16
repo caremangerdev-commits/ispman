@@ -240,6 +240,12 @@ export type SchemaCapabilities = {
    * the switch needs the migration.
    */
   emailBills: boolean
+  /**
+   * Migration 0051: settings.notify_bill_monthly_enabled. Absent, bills are
+   * only ever emailed one at a time by staff and the dispatcher's monthly
+   * sweep does nothing.
+   */
+  monthlyBills: boolean
   /** Migration 0042: settings.invoice_prefix. Absent, invoices carry no prefix. */
   invoicePrefix: boolean
   /**
@@ -288,6 +294,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     paymentReferenceRes,
     leadsRes,
     sessionTimeoutRes,
+    monthlyBillsRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -398,8 +405,10 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('leads').select('id').limit(1),
     // 0047: the per-company Session-Timeout. One column.
     db.from('settings').select('radius_session_timeout_secs').limit(1),
+    // 0051: the monthly bill send. One column.
+    db.from('settings').select('notify_bill_monthly_enabled').limit(1),
   ])
-  console.log('[perf]     schema probe: 28 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 29 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -717,6 +726,15 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     )
   }
 
+  // 0051: one column on settings. Absent, no bill is ever sent on a schedule.
+  const missingMonthlyBills = monthlyBillsRes.error?.code === '42703'
+  if (monthlyBillsRes.error && !missingMonthlyBills) {
+    throw new Error(
+      'Schema probe failed for settings.notify_bill_monthly_enabled: ' +
+      monthlyBillsRes.error.message
+    )
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -755,6 +773,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     anniversaryExpiry: !missingAnniversary,
     ticketNotes: !missingTicketNotes,
     emailBills: !missingEmailBills,
+    monthlyBills: !missingMonthlyBills,
     invoicePrefix: !missingInvoicePrefix,
     flexMonth: !missingFlexMonth,
     paymentReference: !missingPaymentReference,
