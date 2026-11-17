@@ -165,11 +165,8 @@ export function BillSettingsForm({
           disabled={locked || !emailBills.available}
         />
         <p className="text-[11px] leading-relaxed text-gray-600">
-          Off by default. When on, the customer record gets an &quot;Email bill&quot; link beside &quot;Bill (PDF)&quot;.
-          The customer receives a short note in your email layout with the bill attached as a PDF — the same
-          document as the sample above, in your chosen template, with your tax line, letterhead, currency and
-          bank details. It goes by email only, through your notification settings, and never to a customer
-          who has opted out of email.
+          Adds an &quot;Email bill&quot; link on the customer record. Sends the same PDF as the sample above.
+          Skips anyone who has opted out of email.
         </p>
         {!emailBills.available ? (
           <p className="text-[11px] text-amber-400/90">Needs migration 0042.</p>
@@ -195,10 +192,8 @@ export function BillSettingsForm({
               disabled={locked || !emailBills.monthlyAvailable}
             />
             <p className="text-[11px] leading-relaxed text-gray-600">
-              Off by default. When on, every customer with an email address is sent their bill on your
-              bill date, and for three days after in case the system was down. Each customer gets one
-              bill a month, no matter how often this runs. Customers with no email address on file, or
-              who have opted out, are skipped &mdash; staff can still email those one at a time.
+              Sends every customer their bill on your bill date. One bill each per month. Anyone with
+              no email address, or who has opted out, is skipped.
             </p>
             {!emailBills.monthlyAvailable ? (
               <p className="text-[11px] text-amber-400/90">Needs migration 0051.</p>
