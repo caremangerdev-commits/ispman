@@ -23,7 +23,22 @@ import { supabaseAnonKey, supabaseUrl } from '@/lib/supabase/env'
 // The background routes carry their own shared-secret check; a session
 // redirect would hand their callers the login page as a 200.
 // /api/tunnels/peers also refuses anything that is not a loopback call.
-const PUBLIC_PATHS = ['/login', '/auth', '/api/sms/dispatch', '/api/billing/tick', '/api/tunnels/peers']
+//
+// /api/routers/setup is a router fetching its own setup script. It has no
+// cookie and cannot be given one: the caller is a MikroTik. What stands in for
+// a session is the single-use token in the path (migration 0052), which the
+// route itself spends before it builds anything. It must be exempted here for
+// the same reason as the ticker, only worse — RouterOS's /tool fetch would
+// save the login page to a file and /import would then run an HTML document as
+// a script, which fails with a parse error that says nothing about logins.
+const PUBLIC_PATHS = [
+  '/login',
+  '/auth',
+  '/api/sms/dispatch',
+  '/api/billing/tick',
+  '/api/tunnels/peers',
+  '/api/routers/setup',
+]
 
 /**
  * A payment gateway's webhook: /api/payments/{provider}/{company}/webhook.
