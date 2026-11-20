@@ -608,8 +608,16 @@ export function routerSetupScript(input: SetupScriptInput): string {
     '',
     '# --- let the tunnel through the firewall --------------------------------',
     ':if ([:len [/ip firewall filter find comment="' + COMMENT_INTERFACE + '"]] = 0) do={',
-    '  /ip firewall filter add chain=input in-interface=' + ROUTER_INTERFACE +
+    // place-before=0 means "above rule 0", and a router with no filter rules
+    // has no rule 0: the command fails and /import stops there, before the
+    // login exists. With an empty list there is nothing to be placed above.
+    '  :if ([:len [/ip firewall filter find]] = 0) do={',
+    '    /ip firewall filter add chain=input in-interface=' + ROUTER_INTERFACE +
+      ' action=accept comment="' + COMMENT_INTERFACE + '"',
+    '  } else={',
+    '    /ip firewall filter add chain=input in-interface=' + ROUTER_INTERFACE +
       ' action=accept comment="' + COMMENT_INTERFACE + '" place-before=0',
+    '  }',
     '}',
     '',
     "# --- ISPMan's own login -------------------------------------------------",

@@ -188,16 +188,16 @@ function SetupLine({ tunnelId }: { tunnelId: number }) {
 
   return (
     <div className="rounded-xl border border-blue-900/50 bg-blue-950/20 p-4">
-      <h3 className="text-sm font-semibold text-blue-200">Set it up with one line</h3>
-      <p className="mt-1 text-xs leading-relaxed text-blue-200/80">
-        The router checks itself, sets its clock, builds the tunnel, takes its RADIUS settings and
-        reports back — on its own. Nothing to copy off the router afterwards.
+      <p className="text-xs leading-relaxed text-blue-200/90">
+        Connect this router to ISPMan. Click below to get a command, then paste it into the
+        router&apos;s terminal in Winbox and press Enter. The command works once and expires after
+        30 minutes.
       </p>
 
       {!line ? (
         <form action={action} className="mt-3">
           <input type="hidden" name="id" value={tunnelId} />
-          <SubmitButton label="Get the line" pending="Preparing…" />
+          <SubmitButton label="Get setup command" pending="Preparing…" />
           {state && !state.ok ? <Problem text={state.error} /> : null}
         </form>
       ) : (
@@ -705,14 +705,21 @@ function RevokePanel({ id, name }: { id: number; name: string }) {
   )
 }
 
-type Panel = 'commands' | 'replace' | 'revoke' | null
+type Panel = 'setup' | 'commands' | 'replace' | 'revoke' | null
 
 /**
  * A router in the list. A revoked router stays in place, dimmed, rather than
  * moving: moving it would unmount the row the moment the revoke lands and take
  * the removal commands it just returned off the screen.
  */
-function RouterRow({ tunnel, onContinue }: { tunnel: TunnelView; onContinue: (id: number) => void }) {
+function RouterRow({
+  tunnel, oneLine, onContinue,
+}: {
+  tunnel: TunnelView
+  /** One-line setup is possible on this server (0052, key, public address). */
+  oneLine: boolean
+  onContinue: (id: number) => void
+}) {
   const [panel, setPanel] = useState<Panel>(null)
   const toggle = (p: Exclude<Panel, null>) => setPanel((cur) => (cur === p ? null : p))
   const revoked = tunnel.revokedText !== null
@@ -745,6 +752,19 @@ function RouterRow({ tunnel, onContinue }: { tunnel: TunnelView; onContinue: (id
                 Continue setup
               </button>
             ) : null}
+            {/*
+              ON EVERY LIVE ROUTER, not only new ones. A router that went on the
+              tunnel by the numbered steps has no ISPMan login, and this command
+              is the only thing that creates one. Running it there is safe: each
+              step checks whether it is already done, so it adds the login and
+              leaves the tunnel alone.
+            */}
+            {oneLine ? (
+              <button type="button" onClick={() => toggle('setup')} className={smallButton}>
+                <Terminal className="h-3 w-3" aria-hidden />
+                Get setup command
+              </button>
+            ) : null}
             {tunnel.hasKey ? (
               <>
                 <button type="button" onClick={() => toggle('commands')} className={smallButton}>
@@ -770,6 +790,7 @@ function RouterRow({ tunnel, onContinue }: { tunnel: TunnelView; onContinue: (id
       </div>
 
       {/* Keyed by panel so each opens with its own fresh action state. */}
+      {panel === 'setup' ? <SetupLine key="setup" tunnelId={tunnel.id} /> : null}
       {panel === 'commands' ? <CommandsPanel key="commands" id={tunnel.id} /> : null}
       {panel === 'replace' ? <ReplaceKeyPanel key="replace" id={tunnel.id} /> : null}
       {panel === 'revoke' ? <RevokePanel key="revoke" id={tunnel.id} name={tunnel.name} /> : null}
@@ -839,6 +860,7 @@ export function RouterTunnelsManager({
               {tunnels.map((t) => (
                 <RouterRow
                   key={t.id}
+                  oneLine={oneLine}
                   tunnel={t}
                   onContinue={(id) => {
                     setGuideId(id)
