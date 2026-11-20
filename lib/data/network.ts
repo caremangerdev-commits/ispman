@@ -1,5 +1,6 @@
 import 'server-only'
 
+import { routerUsage, routersWithLogin, type RouterUsage } from '@/lib/data/router-usage'
 import { listRouterTunnels } from '@/lib/data/tunnels'
 import { EMPTY_ACTIVITY, radiusConfigured, routerActivity, type RouterActivity } from '@/lib/radius-db'
 import { readHandshakes } from '@/lib/tunnels/server'
@@ -45,6 +46,14 @@ export type NetworkRouter = {
   lastConnectionAgo: string | null
   /** True when radacct holds nothing at all for this address in 24 hours. */
   silent: boolean
+  /**
+   * ISPMan can log in to this router (it has had the setup command). Without
+   * it there is no health, no live traffic and no usage, and the card says how
+   * to get them rather than showing dashes.
+   */
+  hasLogin: boolean
+  /** Data carried today and this month. Null when nothing has been read yet. */
+  usage: RouterUsage | null
 }
 
 export type NetworkView = {
@@ -68,14 +77,20 @@ export type NetworkView = {
   checkedAgo: string | null
   /** False when the RADIUS env vars are absent — the activity columns go away. */
   accountingAvailable: boolean
+  /** Every live router's usage added up. Null when no router has reported any. */
+  usageTotal: RouterUsage | null
 }
 
 export async function getNetworkView(companyId: number): Promise<NetworkView> {
   const now = new Date()
 
-  const [tunnels, handshakes] = await Promise.all([
+  const [tunnels, handshakes, logins, usage] = await Promise.all([
     listRouterTunnels(companyId),
     readHandshakes(now).catch(() => null),
+    routersWithLogin(companyId),
+    // A failed usage read must not take the whole page down: tunnel status is
+    // the part someone opens this page in a hurry for.
+    routerUsage(companyId).catch(() => null),
   ])
 
   const live = tunnels.filter((t) => !t.revokedAt)
@@ -101,11 +116,27 @@ export async function getNetworkView(companyId: number): Promise<NetworkView> {
         ? ago(now.getTime() - seen.lastSessionAt.getTime())
         : null,
       silent: accountingAvailable && !seen,
+      hasLogin: logins.has(t.id),
+      usage: usage?.get(t.id) ?? null,
     }
   })
 
   const counted = routers.filter((r) => !r.revoked)
+  const withUsage = counted.filter((r) => r.usage)
+  const usageTotal: RouterUsage | null = withUsage.length
+    ? withUsage.reduce(
+        (sum, r) => ({
+          todayDown: sum.todayDown + r.usage!.todayDown,
+          todayUp: sum.todayUp + r.usage!.todayUp,
+          monthDown: sum.monthDown + r.usage!.monthDown,
+          monthUp: sum.monthUp + r.usage!.monthUp,
+          customers: sum.customers + r.usage!.customers,
+        }),
+        { todayDown: 0, todayUp: 0, monthDown: 0, monthUp: 0, customers: 0 }
+      )
+    : null
   return {
+    usageTotal,
     routers,
     up: counted.filter((r) => r.status === 'up').length,
     down: counted.filter((r) => r.status === 'down' || r.status === 'never').length,

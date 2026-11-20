@@ -1,4 +1,6 @@
+import { RouterLive } from '@/components/network/RouterLive'
 import type { NetworkRouter } from '@/lib/data/network'
+import { formatBytes } from '@/lib/radius/format'
 
 /**
  * One router on the Network page.
@@ -58,6 +60,46 @@ export function RouterCard({ router, accounting }: { router: NetworkRouter; acco
           </span>
         </span>
       </div>
+
+      {!router.revoked && router.hasLogin ? (
+        <>
+          {router.usage ? (
+            <dl className="mt-4 grid grid-cols-2 gap-3">
+              <div>
+                <dt className="text-[10px] uppercase tracking-wider text-gray-500">Data today</dt>
+                <dd className="mt-0.5 text-lg font-semibold tabular-nums text-white">
+                  {formatBytes(router.usage.todayDown + router.usage.todayUp)}
+                </dd>
+                <dd className="text-[11px] tabular-nums text-gray-500">
+                  {formatBytes(router.usage.todayDown)} down · {formatBytes(router.usage.todayUp)} up
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-wider text-gray-500">This month</dt>
+                <dd className="mt-0.5 text-lg font-semibold tabular-nums text-white">
+                  {formatBytes(router.usage.monthDown + router.usage.monthUp)}
+                </dd>
+                <dd className="text-[11px] tabular-nums text-gray-500">
+                  {router.usage.customers} customers measured
+                </dd>
+              </div>
+            </dl>
+          ) : (
+            <p className="mt-4 text-[11px] text-gray-500">
+              No data usage recorded yet. The first figures appear about ten minutes after setup.
+            </p>
+          )}
+
+          {/* Only asked while its tunnel is up: a router that is down cannot
+              answer, and asking it every five seconds would just time out. */}
+          {router.status === 'up' ? <RouterLive tunnelId={router.id} /> : null}
+        </>
+      ) : !router.revoked ? (
+        <p className="mt-4 rounded-lg border border-gray-800 bg-gray-950/50 px-3 py-2 text-[11px] leading-relaxed text-gray-400">
+          Run the setup command on this router to see its traffic, health and data used. Get it
+          under Settings → Router Tunnels.
+        </p>
+      ) : null}
 
       {accounting && !router.revoked ? (
         <>

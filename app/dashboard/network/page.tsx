@@ -5,6 +5,7 @@ import { RouterCard } from '@/components/network/RouterCard'
 import { getNetworkView } from '@/lib/data/network'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
+import { formatBytes } from '@/lib/radius/format'
 import { getSession } from '@/lib/session'
 
 export const metadata: Metadata = { title: 'Network · ISPMan' }
@@ -62,6 +63,19 @@ export default async function NetworkPage() {
         <Stat label="Not answering" value={view.down} tone={view.down ? 'text-red-400' : 'text-white'} />
         <Stat label="Customers, 24 h" value={view.customersDay} />
       </div>
+
+      {view.usageTotal ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Stat
+            label="Data today, all routers"
+            value={formatBytes(view.usageTotal.todayDown + view.usageTotal.todayUp)}
+          />
+          <Stat
+            label="Data this month, all routers"
+            value={formatBytes(view.usageTotal.monthDown + view.usageTotal.monthUp)}
+          />
+        </div>
+      ) : null}
 
       {/*
         A STALE REPORTING JOB IS NOT AN OUTAGE. When the file the server writes

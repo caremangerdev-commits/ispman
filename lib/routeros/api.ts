@@ -384,3 +384,150 @@ export async function readDhcpLeases(session: RouterOsSession): Promise<DhcpLeas
   }
   return leases
 }
+
+/* -------------------------------------------------------------------------- */
+/* What the Network page asks for                                             */
+/* -------------------------------------------------------------------------- */
+
+export type RouterLive = {
+  /** CPU load, percent. */
+  cpu: number | null
+  /** Memory in use, percent. */
+  memory: number | null
+  /** As the router words it, e.g. "3w2d4h10m". */
+  uptime: string | null
+  version: string | null
+  board: string | null
+  /** Supply voltage. Null on boards with no sensor, which is most small ones. */
+  voltage: number | null
+  /** Degrees C. Null on boards with no sensor. */
+  temperature: number | null
+  /** The port the router reaches the internet through. */
+  uplink: string | null
+  /** Bits per second arriving on the uplink: what customers are downloading. */
+  downBps: number | null
+  /** Bits per second leaving on the uplink: what customers are uploading. */
+  upBps: number | null
+}
+
+const num = (raw: string | undefined): number | null => {
+  if (raw === undefined || raw === '') return null
+  const n = Number.parseFloat(raw)
+  return Number.isFinite(n) ? n : null
+}
+
+/** A name safe to hand back to the router as an argument. */
+export function safeInterfaceName(raw: string | null | undefined): string | null {
+  if (!raw) return null
+  return /^[A-Za-z0-9_.+ -]{1,64}$/.test(raw) ? raw : null
+}
+
+/**
+ * The port the default route leaves by.
+ *
+ * RouterOS 7 words the active default route's next hop as
+ * "192.0.2.1%ether1": the address, a percent sign, the interface. A PPPoE or
+ * LTE uplink has the interface itself as the gateway. Both are handled; with
+ * several default routes the first active one wins, which is the one traffic
+ * is actually taking.
+ */
+async function findUplink(session: RouterOsSession): Promise<string | null> {
+  const routes = await session.command(
+    '/ip/route/print',
+    '?dst-address=0.0.0.0/0',
+    '=.proplist=gateway,immediate-gw,active,disabled'
+  )
+  for (const r of routes) {
+    if (r.disabled === 'true') continue
+    if (r.active !== undefined && r.active !== 'true') continue
+    const hop = r['immediate-gw'] ?? ''
+    const at = hop.indexOf('%')
+    const name = at >= 0 ? hop.slice(at + 1) : ''
+    const fromHop = safeInterfaceName(name.trim())
+    if (fromHop) return fromHop
+    // A gateway that is not an address is an interface name.
+    const gw = (r.gateway ?? '').trim()
+    if (gw && !gw.includes('.') && !gw.includes(':')) {
+      const fromGw = safeInterfaceName(gw)
+      if (fromGw) return fromGw
+    }
+  }
+  return null
+}
+
+/**
+ * One reading of a router's health and its uplink traffic.
+ *
+ * HEALTH COMES IN TWO SHAPES. RouterOS 7 returns one row per sensor
+ * (name=voltage, value=24.1); RouterOS 6 returns a single row with a field per
+ * sensor. Boards without sensors return nothing, and that is reported as null
+ * rather than zero: "0 V" on a screen reads as a dead power supply.
+ *
+ * `uplink` IS PASSED BACK IN by a caller that already knows it, so the route
+ * lookup happens once per page rather than once per reading.
+ */
+export async function readRouterLive(
+  session: RouterOsSession,
+  knownUplink?: string | null
+): Promise<RouterLive> {
+  const [resource] = await session.command(
+    '/system/resource/print',
+    '=.proplist=cpu-load,free-memory,total-memory,uptime,version,board-name'
+  )
+
+  let voltage: number | null = null
+  let temperature: number | null = null
+  try {
+    const health = await session.command('/system/health/print')
+    for (const row of health) {
+      if (row.name !== undefined) {
+        if (row.name === 'voltage' && voltage === null) voltage = num(row.value)
+        if (
+          (row.name === 'temperature' || row.name === 'cpu-temperature' ||
+            row.name === 'board-temperature1') &&
+          temperature === null
+        ) {
+          temperature = num(row.value)
+        }
+      } else {
+        if (voltage === null) voltage = num(row.voltage)
+        if (temperature === null) temperature = num(row.temperature ?? row['cpu-temperature'])
+      }
+    }
+  } catch {
+    // No health menu on this board. Not an error worth failing the reading for.
+  }
+
+  const uplink = safeInterfaceName(knownUplink) ?? (await findUplink(session))
+  let downBps: number | null = null
+  let upBps: number | null = null
+  if (uplink) {
+    try {
+      const [traffic] = await session.command(
+        '/interface/monitor-traffic',
+        '=interface=' + uplink,
+        '=once='
+      )
+      downBps = num(traffic?.['rx-bits-per-second'])
+      upBps = num(traffic?.['tx-bits-per-second'])
+    } catch {
+      // The port was renamed or removed since it was found. The next reading
+      // looks it up again.
+    }
+  }
+
+  const total = num(resource?.['total-memory'])
+  const free = num(resource?.['free-memory'])
+  return {
+    cpu: num(resource?.['cpu-load']),
+    memory: total && free !== null ? Math.round(((total - free) / total) * 100) : null,
+    uptime: resource?.uptime ?? null,
+    version: resource?.version ?? null,
+    board: resource?.['board-name'] ?? null,
+    voltage,
+    temperature,
+    uplink: downBps === null && upBps === null ? null : uplink,
+    downBps,
+    upBps,
+  }
+}
