@@ -25,7 +25,8 @@ type Reading = {
   board: string | null
   voltage: number | null
   temperature: number | null
-  uplink: string | null
+  uplinks: string[]
+  power: { name: string; state: string }[]
   downBps: number | null
   upBps: number | null
 }
@@ -73,7 +74,7 @@ function points(values: number[], max: number, width: number, height: number): s
 export function RouterLive({ tunnelId }: { tunnelId: number }) {
   const [samples, setSamples] = useState<Reading[]>([])
   const [problem, setProblem] = useState<string | null>(null)
-  const uplink = useRef<string | null>(null)
+  const uplinks = useRef<string[]>([])
 
   useEffect(() => {
     let stopped = false
@@ -86,14 +87,16 @@ export function RouterLive({ tunnelId }: { tunnelId: number }) {
         return
       }
       try {
-        const query = uplink.current ? '?uplink=' + encodeURIComponent(uplink.current) : ''
+        const query = uplinks.current.length
+          ? '?uplinks=' + encodeURIComponent(uplinks.current.join(','))
+          : ''
         const res = await fetch('/api/network/routers/' + tunnelId + '/live' + query, {
           cache: 'no-store',
         })
         const body = (await res.json()) as Reading | Failure
         if (stopped) return
         if (body.ok) {
-          uplink.current = body.uplink
+          uplinks.current = body.uplinks
           setProblem(null)
           setSamples((prev) => [...prev, body].slice(-KEEP))
         } else {
@@ -132,7 +135,7 @@ export function RouterLive({ tunnelId }: { tunnelId: number }) {
       <div>
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <p className="text-[10px] uppercase tracking-wider text-gray-500">
-            Traffic now{last.uplink ? ' · ' + last.uplink : ''}
+            Traffic now{last.uplinks.length ? ' · ' + last.uplinks.join(' + ') : ''}
           </p>
           <p className="text-xs tabular-nums text-gray-300">
             <span className="text-blue-400">▼</span> {rate(last.downBps)}
@@ -140,7 +143,7 @@ export function RouterLive({ tunnelId }: { tunnelId: number }) {
             <span className="text-emerald-400">▲</span> {rate(last.upBps)}
           </p>
         </div>
-        {last.uplink ? (
+        {last.uplinks.length ? (
           <>
             <svg
               viewBox={'0 0 ' + W + ' ' + H}
@@ -188,7 +191,17 @@ export function RouterLive({ tunnelId }: { tunnelId: number }) {
           value={last.temperature === null ? '—' : last.temperature + '°C'}
           warn={(last.temperature ?? 0) >= 70}
         />
-        <Tile label="Voltage" value={last.voltage === null ? '—' : last.voltage + ' V'} />
+        {/* A board with two power supplies reports their state, not a voltage.
+            Show whichever this router actually has. */}
+        {last.voltage === null && last.power.length ? (
+          <Tile
+            label="Power"
+            value={last.power.map((p) => p.name + ' ' + p.state).join(', ')}
+            warn={last.power.some((p) => p.state !== 'ok')}
+          />
+        ) : (
+          <Tile label="Voltage" value={last.voltage === null ? '—' : last.voltage + ' V'} />
+        )}
         <Tile label="Uptime" value={last.uptime ?? '—'} />
       </dl>
 

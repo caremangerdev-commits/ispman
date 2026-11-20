@@ -41,7 +41,12 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
     return NextResponse.json({ ok: false, error: 'This router has no ISPMan login yet.' }, { status: 404 })
   }
 
-  const uplink = safeInterfaceName(req.nextUrl.searchParams.get('uplink'))
+  // The ports found on the first reading, handed back so they are not looked
+  // up again every five seconds. Each is checked before it goes near a router.
+  const uplinks = (req.nextUrl.searchParams.get('uplinks') ?? '')
+    .split(',')
+    .map((n) => safeInterfaceName(n))
+    .filter((n): n is string => n !== null)
   try {
     const live = await withRouter(
       {
@@ -53,7 +58,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
         // should show as unreachable quickly, not hold a request open.
         timeoutMs: 6000,
       },
-      (session) => readRouterLive(session, uplink)
+      (session) => readRouterLive(session, uplinks)
     )
     return NextResponse.json({ ok: true, at: Date.now(), ...live })
   } catch (err) {

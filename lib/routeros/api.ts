@@ -402,11 +402,13 @@ export type RouterLive = {
   voltage: number | null
   /** Degrees C. Null on boards with no sensor. */
   temperature: number | null
-  /** The port the router reaches the internet through. */
-  uplink: string | null
-  /** Bits per second arriving on the uplink: what customers are downloading. */
+  /** The ports the router reaches the internet through; more than one when it balances providers. */
+  uplinks: string[]
+  /** Power supplies that report a state, e.g. psu1 "fail". Empty on boards that report none. */
+  power: { name: string; state: string }[]
+  /** Bits per second arriving on the uplinks, added up: what customers are downloading. */
   downBps: number | null
-  /** Bits per second leaving on the uplink: what customers are uploading. */
+  /** Bits per second leaving on the uplinks, added up: what customers are uploading. */
   upBps: number | null
 }
 
@@ -419,40 +421,47 @@ const num = (raw: string | undefined): number | null => {
 /** A name safe to hand back to the router as an argument. */
 export function safeInterfaceName(raw: string | null | undefined): string | null {
   if (!raw) return null
+  // Letters, digits, and the punctuation people really put in port names.
+  // No comma: a comma separates names when several are monitored at once.
   return /^[A-Za-z0-9_.+ -]{1,64}$/.test(raw) ? raw : null
 }
 
 /**
- * The port the default route leaves by.
+ * The ports the router reaches the internet through.
  *
- * RouterOS 7 words the active default route's next hop as
+ * RouterOS 7 words an active default route's next hop as
  * "192.0.2.1%ether1": the address, a percent sign, the interface. A PPPoE or
- * LTE uplink has the interface itself as the gateway. Both are handled; with
- * several default routes the first active one wins, which is the one traffic
- * is actually taking.
+ * LTE uplink has the interface itself as the gateway.
+ *
+ * MORE THAN ONE IS NORMAL. A router balancing two providers has two active
+ * default routes, and "total traffic" is both ports added together — West
+ * Central's CCR1036 runs "1 - Wan" and "2 - Wan" side by side.
+ *
+ * ONLY ACTIVE ROUTES COUNT, and an inactive route does not say active=false:
+ * the field is simply absent. So a row is used when it says active=true, and
+ * rows without the field are a fallback only if no row has it at all.
  */
-async function findUplink(session: RouterOsSession): Promise<string | null> {
+async function findUplinks(session: RouterOsSession): Promise<string[]> {
   const routes = await session.command(
     '/ip/route/print',
     '?dst-address=0.0.0.0/0',
     '=.proplist=gateway,immediate-gw,active,disabled'
   )
-  for (const r of routes) {
-    if (r.disabled === 'true') continue
-    if (r.active !== undefined && r.active !== 'true') continue
+  const usable = routes.filter((r) => r.disabled !== 'true')
+  const active = usable.filter((r) => r.active === 'true')
+  const names: string[] = []
+  for (const r of active.length ? active : usable) {
     const hop = r['immediate-gw'] ?? ''
     const at = hop.indexOf('%')
-    const name = at >= 0 ? hop.slice(at + 1) : ''
-    const fromHop = safeInterfaceName(name.trim())
-    if (fromHop) return fromHop
-    // A gateway that is not an address is an interface name.
-    const gw = (r.gateway ?? '').trim()
-    if (gw && !gw.includes('.') && !gw.includes(':')) {
-      const fromGw = safeInterfaceName(gw)
-      if (fromGw) return fromGw
+    let name = safeInterfaceName(at >= 0 ? hop.slice(at + 1).trim() : '')
+    if (!name) {
+      // A gateway that is not an address is an interface name.
+      const gw = (r.gateway ?? '').trim()
+      if (gw && !gw.includes('.') && !gw.includes(':')) name = safeInterfaceName(gw)
     }
+    if (name && !names.includes(name)) names.push(name)
   }
-  return null
+  return names
 }
 
 /**
@@ -463,12 +472,12 @@ async function findUplink(session: RouterOsSession): Promise<string | null> {
  * sensor. Boards without sensors return nothing, and that is reported as null
  * rather than zero: "0 V" on a screen reads as a dead power supply.
  *
- * `uplink` IS PASSED BACK IN by a caller that already knows it, so the route
- * lookup happens once per page rather than once per reading.
+ * `knownUplinks` IS PASSED BACK IN by a caller that already has them, so the
+ * route lookup happens once per page rather than once per reading.
  */
 export async function readRouterLive(
   session: RouterOsSession,
-  knownUplink?: string | null
+  knownUplinks?: string[]
 ): Promise<RouterLive> {
   const [resource] = await session.command(
     '/system/resource/print',
@@ -477,11 +486,16 @@ export async function readRouterLive(
 
   let voltage: number | null = null
   let temperature: number | null = null
+  const power: { name: string; state: string }[] = []
   try {
     const health = await session.command('/system/health/print')
     for (const row of health) {
       if (row.name !== undefined) {
         if (row.name === 'voltage' && voltage === null) voltage = num(row.value)
+        // psu1-state / psu2-state on boards with two supplies: "ok" or "fail".
+        if (row.name.startsWith('psu') && row.name.endsWith('-state') && row.value) {
+          power.push({ name: row.name.replace('-state', '').toUpperCase(), state: row.value })
+        }
         if (
           (row.name === 'temperature' || row.name === 'cpu-temperature' ||
             row.name === 'board-temperature1') &&
@@ -498,21 +512,29 @@ export async function readRouterLive(
     // No health menu on this board. Not an error worth failing the reading for.
   }
 
-  const uplink = safeInterfaceName(knownUplink) ?? (await findUplink(session))
+  const given = (knownUplinks ?? [])
+    .map((n) => safeInterfaceName(n))
+    .filter((n): n is string => n !== null)
+  const uplinks = given.length ? given : await findUplinks(session)
   let downBps: number | null = null
   let upBps: number | null = null
-  if (uplink) {
+  if (uplinks.length) {
     try {
-      const [traffic] = await session.command(
+      // One row comes back per port; the total is all of them added together.
+      const rows = await session.command(
         '/interface/monitor-traffic',
-        '=interface=' + uplink,
+        '=interface=' + uplinks.join(','),
         '=once='
       )
-      downBps = num(traffic?.['rx-bits-per-second'])
-      upBps = num(traffic?.['tx-bits-per-second'])
+      for (const row of rows) {
+        const rx = num(row['rx-bits-per-second'])
+        const tx = num(row['tx-bits-per-second'])
+        if (rx !== null) downBps = (downBps ?? 0) + rx
+        if (tx !== null) upBps = (upBps ?? 0) + tx
+      }
     } catch {
-      // The port was renamed or removed since it was found. The next reading
-      // looks it up again.
+      // A port was renamed or removed since it was found. The next reading
+      // looks them up again.
     }
   }
 
@@ -526,7 +548,8 @@ export async function readRouterLive(
     board: resource?.['board-name'] ?? null,
     voltage,
     temperature,
-    uplink: downBps === null && upBps === null ? null : uplink,
+    uplinks: downBps === null && upBps === null ? [] : uplinks,
+    power,
     downBps,
     upBps,
   }
