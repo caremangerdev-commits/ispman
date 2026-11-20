@@ -1,5 +1,5 @@
 import type { CustomerUsage } from '@/lib/data/usage'
-import { formatBytes } from '@/lib/format'
+import { formatBytes } from '@/lib/radius/format'
 
 /**
  * A customer's data usage: the month so far, and the last 30 days.
