@@ -64,7 +64,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ token: str
     raw = (await req.text()).replace(/^key=/, '')
   }
 
-  const key = parseWireGuardKey(decodeURIComponent(raw.trim()))
+  // RouterOS posts the key as it is, unescaped, and a form body reads '+' as a
+  // space. A WireGuard key is base64 and most contain a '+', so most arrived
+  // broken and were refused. Base64 never contains a space, so every space
+  // here was a '+'.
+  const key = parseWireGuardKey(raw.trim().replace(/ /g, '+'))
   if (!key) return plain(400, 'That is not a WireGuard public key.')
 
   const tunnel = await getRouterTunnel(found.companyId, found.tunnelId)
