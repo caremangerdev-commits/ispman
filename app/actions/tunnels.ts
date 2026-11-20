@@ -549,7 +549,10 @@ export async function revokeRouterTunnel(
  * ONE LINE AT A TIME PER ROUTER: minting expires any previous unused link, so
  * two scripts carrying two different passwords can never both be out there.
  */
-export async function routerSetupLineAction(formData: FormData): Promise<TunnelActionResult> {
+export async function routerSetupLineAction(
+  _prev: TunnelActionResult | null,
+  formData: FormData
+): Promise<TunnelActionResult> {
   const begun = await begin()
   if ('refused' in begun) return begun.refused
   const { session } = begun
