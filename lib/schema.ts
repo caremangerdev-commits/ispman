@@ -197,6 +197,15 @@ export type SchemaCapabilities = {
    */
   routerTunnels: boolean
   /**
+   * ISPMan's own login on each router, and the one-time setup links (0052).
+   *
+   * Absent, Add Router offers today's four-step paste flow and nothing talks
+   * to a router — no usage polling, no OLT firewall rules. Present, a router
+   * can be set up with one pasted line, and the password ISPMan uses to read
+   * its queue counters is stored encrypted against the tunnel row.
+   */
+  routerLogins: boolean
+  /**
    * Migration 0036: `settings.portal_payment_note`, the per-company "how to pay"
    * line shown on the customer portal. Absent, the portal omits the line and
    * the general settings form hides the field.
@@ -295,6 +304,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     leadsRes,
     sessionTimeoutRes,
     monthlyBillsRes,
+    routerLoginsRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -407,8 +417,12 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     db.from('settings').select('radius_session_timeout_secs').limit(1),
     // 0051: the monthly bill send. One column.
     db.from('settings').select('notify_bill_monthly_enabled').limit(1),
+    // 0052: ISPMan's own login on a router. Probes the column rather than the
+    // router_setup_tokens table, because the column is what every reader needs
+    // and the table is only written during setup.
+    db.from('router_tunnels').select('api_secret').limit(1),
   ])
-  console.log('[perf]     schema probe: 29 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 30 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -735,6 +749,18 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     )
   }
 
+  // 0052: columns on router_tunnels. Absent, Add Router offers the four-step
+  // paste flow and nothing reads a queue counter off a router.
+  const missingRouterLogins =
+    routerLoginsRes.error?.code === '42703' ||
+    routerLoginsRes.error?.code === 'PGRST205' ||
+    routerLoginsRes.error?.code === '42P01'
+  if (routerLoginsRes.error && !missingRouterLogins) {
+    throw new Error(
+      'Schema probe failed for router_tunnels.api_secret: ' + routerLoginsRes.error.message
+    )
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -779,6 +805,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     paymentReference: !missingPaymentReference,
     leads: !missingLeads,
     sessionTimeout: !missingSessionTimeout,
+    routerLogins: !missingRouterLogins,
   }
 })
 

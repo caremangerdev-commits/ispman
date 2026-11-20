@@ -6,7 +6,8 @@ import { useActionState, useEffect, useRef, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import {
-  addRouterTunnel, revokeRouterTunnel, setRouterTunnelKey, showRouterTunnelConfig,
+  addRouterTunnel, revokeRouterTunnel, routerSetupLineAction, setRouterTunnelKey,
+  showRouterTunnelConfig,
   type TunnelActionResult,
 } from '@/app/actions/tunnels'
 import { settingsInput } from '@/components/settings/Modal'
@@ -163,6 +164,67 @@ function OneLineHint() {
       One line at a time: copy it, paste it into the router&apos;s terminal, press Enter, then come
       back for the next. Pasting several lines at once into Winbox runs them joined together.
     </p>
+  )
+}
+
+/**
+ * The one-line path, offered before the numbered steps.
+ *
+ * WHY IT SITS ABOVE THEM AND NOT INSTEAD OF THEM. The steps are the fallback
+ * for a router that cannot fetch over the internet, and for anyone who wants
+ * to read each command before it runs on live equipment. Hiding them would
+ * make this the only way, and the first router it could not set up would leave
+ * the tenant with nothing.
+ *
+ * NO CLOCK IS READ WHILE RENDERING. The expiry is formatted from the string
+ * the action returned, which is the same for every render; a component that
+ * calls Date.now() in its body gets a different answer each time and the
+ * purity rule rightly forbids it.
+ */
+function SetupLine({ tunnelId }: { tunnelId: number }) {
+  const [state, action] = useActionState(routerSetupLineAction, null)
+  const [copied, setCopied] = useState(false)
+  const line = state?.ok ? state.setupLine : undefined
+
+  return (
+    <div className="rounded-xl border border-blue-900/50 bg-blue-950/20 p-4">
+      <h3 className="text-sm font-semibold text-blue-200">Set it up with one line</h3>
+      <p className="mt-1 text-xs leading-relaxed text-blue-200/80">
+        The router checks itself, sets its clock, builds the tunnel, takes its RADIUS settings and
+        reports back — on its own. Nothing to copy off the router afterwards.
+      </p>
+
+      {!line ? (
+        <form action={action} className="mt-3">
+          <input type="hidden" name="id" value={tunnelId} />
+          <SubmitButton label="Get the line" pending="Preparing…" />
+          {state && !state.ok ? <Problem text={state.error} /> : null}
+        </form>
+      ) : (
+        <div className="mt-3 space-y-2">
+          <div className="overflow-hidden rounded-lg border border-blue-900/50">
+            <div className="flex items-center justify-between gap-2 bg-blue-950/40 px-3 py-1.5">
+              <span className="text-[11px] text-blue-200/80">
+                Paste into the router&apos;s terminal, then press Enter
+              </span>
+              <CopyButton text={line.line} onCopied={() => setCopied(true)} />
+            </div>
+            <pre className="overflow-x-auto bg-gray-950 px-3 py-2 text-[11px] leading-relaxed text-gray-200">
+              {line.line}
+            </pre>
+          </div>
+          <p className="text-[11px] text-gray-500">
+            Good for {line.minutes} minutes, once. It carries this router&apos;s RADIUS secret, so
+            don&apos;t paste it anywhere else — if it expires, ask for another.
+          </p>
+          {copied ? (
+            <p className="text-[11px] text-gray-400">
+              Copied. Once it runs, this router turns green below within a minute.
+            </p>
+          ) : null}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -377,7 +439,7 @@ function StepFive({ tunnel, half, statusReported }: { tunnel: TunnelView; half: 
 }
 
 function Guide({
-  tunnel, expecting, half, canAdd, statusReported, onAdded, onStartOver,
+  tunnel, expecting, half, canAdd, oneLine, statusReported, onAdded, onStartOver,
 }: {
   /** The router being set up; null while step 1 is still to do. */
   tunnel: TunnelView | null
@@ -385,6 +447,8 @@ function Guide({
   expecting: boolean
   half: Half
   canAdd: boolean
+  /** Migration 0052 applied and a key configured: the one-line path is offered. */
+  oneLine: boolean
   statusReported: boolean
   onAdded: (id: number) => void
   onStartOver: () => void
@@ -461,6 +525,15 @@ function Guide({
             <p className="text-xs text-gray-500">Not available until the server is set up.</p>
           )}
         </Step>
+
+        {tunnel && !keySaved && oneLine ? (
+          <li>
+            <SetupLine tunnelId={tunnel.id} />
+            <p className="mt-4 text-xs text-gray-500">
+              Or do it a step at a time:
+            </p>
+          </li>
+        ) : null}
 
         <Step
           n={2}
@@ -707,7 +780,7 @@ function RouterRow({ tunnel, onContinue }: { tunnel: TunnelView; onContinue: (id
 // ---------------------------------------------------------------------------
 
 export function RouterTunnelsManager({
-  tunnels, half, operator, canAdd, statusReported,
+  tunnels, half, operator, canAdd, oneLine, statusReported,
 }: {
   tunnels: TunnelView[]
   half: Half
@@ -715,6 +788,8 @@ export function RouterTunnelsManager({
   operator: boolean
   /** False for a tenant while the server is not set up: a step 2 they could never finish. */
   canAdd: boolean
+  /** Migration 0052 applied and ROUTER_SECRET_KEY set: one-line setup is possible. */
+  oneLine: boolean
   statusReported: boolean
 }) {
   // The router the guide is following; null while step 1 is still to do.
@@ -744,6 +819,7 @@ export function RouterTunnelsManager({
           expecting={guideId !== null}
           half={half}
           canAdd={canAdd}
+          oneLine={oneLine}
           statusReported={statusReported}
           onAdded={setGuideId}
           onStartOver={() => setGuideId(null)}

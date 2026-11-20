@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 
 import { RouterTunnelsManager, type TunnelView } from '@/components/settings/RouterTunnelsManager'
+import { secretStorageReady } from '@/lib/crypto'
 import { listRouterTunnels } from '@/lib/data/tunnels'
 import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -110,6 +111,17 @@ export default async function RouterTunnelsPage() {
         half={tunnelSyncConfigured() ? 'auto' : operator ? 'operator' : 'tenant'}
         operator={operator}
         canAdd={operator || server.ok}
+        /*
+          Three things have to be true before a one-line setup can work, and
+          all three are the server's, not the tenant's: the migration, the key
+          that encrypts the login the script creates, and an address the router
+          can fetch from. Missing any one, the numbered steps are the only
+          thing offered — rather than a button that mints a line and then
+          explains why it cannot.
+        */
+        oneLine={
+          caps.routerLogins && secretStorageReady() && Boolean((process.env.PUBLIC_APP_URL ?? '').trim())
+        }
         statusReported={handshakes !== null}
       />
     </div>

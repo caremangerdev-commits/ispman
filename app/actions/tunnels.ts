@@ -3,6 +3,8 @@
 import { revalidatePath } from 'next/cache'
 
 import { logEvent } from '@/lib/audit'
+import { secretStorageReady } from '@/lib/crypto'
+import { createSetupToken, SETUP_TOKEN_MINUTES } from '@/lib/data/router-logins'
 import {
   allocatedTunnelIps, companyTunnelCounts, getRouterTunnel, tunnelHoldingKey, type RouterTunnel,
 } from '@/lib/data/tunnels'
@@ -17,7 +19,8 @@ import {
 import {
   MAX_ADDRESSES_PER_COMPANY, MAX_LIVE_ROUTERS_PER_COMPANY, ROUTER_REMOVE,
   nasDescription, nasShortname, nextTunnelIp, parseServices, parseWireGuardKey,
-  routerConnect, routerNameProblem, serverAddPeer, serverRemovePeer, serverReplacePeer,
+  routerConnect, routerNameProblem, routerSetupLine, serverAddPeer, serverRemovePeer,
+  serverReplacePeer,
   TUNNEL_NETWORK,
   type ConfigBlock, type RouterCommand, type TunnelLabel,
 } from '@/lib/tunnels/wireguard'
@@ -71,6 +74,11 @@ export type TunnelActionResult =
       routerNote?: string
       /** A root-shell block: the platform operator, hand-run mode, only. */
       server?: ConfigBlock
+      /**
+       * The single line that sets a router up on its own, and when it stops
+       * working. Shown instead of steps 2 to 4, not beside them.
+       */
+      setupLine?: { line: string; expiresAt: string; minutes: number }
     }
   | { ok: false; error: string }
 
@@ -520,5 +528,89 @@ export async function revokeRouterTunnel(
       half === 'operator' && tunnel.publicKey
         ? serverRemovePeer({ ...names, tunnelId: tunnel.id, tunnelIp: tunnel.tunnelIp, publicKey: tunnel.publicKey })
         : undefined,
+  }
+}
+
+/**
+ * A setup line for one router: paste it into the router's terminal and the
+ * router does the rest.
+ *
+ * WHAT IT REPLACES. Steps 2 to 4 and the key paste-back — four screens, and
+ * the reason six of ten tenant routers went on the tunnel while four did not.
+ * The manual steps stay exactly where they are, for a router that cannot reach
+ * the internet to fetch a script, and for anyone who would rather see each
+ * command before it runs.
+ *
+ * NOTHING IS WRITTEN TO THE ROUTER'S ROW HERE. The RADIUS entry and the stored
+ * login happen when the router actually fetches the script, because until then
+ * nothing has run and a tenant who closes the page should leave no trace. This
+ * action only mints the link.
+ *
+ * ONE LINE AT A TIME PER ROUTER: minting expires any previous unused link, so
+ * two scripts carrying two different passwords can never both be out there.
+ */
+export async function routerSetupLineAction(formData: FormData): Promise<TunnelActionResult> {
+  const begun = await begin()
+  if ('refused' in begun) return begun.refused
+  const { session } = begun
+
+  if (!(await getSchemaCapabilities()).routerLogins) {
+    return {
+      ok: false,
+      error:
+        'One-line setup is not available on this system yet: migration 0052 has not been applied. ' +
+        'The steps below still work.',
+    }
+  }
+  if (!secretStorageReady()) {
+    return {
+      ok: false,
+      error: isOperator(session)
+        ? 'ROUTER_SECRET_KEY is not configured, so the login the script creates could not be stored. ' +
+          'Generate one with: openssl rand -base64 32'
+        : "One-line setup isn't finished on this server yet. Ask the platform operator to turn it on. " +
+          'The steps below still work.',
+    }
+  }
+
+  const live = await liveTunnel(session, formData)
+  if ('refused' in live) return live.refused
+  const { tunnel } = live
+
+  const srv = serverFor(session)
+  if ('refused' in srv) return srv.refused
+
+  const base = (process.env.PUBLIC_APP_URL ?? '').trim()
+  if (!base) {
+    return {
+      ok: false,
+      error: isOperator(session)
+        ? 'PUBLIC_APP_URL is not configured, so the line would have no address to fetch from.'
+        : "One-line setup isn't finished on this server yet. Ask the platform operator to turn it on.",
+    }
+  }
+
+  const minted = await createSetupToken(session.company.id, tunnel.id, session.profile.id ?? null)
+  if (!minted.ok) return { ok: false, error: minted.error }
+
+  await logEvent({
+    type: 'router_tunnel_setup_line',
+    tag: '[tunnels]',
+    details:
+      'Setup line issued for ' + tunnel.name + ' at ' + tunnel.tunnelIp +
+      ', good for ' + SETUP_TOKEN_MINUTES + ' minutes | by=' + session.profile.email,
+  })
+
+  return {
+    ok: true,
+    tunnelId: tunnel.id,
+    message:
+      'Paste this one line into ' + tunnel.name +
+      "'s terminal. It checks the router, sets up the tunnel and reports back by itself.",
+    setupLine: {
+      line: routerSetupLine(base, minted.token),
+      expiresAt: minted.expiresAt.toISOString(),
+      minutes: SETUP_TOKEN_MINUTES,
+    },
   }
 }

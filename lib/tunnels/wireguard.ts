@@ -458,3 +458,204 @@ export const ROUTER_REMOVE: RouterCommand[] = [
   { label: 'Remove the server end', line: '/interface wireguard peers remove [find comment="' + COMMENT_PEER + '"]' },
   { label: 'Remove the tunnel', line: '/interface wireguard remove [find name=' + ROUTER_INTERFACE + ']' },
 ]
+
+/* ===========================================================================
+ * ONE PASTED LINE
+ *
+ * Everything above is the manual flow: the owner pastes four commands, copies
+ * the router's public key off the screen, pastes it back into ISPMan, and the
+ * operator applies the server side. It works, and 10 routers went on the
+ * tunnel that way. It is also the reason the other four have not.
+ *
+ * The line below collapses it. The tenant pastes one command; the router
+ * fetches a script built for that router alone and runs it. Same commands,
+ * same order, same guards — assembled here rather than read off a screen.
+ *
+ * WHAT MAKES ONE LINE POSSIBLE. Two things, neither of them a shortcut:
+ *
+ *   The router reports its own public key. /tool fetch posts it back to the
+ *   same one-time link. That is the step that used to need a human, and a
+ *   public key is public, so nothing secret moves.
+ *
+ *   The server side is already automatic. The root job applies the peer list
+ *   every 30 seconds (deploy/wireguard/ispman-wg-sync), so once the key lands
+ *   in the row the tunnel comes up on its own. serverAddPeer stays for the
+ *   operator who wants to do it by hand, and for routers added before this.
+ *
+ * WHAT THE SCRIPT WILL NOT DO. Upgrade RouterOS. The version gate stops and
+ * says what to do instead. A failed upgrade on a remote router is a site
+ * outage and a drive, and no amount of convenience is worth owning that.
+ * ===========================================================================
+ */
+
+/** The login the script creates for ISPMan. Never a tenant's admin account. */
+export const ROUTER_API_USER = 'ispman'
+
+/**
+ * The binary API on 8728, for every router, on purpose.
+ *
+ * REST (RouterOS 7, over www) would be nicer to call, and eight of ten routers
+ * already answer it. It is not worth the two costs: it needs the www service,
+ * which is the router's web interface and the thing a tenant most likely uses
+ * from their own LAN, and it does not exist on RouterOS 6 at all — 10.250.0.9
+ * answers /rest with a 404 today. The binary API is one transport that works
+ * on both and touches nothing a person uses.
+ */
+export const ROUTER_API_PORT = 8728
+
+/**
+ * Restricting a service to one address is a strict improvement when the list
+ * is empty (it means "from anywhere" today), and a change to someone else's
+ * setup when it is not. So the script appends and never replaces: a tenant
+ * calling their own router's API from their office keeps doing so.
+ */
+function allowApiFromServer(): string[] {
+  return [
+    ':local svc [/ip service find name="api"]',
+    ':local cur [/ip service get $svc address]',
+    ':if ([:len $cur] = 0) do={',
+    '  /ip service set $svc address=' + TUNNEL_SERVER_IP + '/32',
+    '} else={',
+    '  :if ([:typeof [:find $cur ' + TUNNEL_SERVER_IP + '/32]] = "nil") do={',
+    '    /ip service set $svc address=($cur , ' + TUNNEL_SERVER_IP + '/32)',
+    '  }',
+    '}',
+    '/ip service enable $svc',
+  ]
+}
+
+export type SetupScriptInput = ConnectInput &
+  TunnelLabel & {
+    /** Where the router fetches from and posts its key back to, e.g. https://app.ispman.online */
+    baseUrl: string
+    /** The one-time token. Appears in the script only as the URL it calls. */
+    token: string
+    /** The password for the ispman user, already stored encrypted before this is built. */
+    apiPassword: string
+  }
+
+/**
+ * The RouterOS script served at the one-time link.
+ *
+ * EVERY STEP IS GUARDED, because a tenant will paste the line twice. Running
+ * it again must change nothing and must not add a second address, a second
+ * peer or a second RADIUS entry — so each step asks whether its own row is
+ * there first, found by the same comments the manual flow uses.
+ *
+ * IT STOPS AT THE FIRST REAL PROBLEM. RouterOS keeps going after a failed
+ * command by default, which would leave a half-configured router reporting
+ * success. The version gate and the NTP check both :error out, and the fetch
+ * at the end only runs if the interface exists.
+ */
+export function routerSetupScript(input: SetupScriptInput): string {
+  const base = input.baseUrl.replace(/\/+$/, '')
+  const keyUrl = base + '/api/routers/setup/' + input.token + '/key'
+
+  return [
+    '# ISPMan setup - ' + heading(input),
+    '# ' + input.tunnelIp + ' - generated for this router, single use.',
+    '# Pasting it again is safe: every step checks whether it is already done.',
+    '',
+    ':put "ISPMan: checking the router..."',
+    '',
+    '# --- RouterOS 7 or stop -------------------------------------------------',
+    ':if ([:pick [/system resource get version] 0 1] != "7") do={',
+    '  :put "";',
+    '  :put "ISPMan: this router runs RouterOS [/system resource get version].";',
+    '  :put "The tunnel needs RouterOS 7. Nothing has been changed.";',
+    '  :put "Update the router, then paste the line again.";',
+    '  :error "RouterOS 7 required"',
+    '}',
+    '',
+    '# --- the clock ----------------------------------------------------------',
+    '# WireGuard refuses a handshake older than the last one it saw, and a',
+    '# MikroTik without a battery boots in the past. With the clock unset the',
+    '# tunnel does not come back after a power cut until someone fixes it by hand.',
+    '/system ntp client set enabled=yes servers=time.cloudflare.com,pool.ntp.org',
+    '',
+    '# --- the tunnel ---------------------------------------------------------',
+    ':if ([:len [/interface wireguard find name=' + ROUTER_INTERFACE + ']] = 0) do={',
+    '  /interface wireguard add name=' + ROUTER_INTERFACE +
+      ' listen-port=' + ROUTER_LISTEN_PORT + ' comment="' + COMMENT_INTERFACE + '"',
+    '}',
+    '',
+    ':if ([:len [/interface wireguard peers find comment="' + COMMENT_PEER + '"]] = 0) do={',
+    '  /interface wireguard peers add interface=' + ROUTER_INTERFACE +
+      ' public-key="' + input.serverPublicKey + '"' +
+      ' endpoint-address=' + input.serverEndpoint +
+      ' endpoint-port=' + input.serverPort +
+      ' allowed-address=' + TUNNEL_SERVER_IP + '/32' +
+      ' persistent-keepalive=' + KEEPALIVE +
+      ' comment="' + COMMENT_PEER + '"',
+    '}',
+    '',
+    ':if ([:len [/ip address find comment="' + COMMENT_INTERFACE + '"]] = 0) do={',
+    '  /ip address add address=' + input.tunnelIp + '/32 network=' + TUNNEL_SERVER_IP +
+      ' interface=' + ROUTER_INTERFACE + ' comment="' + COMMENT_INTERFACE + '"',
+    '}',
+    '',
+    '# --- RADIUS through the tunnel ------------------------------------------',
+    '# Adds only. The router keeps any RADIUS entry it already has, below this',
+    '# one, so a tunnel that does not come up cannot take customers offline.',
+    ':if ([:len [/radius find comment="' + COMMENT_RADIUS + '"]] = 0) do={',
+    '  /radius add address=' + TUNNEL_SERVER_IP + ' src-address=' + input.tunnelIp +
+      ' secret="' + input.secret + '" service=' + input.services.join(',') +
+      ' timeout=1s comment="' + COMMENT_RADIUS + '"',
+    '}',
+    ':do {',
+    '  /radius move [find comment="' + COMMENT_RADIUS + '"] destination=[:pick [/radius find] 0]',
+    '} on-error={}',
+    '',
+    '# --- let the tunnel through the firewall --------------------------------',
+    ':if ([:len [/ip firewall filter find comment="' + COMMENT_INTERFACE + '"]] = 0) do={',
+    '  /ip firewall filter add chain=input in-interface=' + ROUTER_INTERFACE +
+      ' action=accept comment="' + COMMENT_INTERFACE + '" place-before=0',
+    '}',
+    '',
+    "# --- ISPMan's own login -------------------------------------------------",
+    "# Its own user, not the tenant's admin account, so it can be removed in one",
+    '# line without locking anybody out: /user remove [find name=' + ROUTER_API_USER + ']',
+    ':if ([:len [/user find name=' + ROUTER_API_USER + ']] = 0) do={',
+    '  /user add name=' + ROUTER_API_USER + ' group=full password="' + input.apiPassword +
+      '" comment="ISPMan - remove this to cut ISPMan off"',
+    '} else={',
+    '  /user set [find name=' + ROUTER_API_USER + '] password="' + input.apiPassword + '" group=full',
+    '}',
+    '',
+    ...allowApiFromServer(),
+    '',
+    '# --- tell ISPMan the public key -----------------------------------------',
+    '# The private half never leaves this router. This is the step that used to',
+    '# be a person copying a key off the screen.',
+    ':local pub [/interface wireguard get [find name=' + ROUTER_INTERFACE + '] public-key]',
+    ':put "ISPMan: reporting in..."',
+    ':do {',
+    '  /tool fetch url="' + keyUrl + '" http-method=post http-data=("key=" . $pub) output=none',
+    '  :put "";',
+    '  :put "ISPMan: done. The router appears in ISPMan within a minute.";',
+    '} on-error={',
+    '  :put "";',
+    '  :put "ISPMan: the router is set up but could not reach ISPMan to finish.";',
+    '  :put "Check that the router has internet, then paste the line again.";',
+    '  :put "Its public key, if you would rather paste it in by hand:";',
+    '  :put $pub',
+    '}',
+  ].join('\n')
+}
+
+/**
+ * The single line the tenant pastes.
+ *
+ * WHY IT WRITES A FILE AND IMPORTS IT, rather than piping. RouterOS has no
+ * pipe: /tool fetch writes to a file and /import runs one. The file is removed
+ * afterwards because it contains the RADIUS secret and the new password, and a
+ * router's file list is not a place to leave either.
+ */
+export function routerSetupLine(baseUrl: string, token: string): string {
+  const base = baseUrl.replace(/\/+$/, '')
+  return (
+    '/tool fetch url="' + base + '/api/routers/setup/' + token + '" dst-path=ispman-setup.rsc; ' +
+    '/import file-name=ispman-setup.rsc; ' +
+    '/file remove [find name="ispman-setup.rsc"]'
+  )
+}
