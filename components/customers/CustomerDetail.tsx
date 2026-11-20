@@ -1079,6 +1079,15 @@ export function CustomerDetail({
                 }
               />
             ) : null}
+            {/*
+              ONLY WHEN IT IS A REAL FIGURE. This comes from radacct, which
+              carries octets for a PPPoE session and none at all for a DHCP
+              one — 680,232 of 680,248 sessions on this platform have zero. For
+              a DHCP customer it was always "0 B", sitting directly above the
+              Data used block that holds the truth, and two usage figures that
+              disagree is worse than one. A PPPoE customer still sees it.
+            */}
+            {radius.bytesThisMonth ? (
             <Row
               label="Data Used (month)"
               value={
@@ -1097,6 +1106,7 @@ export function CustomerDetail({
                 )
               }
             />
+            ) : null}
 
             {!radius.available ? (
               <div className="px-4 py-3">

@@ -19,6 +19,8 @@ import { TicketPriorityBadge, TicketStatusBadge } from '@/components/tickets/Tic
 import { lastBalanceAdjustment } from '@/lib/data/balance-adjustments'
 import { lastChargeFor } from '@/lib/data/billing-engine'
 import { companySymbol } from '@/lib/data/currency'
+import { customerUsage } from '@/lib/data/usage'
+import { UsageBlock } from '@/components/customers/UsageBlock'
 import { listCustomerChanges } from '@/lib/data/customer-changes'
 import { listNetworkHistory } from '@/lib/data/network-events'
 import { provisionPlan } from '@/lib/data/provision'
@@ -59,10 +61,11 @@ export default async function CustomerDetailPage({
   const money = can(profile.role, 'view_customer_billing_history')
   const none = <T,>(empty: T) => Promise.resolve(empty)
 
+
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
     balanceAdjustment, changeHistory, settings, caps, lastCharge, charges, paymentCategories,
-    calendar, symbol,
+    calendar, symbol, usage,
   ] = await Promise.all([
       money ? getCustomerPayments(company.id, customerId) : none([]),
       getCustomerTickets(company.id, customerId),
@@ -101,6 +104,10 @@ export default async function CustomerDetailPage({
       // rule (0039) inert — the same test the payment path makes.
       prepaidCalendarFor(company.id),
       companySymbol(company.id),
+      // Read off the routers by the usage poller (0053). Not from radacct,
+      // which carries no octets for a DHCP customer — see the migration.
+      // Absent until 0053 is applied, and the block then hides itself.
+      customerUsage(company.id, customerId),
     ])
 
   // "Email bill" beside "Bill (PDF)": shown when the company has bill emails
@@ -224,6 +231,11 @@ export default async function CustomerDetailPage({
           canManage={can(profile.role, 'manage_charges')}
         />
       ) : null}
+
+      {/* Above Network History: how much they have used, then when they were
+          connected. Null means migration 0053 is not applied, and the block
+          hides rather than showing a zero that would be mistaken for a fact. */}
+      {usage ? <UsageBlock usage={usage} polling={!usage.empty || caps.routerLogins} /> : null}
 
       <NetworkHistory entries={networkHistory} />
 
