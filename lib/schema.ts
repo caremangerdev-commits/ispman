@@ -206,6 +206,15 @@ export type SchemaCapabilities = {
    */
   routerLogins: boolean
   /**
+   * usage_state and usage_daily (0053): how much data each customer has used,
+   * read off the simple queues on their router.
+   *
+   * Absent, the poller refuses every tick and nothing shows a usage figure.
+   * It cannot be derived from RADIUS on this platform at all — see the
+   * migration for the measurements that settle that.
+   */
+  usage: boolean
+  /**
    * Migration 0036: `settings.portal_payment_note`, the per-company "how to pay"
    * line shown on the customer portal. Absent, the portal omits the line and
    * the general settings form hides the field.
@@ -305,6 +314,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     sessionTimeoutRes,
     monthlyBillsRes,
     routerLoginsRes,
+    usageRes,
   ] = await Promise.all([
     db.from('customers').select('customer_type').limit(1),
     db.from('customers').select('expiry_mode').limit(1),
@@ -421,8 +431,11 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     // router_setup_tokens table, because the column is what every reader needs
     // and the table is only written during setup.
     db.from('router_tunnels').select('api_secret').limit(1),
+    // 0053: usage read off the routers. Probes usage_daily, the one every
+    // reader needs; usage_state is only ever written by the poller.
+    db.from('usage_daily').select('day').limit(1),
   ])
-  console.log('[perf]     schema probe: 30 parallel queries  %dms', Date.now() - tProbe)
+  console.log('[perf]     schema probe: 31 parallel queries  %dms', Date.now() - tProbe)
 
   // PGRST205 = unknown table, 42703 = undefined column. Anything else is a
   // real failure and should not be silently reported as "feature absent".
@@ -761,6 +774,14 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     )
   }
 
+  // 0053: the usage tables. Absent, the poller refuses every tick and the
+  // customer record shows no usage figure rather than a wrong one.
+  const missingUsage =
+    usageRes.error?.code === 'PGRST205' || usageRes.error?.code === '42P01'
+  if (usageRes.error && !missingUsage) {
+    throw new Error('Schema probe failed for usage_daily: ' + usageRes.error.message)
+  }
+
   if (paymentSegmentRes.error && !missingPaymentSegment) {
     throw new Error(
       'Schema probe failed for customer_misc_category_id: ' + paymentSegmentRes.error.message
@@ -806,6 +827,7 @@ export const getSchemaCapabilities = cache(async (): Promise<SchemaCapabilities>
     leads: !missingLeads,
     sessionTimeout: !missingSessionTimeout,
     routerLogins: !missingRouterLogins,
+    usage: !missingUsage,
   }
 })
 

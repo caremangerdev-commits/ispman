@@ -38,6 +38,7 @@ const PUBLIC_PATHS = [
   '/api/billing/tick',
   '/api/tunnels/peers',
   '/api/routers/setup',
+  '/api/usage/poll',
 ]
 
 /**
