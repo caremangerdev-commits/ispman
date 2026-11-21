@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 
 import { DeviceManager, type InventoryRow } from '@/components/network/DeviceManager'
+import { deviceCustomers } from '@/lib/data/customer-devices'
 import { listDevices } from '@/lib/data/devices'
 import { listOlts } from '@/lib/data/olts'
 import { listRouterTunnels } from '@/lib/data/tunnels'
@@ -29,11 +30,12 @@ export default async function DevicesPage() {
   }
 
   const now = new Date()
-  const [tunnels, olts, devices, handshakes] = await Promise.all([
+  const [tunnels, olts, devices, handshakes, owners] = await Promise.all([
     listRouterTunnels(company.id),
     listOlts(company.id),
     listDevices(company.id),
     readHandshakes(now).catch(() => null),
+    deviceCustomers(company.id),
   ])
 
   const routerName = new Map(tunnels.map((t) => [t.id, t.name]))
@@ -85,6 +87,7 @@ export default async function DevicesPage() {
       mac: d.mac,
       where: via ? 'heard by ' + via + (d.foundOn ? ' on ' + d.foundOn : '') : d.notes,
       href: null,
+      customer: owners.get(d.id) ?? null,
       deviceId: d.id,
       status: null,
     })

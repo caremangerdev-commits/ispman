@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
+import { Modal } from '@/components/settings/Modal'
 import { addOlt, checkOlt, removeOlt, type OltActionResult } from '@/app/actions/olts'
 import type { Olt } from '@/lib/data/olts'
 
@@ -63,12 +64,19 @@ function Result({ state }: { state: OltActionResult | null }) {
 const cardFine = (status: string) => status === 'INSERVICE' || status === 'STANDBY'
 
 function AddForm({
-  routers, brands,
+  routers, brands, onDone,
 }: {
   routers: OltRouterOption[]
   brands: { brand: string; label: string }[]
+  onDone: () => void
 }) {
-  const [state, action] = useActionState(addOlt, null)
+  // The popup closes itself once the OLT is added and connected. A failure
+  // keeps it open with the reason, so nothing has to be typed again.
+  const [state, action] = useActionState(async (prev: OltActionResult | null, fd: FormData) => {
+    const res = await addOlt(prev, fd)
+    if (res.ok) onDone()
+    return res
+  }, null)
   const ready = routers.filter((r) => r.ready)
 
   if (routers.length === 0) {
@@ -229,12 +237,24 @@ export function OltManager({
   canManage: boolean
 }) {
   const nameOf = (id: number) => routers.find((r) => r.id === id)?.name ?? 'a removed router'
+  const [adding, setAdding] = useState(false)
 
   return (
     <div className="max-w-6xl space-y-6">
-      <p className="text-sm text-gray-500">
-        The OLTs on your network, whether ISPMan can reach each one, and the cards inside it.
-      </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-gray-500">
+          The OLTs on your network, whether ISPMan can reach each one, and the cards inside it.
+        </p>
+        {canManage ? (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
+          >
+            Add OLT
+          </button>
+        ) : null}
+      </div>
 
       <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
         {olts.length === 0 ? (
@@ -264,11 +284,10 @@ export function OltManager({
         )}
       </div>
 
-      {canManage ? (
-        <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
-          <h2 className="mb-4 text-sm font-semibold text-white">Add an OLT</h2>
-          <AddForm routers={routers} brands={brands} />
-        </section>
+      {adding ? (
+        <Modal title="Add an OLT" onClose={() => setAdding(false)}>
+          <AddForm routers={routers} brands={brands} onDone={() => setAdding(false)} />
+        </Modal>
       ) : null}
     </div>
   )

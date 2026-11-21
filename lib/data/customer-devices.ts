@@ -355,3 +355,19 @@ export async function unlinkCustomerDevice(companyId: number, deviceId: number):
     .select('id')
   return !error && Boolean(data && data.length)
 }
+
+/** Device id → the customer it is linked to, for the inventory list. Empty before 0057. */
+export async function deviceCustomers(companyId: number): Promise<Map<number, { id: number; name: string }>> {
+  const out = new Map<number, { id: number; name: string }>()
+  const { data, error } = await tenantClient()
+    .from('network_devices')
+    .select('id, customer_id')
+    .eq('company_id', companyId)
+    .not('customer_id', 'is', null)
+    .limit(5000)
+  if (error) return out
+  const rows = (data ?? []) as { id: number; customer_id: number }[]
+  const names = await customerNames(companyId, rows.map((r) => r.customer_id))
+  for (const r of rows) out.set(r.id, { id: r.customer_id, name: names.get(r.customer_id) ?? 'Customer' })
+  return out
+}

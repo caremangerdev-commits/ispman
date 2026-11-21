@@ -1,5 +1,6 @@
 'use client'
 
+import { Modal } from '@/components/settings/Modal'
 import Link from 'next/link'
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
@@ -30,6 +31,8 @@ export type InventoryRow = {
   ip: string | null
   mac: string | null
   where: string | null
+  /** The customer this device is installed for, if it is linked to one. */
+  customer?: { id: number; name: string } | null
   /** Set for routers and OLTs: the page that manages them. */
   href: string | null
   /** Set for rows that live in the devices table and can be edited here. */
@@ -74,8 +77,12 @@ function Note({ state }: { state: DeviceActionResult | null }) {
 
 /* ------------------------------ Add by hand ------------------------------ */
 
-function AddForm() {
-  const [state, action] = useActionState(addDevice, null)
+function AddForm({ onDone }: { onDone: () => void }) {
+  const [state, action] = useActionState(async (prev: DeviceActionResult | null, fd: FormData) => {
+    const res = await addDevice(prev, fd)
+    if (res.ok) onDone()
+    return res
+  }, null)
   const [kind, setKind] = useState('ap')
 
   return (
@@ -368,7 +375,15 @@ function DeviceRow({ row, canManage }: { row: InventoryRow; canManage: boolean }
       </td>
       <td className={td + ' font-mono'}>{row.ip ?? '—'}</td>
       <td className={td + ' font-mono'}>{row.mac ?? '—'}</td>
-      <td className={td}>{row.where ?? '—'}</td>
+      <td className={td}>
+        {row.customer ? (
+          <Link href={'/dashboard/customers/' + row.customer.id} className="text-blue-400 hover:underline">
+            {row.customer.name}
+          </Link>
+        ) : (
+          row.where ?? '—'
+        )}
+      </td>
       <td className={td}>
         {row.status ? (
           <span className={row.status === 'up' ? 'text-green-400' : 'text-red-400'}>
@@ -445,7 +460,7 @@ export function DeviceManager({
             </button>
             <button
               type="button"
-              onClick={() => setPanel(panel === 'add' ? 'none' : 'add')}
+              onClick={() => setPanel('add')}
               className="rounded-lg bg-gray-800 px-4 py-2 text-sm font-semibold text-gray-100 hover:bg-gray-700"
             >
               Add device
@@ -460,13 +475,16 @@ export function DeviceManager({
         </p>
       ) : null}
 
-      {panel !== 'none' ? (
+      {panel === 'discover' ? (
         <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
-          <h2 className="mb-3 text-sm font-semibold text-white">
-            {panel === 'discover' ? 'Find devices on your network' : 'Add a device'}
-          </h2>
-          {panel === 'discover' ? <Discover /> : <AddForm />}
+          <h2 className="mb-3 text-sm font-semibold text-white">Find devices on your network</h2>
+          <Discover />
         </section>
+      ) : null}
+      {panel === 'add' ? (
+        <Modal title="Add a device" onClose={() => setPanel('none')}>
+          <AddForm onDone={() => setPanel('none')} />
+        </Modal>
       ) : null}
 
       <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
