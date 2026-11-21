@@ -4,7 +4,8 @@ import Link from 'next/link'
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
-import { checkOlt, type OltActionResult } from '@/app/actions/olts'
+import { checkOlt, loadOnus, type OltActionResult } from '@/app/actions/olts'
+import { OnuPanel, type OnuLists } from '@/components/network/OnuPanel'
 import type { Olt } from '@/lib/data/olts'
 
 /**
@@ -17,7 +18,9 @@ import type { Olt } from '@/lib/data/olts'
  * shown as of then.
  */
 
-type Tab = 'details' | 'cards' | 'pon' | 'uplinks' | 'vlans'
+type Tab = 'details' | 'authorised' | 'pending' | 'offline' | 'cards' | 'pon' | 'uplinks' | 'vlans'
+
+const ONU_TABS: Tab[] = ['authorised', 'pending', 'offline']
 
 const cardFine = (status: string) => status === 'INSERVICE' || status === 'STANDBY'
 
@@ -67,22 +70,31 @@ function Empty({ children }: { children: string }) {
 }
 
 function Count({
-  label, value, tone, note,
+  label, value, tone, note, active, onOpen,
 }: {
   label: string
   /** Undefined when the OLT has not been read since these were added. */
   value: number | undefined
   tone: string
   note: string
+  active: boolean
+  onOpen: () => void
 }) {
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
+    <button
+      type="button"
+      onClick={onOpen}
+      className={
+        'rounded-xl border bg-gray-900 px-4 py-3 text-left transition-colors hover:border-gray-600 ' +
+        (active ? 'border-blue-500' : 'border-gray-800')
+      }
+    >
       <p className="text-[10px] uppercase tracking-wider text-gray-500">{label}</p>
       <p className={'mt-1 text-3xl font-semibold tabular-nums ' + (value === undefined ? 'text-gray-600' : tone)}>
         {value === undefined ? '—' : value}
       </p>
       <p className="mt-1 text-[11px] text-gray-500">{note}</p>
-    </div>
+    </button>
   )
 }
 
@@ -105,7 +117,31 @@ export function OltDetail({
   canManage: boolean
 }) {
   const [tab, setTab] = useState<Tab>('details')
+  const [lists, setLists] = useState<OnuLists | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [listError, setListError] = useState<string | null>(null)
   const info = olt.info
+
+  // READ FROM THE OLT WHEN A LIST IS OPENED, not when the page loads. Most
+  // visits to this page are to look at cards or ports, and a live reading is
+  // a login and a dozen commands over a tunnel.
+  const reload = async () => {
+    setLoading(true)
+    setListError(null)
+    try {
+      const res = await loadOnus(olt.id)
+      if (res.ok) setLists({ pending: res.pending, onus: res.onus })
+      else setListError(res.error)
+    } catch {
+      setListError('Could not reach ISPMan.')
+    } finally {
+      setLoading(false)
+    }
+  }
+  const open = (t: Tab) => {
+    setTab(t)
+    if (ONU_TABS.includes(t) && !lists && !loading) void reload()
+  }
   const cards = info?.cards ?? []
   const pon = info?.ponPorts ?? []
   const uplinks = info?.uplinks ?? []
@@ -113,6 +149,8 @@ export function OltDetail({
 
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: 'details', label: 'OLT details' },
+    { id: 'authorised', label: 'Authorized' },
+    { id: 'pending', label: 'Unauthorized' },
     { id: 'cards', label: 'Cards', count: cards.length },
     { id: 'pon', label: 'PON ports', count: pon.length },
     { id: 'uplinks', label: 'Uplinks', count: uplinks.length },
@@ -146,27 +184,33 @@ export function OltDetail({
       ) : null}
 
       {/*
-        The three numbers someone opens an OLT to see. Counts only for now: each
-        becomes a way into its own list once the ONU screens exist.
+        The three numbers someone opens an OLT to see. Each opens its own
+        list, read from the OLT at that moment.
       */}
       <div className="grid gap-3 sm:grid-cols-3">
         <Count
           label="Authorized"
-          value={info?.onus?.authorised}
+          value={lists ? lists.onus.length : info?.onus?.authorised}
           tone="text-green-400"
           note="ONUs registered on this OLT"
+          active={tab === 'authorised'}
+          onOpen={() => open('authorised')}
         />
         <Count
           label="Unauthorized"
-          value={info?.onus?.unauthorised}
-          tone={info?.onus?.unauthorised ? 'text-blue-400' : 'text-white'}
+          value={lists ? lists.pending.length : info?.onus?.unauthorised}
+          tone={(lists ? lists.pending.length : info?.onus?.unauthorised) ? 'text-blue-400' : 'text-white'}
           note="Plugged in, waiting to be authorized"
+          active={tab === 'pending'}
+          onOpen={() => open('pending')}
         />
         <Count
           label="Offline"
-          value={info?.onus?.offline}
-          tone={info?.onus?.offline ? 'text-red-400' : 'text-white'}
+          value={lists ? lists.onus.filter((o) => !o.online).length : info?.onus?.offline}
+          tone={(lists ? lists.onus.filter((o) => !o.online).length : info?.onus?.offline) ? 'text-red-400' : 'text-white'}
           note="Authorized but not in service"
+          active={tab === 'offline'}
+          onOpen={() => open('offline')}
         />
       </div>
 
@@ -176,11 +220,11 @@ export function OltDetail({
             key={t.id}
             type="button"
             role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
+            aria-selected={tab === t.id || (t.id === 'authorised' && tab === 'offline')}
+            onClick={() => open(t.id)}
             className={
               '-mb-px border-b-2 px-3 py-2 text-sm ' +
-              (tab === t.id
+              (tab === t.id || (t.id === 'authorised' && tab === 'offline')
                 ? 'border-blue-500 font-semibold text-white'
                 : 'border-transparent text-gray-400 hover:text-gray-200')
             }
@@ -205,6 +249,23 @@ export function OltDetail({
             <Field label="ONUs registered" value={pon.length ? String(registered) : '—'} />
             <Field label="Login used" value={olt.cliUser} />
           </dl>
+        ) : null}
+
+        {tab === 'authorised' || tab === 'pending' || tab === 'offline' ? (
+          <OnuPanel
+            key={tab}
+            oltId={olt.id}
+            view={tab}
+            lists={lists}
+            loading={loading}
+            error={listError}
+            canManage={canManage}
+            vlans={vlans.map((v) => v.id).filter((id) => id !== 1)}
+            defaultVlan={
+              olt.serviceVlan ?? (vlans.filter((v) => v.id !== 1).length === 1 ? vlans.filter((v) => v.id !== 1)[0].id : null)
+            }
+            onReload={() => void reload()}
+          />
         ) : null}
 
         {tab === 'cards' ? (

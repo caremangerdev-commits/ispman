@@ -27,12 +27,35 @@ export type Olt = {
   ok: boolean | null
   error: string | null
   info: OltInfo | null
+  /** The VLAN new ONUs are carried on. Null until one has been chosen. */
+  serviceVlan: number | null
   createdAt: string
 }
 
 const COLUMNS =
   'id, tunnel_id, name, brand, model, mgmt_ip, cli_port, cli_user, forward_port, forward_ok, ' +
   'checked_at, ok, error, info, created_at'
+
+/**
+ * service_vlan arrived in 0055, after the table. Asked for separately, so a
+ * server that has 0054 but not yet 0055 still lists its OLTs.
+ */
+async function serviceVlans(companyId: number): Promise<Map<number, number>> {
+  const { data, error } = await tenantClient()
+    .from('olts')
+    .select('id, service_vlan')
+    .eq('company_id', companyId)
+  const out = new Map<number, number>()
+  if (error) return out
+  for (const r of (data ?? []) as { id: number; service_vlan: number | null }[]) {
+    if (r.service_vlan) out.set(r.id, r.service_vlan)
+  }
+  return out
+}
+
+export async function setServiceVlan(companyId: number, id: number, vlan: number): Promise<void> {
+  await tenantClient().from('olts').update({ service_vlan: vlan }).eq('company_id', companyId).eq('id', id)
+}
 
 type Row = {
   id: number
@@ -52,7 +75,8 @@ type Row = {
   created_at: string
 }
 
-const toOlt = (r: Row): Olt => ({
+const toOlt = (r: Row, vlans?: Map<number, number>): Olt => ({
+  serviceVlan: vlans?.get(r.id) ?? null,
   id: r.id,
   tunnelId: r.tunnel_id,
   name: r.name,
@@ -83,7 +107,8 @@ export async function listOlts(companyId: number): Promise<Olt[] | null> {
     if (missing(error.code)) return null
     throw new Error('Could not load OLTs: ' + error.message)
   }
-  return ((data ?? []) as unknown as Row[]).map(toOlt)
+  const vlans = await serviceVlans(companyId)
+  return ((data ?? []) as unknown as Row[]).map((r) => toOlt(r, vlans))
 }
 
 export async function getOlt(companyId: number, id: number): Promise<Olt | null> {
@@ -98,7 +123,7 @@ export async function getOlt(companyId: number, id: number): Promise<Olt | null>
     if (missing(error.code)) return null
     throw new Error('Could not load the OLT: ' + error.message)
   }
-  return data ? toOlt(data as unknown as Row) : null
+  return data ? toOlt(data as unknown as Row, await serviceVlans(companyId)) : null
 }
 
 export async function oltWithLogin(
@@ -118,7 +143,7 @@ export async function oltWithLogin(
   const password = decryptSecret(row.cli_secret)
   if (!password) return null
   return {
-    olt: toOlt(row),
+    olt: toOlt(row, await serviceVlans(companyId)),
     login: {
       user: row.cli_user,
       password,

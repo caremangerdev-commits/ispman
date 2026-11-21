@@ -2,7 +2,8 @@ import 'server-only'
 
 import { CliError, TelnetSession } from '@/lib/olt/telnet'
 import type {
-  OltCard, OltDriver, OltInfo, OltLogin, OltPonPort, OltUplink, OltVlan,
+  OltAuthoriseResult, OltCard, OltDriver, OltInfo, OltLogin, OltOnu, OltOnuLists, OltPendingOnu,
+  OltPonPort, OltUplink, OltVlan,
 } from '@/lib/olt/types'
 
 /**
@@ -22,7 +23,9 @@ import type {
  * The hostname is the owner's to change, so nothing here assumes "ZXAN".
  */
 
-const PROMPT = /(?:^|[\r\n])[^\r\n ]{1,40}[>#] ?$/
+// The mode in brackets can contain a space — "ZXAN(gpon-onu-mng 1/1/1:1)#" —
+// so it is matched on its own rather than as part of the hostname.
+const PROMPT = /(?:^|[\r\n])[^\r\n (]{1,40}(?:\([^\r\n)]{1,60}\))?[>#] ?$/
 const LOGIN_STEP = /(Username:|Password:|[>#] ?$)/i
 
 /** More VLANs than this are listed by number only; each one is a command. */
@@ -236,6 +239,199 @@ function countStates(text: string): { total: number; offline: number } {
   return { total, offline }
 }
 
+/* -------------------------------------------------------------------------- */
+/* ONUs: listing them, and letting them on                                    */
+/* -------------------------------------------------------------------------- */
+
+/** A GPON serial number: four vendor characters and eight hex digits. */
+const SERIAL = /^[A-Za-z0-9]{4}[0-9A-Fa-f]{8}$/
+const PORT_REF = /gpon-o(?:lt|nu)_(\d+\/\d+\/\d+)(?::(\d+))?/
+
+/**
+ * `show gpon onu uncfg`: ONUs plugged in and waiting.
+ *
+ * READ BY WHAT EACH FIELD LOOKS LIKE, NOT BY COLUMN. This is the one layout
+ * here not yet seen on a real unit — no PON card was in service when this was
+ * written — and the columns depend on a setting (this OLT has
+ * "uncfg-onu-display-info model sn pw"). A port reference and a 12-character
+ * serial are unmistakable wherever they sit, so those are what is looked for.
+ */
+function parsePending(text: string): OltPendingOnu[] {
+  if (refused(text)) return []
+  const found: OltPendingOnu[] = []
+  for (const line of text.split('\n')) {
+    const ref = PORT_REF.exec(line)
+    if (!ref) continue
+    const fields = line.trim().split(/\s+/)
+    const sn = fields.find((f) => SERIAL.test(f))
+    if (!sn) continue
+    const model =
+      fields.find(
+        (f) => f !== sn && !PORT_REF.test(f) && !/^(unknown|N\/A|-+)$/i.test(f) && /[A-Za-z]/.test(f)
+      ) ?? null
+    found.push({ port: 'gpon-olt_' + ref[1], sn: sn.toUpperCase(), model })
+  }
+  return found
+}
+
+/**
+ * `show gpon onu baseinfo gpon-olt_1/1/1`, as a real C320 printed it:
+ *
+ *   OnuIndex            Type        Mode    AuthInfo                State
+ *   gpon-onu_1/1/1:1    GENERIC     sn      SN:ZTEG00000001         ready
+ */
+function parseBaseInfo(text: string): Map<number, { type: string | null; sn: string | null }> {
+  const out = new Map<number, { type: string | null; sn: string | null }>()
+  if (refused(text)) return out
+  for (const line of text.split('\n')) {
+    const m = /^\s*gpon-onu_\d+\/\d+\/\d+:(\d+)\s+(\S+)\s+\S+\s+(\S+)/.exec(line)
+    if (!m) continue
+    out.set(Number(m[1]), { type: m[2], sn: m[3].replace(/^SN:/i, '') || null })
+  }
+  return out
+}
+
+/**
+ * `show gpon onu state gpon-olt_1/1/1`, as a real C320 printed it:
+ *
+ *   OnuIndex   Admin State  OMCC State  Phase State  Channel
+ *   1/1/1:1     enable       disable     OffLine      1(GPON)
+ *   ONU Number: 0/1
+ */
+function parseStates(text: string): Map<number, string> {
+  const out = new Map<number, string>()
+  if (refused(text)) return out
+  for (const line of text.split('\n')) {
+    const m = /^\s*(?:gpon-onu_)?\d+\/\d+\/\d+:(\d+)\s+\S+\s+\S+\s+(\S+)/.exec(line)
+    if (m) out.set(Number(m[1]), m[2])
+  }
+  return out
+}
+
+/** The PON ports worth asking about: on a PON card that is actually running. */
+function livePonPorts(cards: OltCard[]): string[] {
+  const ports: string[] = []
+  for (const card of cards) {
+    const type = (card.actual ?? card.configured).toUpperCase()
+    if (!type.startsWith('GT') || card.status !== 'INSERVICE') continue
+    for (let p = 1; p <= Math.min(card.ports ?? 0, 32); p += 1) ports.push('gpon-olt_1/' + card.slot + '/' + p)
+  }
+  return ports
+}
+
+async function readOnusOnPort(session: TelnetSession, port: string): Promise<OltOnu[]> {
+  const base = parseBaseInfo(await run(session, 'show gpon onu baseinfo ' + port))
+  if (base.size === 0) return []
+  const states = parseStates(await run(session, 'show gpon onu state ' + port))
+  const onus: OltOnu[] = []
+  for (const [index, info] of base) {
+    const phase = states.get(index) ?? 'unknown'
+    onus.push({
+      id: port.replace('gpon-olt_', 'gpon-onu_') + ':' + index,
+      port,
+      index,
+      type: info.type,
+      sn: info.sn,
+      phase,
+      // Only "working" is a customer with service. LOS, DyingGasp and OffLine
+      // are three reasons for the same result.
+      online: phase.toLowerCase() === 'working',
+    })
+  }
+  return onus.sort((a, b) => a.index - b.index)
+}
+
+/**
+ * The names ISPMan sets up on an OLT for the ONUs it authorises. Created if
+ * missing, left alone if present, so the same code works on an OLT nobody has
+ * prepared.
+ *
+ * ONE ONU TYPE FOR EVERY BRAND. ZTE's built-in types only describe ZTE's own
+ * models, and registering any other ONU against one of them is refused ("Not
+ * support this ONU"). A generic type with four Ethernet ports fits a mixed
+ * estate of ZTE, Huawei, V-SOL and others.
+ *
+ * THE UPSTREAM PROFILE IS DELIBERATELY WIDE (1 Gbps maximum, nothing
+ * reserved). Customer speeds are set per plan on the router, where ISPMan
+ * already controls them; limiting them a second time here would mean two
+ * places to change for every plan.
+ */
+const ONU_TYPE = 'GENERIC'
+const UP_PROFILE = 'ISPMAN-UP'
+
+async function prepare(session: TelnetSession): Promise<void> {
+  // Each of these answers with an error if it already exists, which is fine.
+  await run(session, 'configure terminal')
+  await run(session, 'pon')
+  await run(session, 'onu-type ' + ONU_TYPE + ' gpon description Any-brand-ONU max-tcont 8 max-gemport 32')
+  await run(session, 'onu-type-if ' + ONU_TYPE + ' eth_0/1-4')
+  await run(session, 'exit')
+  await run(session, 'gpon')
+  await run(session, 'profile tcont ' + UP_PROFILE + ' type 4 maximum 1000000')
+  await run(session, 'exit')
+  await run(session, 'end')
+}
+
+/**
+ * Authorise one ONU, for customers whose ONUs have VLAN switched off.
+ *
+ * THE ONU SENDS PLAIN TRAFFIC AND NEVER KNOWS A VLAN EXISTS. The OLT needs one
+ * internally to carry it to the uplink, so the OLT adds it as the traffic
+ * comes in ("user-vlan untagged vlan N") and the uplink hands it back out
+ * untagged. Nothing is configured on the customer's device.
+ *
+ * Every line below was accepted by a real C320 on V2.1.0 against a test ONU.
+ * What has NOT been seen is traffic passing, which needs a PON card in
+ * service and a real ONU on the fibre.
+ *
+ * STOPS AT THE FIRST REFUSAL AND UNDOES THE REGISTRATION, so a half-set-up ONU
+ * is not left holding a slot on the port and showing as authorised.
+ */
+async function authoriseOne(
+  session: TelnetSession,
+  port: string,
+  index: number,
+  sn: string,
+  vlan: number
+): Promise<string | null> {
+  const onu = port.replace('gpon-olt_', 'gpon-onu_') + ':' + index
+  const steps: [string, string][] = [
+    ['interface ' + port, ''],
+    ['onu ' + index + ' type ' + ONU_TYPE + ' sn ' + sn, 'registering it on the port'],
+    ['exit', ''],
+    ['interface ' + onu, ''],
+    ['tcont 1 profile ' + UP_PROFILE, 'setting its upstream profile'],
+    ['gemport 1 tcont 1', 'creating its data channel'],
+    ['service-port 1 vport 1 user-vlan untagged vlan ' + vlan, 'putting it on VLAN ' + vlan],
+    ['exit', ''],
+    ['pon-onu-mng ' + onu, ''],
+    ['service 1 gemport 1', 'telling the ONU which channel to use'],
+    ['exit', ''],
+  ]
+
+  await run(session, 'configure terminal')
+  let problem: string | null = null
+  for (const [command, what] of steps) {
+    const out = await run(session, command)
+    if (refused(out)) {
+      const said = out.split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? ''
+      problem = 'The OLT refused ' + (what || command) + ': ' + said
+      break
+    }
+  }
+  if (problem) {
+    // Back to the top of config mode, wherever the failure left us, then undo.
+    await run(session, 'end')
+    await run(session, 'configure terminal')
+    await run(session, 'interface ' + port)
+    await run(session, 'no onu ' + index)
+    await run(session, 'end')
+    return problem
+  }
+  await run(session, 'end')
+  return null
+}
+
 /** "1,100,200-205" as the OLT prints it, expanded to a list of numbers. */
 function parseVlanList(text: string): number[] {
   const ids: number[] = []
@@ -316,6 +512,82 @@ export const zte: OltDriver = {
       const model = /^(\S+)\s+Version/i.exec(description ?? '')?.[1] ?? null
 
       return { name, model, version, uptime, cards, uplinks, ponPorts, vlans, onus }
+    } finally {
+      session.close()
+    }
+  },
+
+  async listOnus(target, creds): Promise<OltOnuLists> {
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      await run(session, 'terminal length 0')
+      const cards = parseCards(await run(session, 'show card'))
+      const pending = parsePending(await run(session, 'show gpon onu uncfg'))
+      const onus: OltOnu[] = []
+      for (const port of livePonPorts(cards)) onus.push(...(await readOnusOnPort(session, port)))
+      return { pending, onus }
+    } finally {
+      session.close()
+    }
+  },
+
+  async authorise(target, creds, items, vlan): Promise<OltAuthoriseResult[]> {
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      await run(session, 'terminal length 0')
+      await prepare(session)
+
+      // The slots already taken on each port, read once and then kept up to
+      // date here, so two ONUs on one port in the same batch get two numbers.
+      const taken = new Map<string, Set<number>>()
+      const results: OltAuthoriseResult[] = []
+      for (const item of items) {
+        if (!/^gpon-olt_\d+\/\d+\/\d+$/.test(item.port) || !SERIAL.test(item.sn)) {
+          results.push({ sn: item.sn, port: item.port, ok: false, error: 'Not a valid port and serial number.' })
+          continue
+        }
+        let used = taken.get(item.port)
+        if (!used) {
+          used = new Set(parseBaseInfo(await run(session, 'show gpon onu baseinfo ' + item.port)).keys())
+          taken.set(item.port, used)
+        }
+        let index = 0
+        for (let i = 1; i <= 128; i += 1) {
+          if (!used.has(i)) {
+            index = i
+            break
+          }
+        }
+        if (!index) {
+          results.push({ sn: item.sn, port: item.port, ok: false, error: 'That PON port is full (128 ONUs).' })
+          continue
+        }
+        const problem = await authoriseOne(session, item.port, index, item.sn.toUpperCase(), vlan)
+        if (problem) {
+          results.push({ sn: item.sn, port: item.port, ok: false, error: problem })
+        } else {
+          used.add(index)
+          results.push({
+            sn: item.sn,
+            port: item.port,
+            ok: true,
+            id: item.port.replace('gpon-olt_', 'gpon-onu_') + ':' + index,
+          })
+        }
+      }
+
+      // Saved once at the end, not per ONU: a save takes several seconds and
+      // an OLT that loses power before it would simply have the ONUs waiting
+      // to be authorised again.
+      if (results.some((r) => r.ok)) {
+        session.send('write')
+        await session.until(/\[OK\]|%Error|%Code/i, 'saving the configuration')
+      }
+      return results
     } finally {
       session.close()
     }

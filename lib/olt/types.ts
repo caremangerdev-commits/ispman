@@ -86,8 +86,52 @@ export type OltInfo = {
  * see these types. Adding Huawei or V-SOL is a new file and one line in the
  * registry, with no screen changed.
  */
+/** An ONU that is plugged in and detected, but not yet let on. */
+export type OltPendingOnu = {
+  /** The PON port it is on, e.g. gpon-olt_1/1/3. */
+  port: string
+  sn: string
+  model: string | null
+}
+
+/** An ONU registered on the OLT. */
+export type OltOnu = {
+  /** e.g. gpon-onu_1/1/3:12 */
+  id: string
+  port: string
+  index: number
+  type: string | null
+  sn: string | null
+  /** As the OLT words it: working, LOS, DyingGasp, OffLine... */
+  phase: string
+  online: boolean
+}
+
+export type OltOnuLists = { pending: OltPendingOnu[]; onus: OltOnu[] }
+
+export type OltAuthoriseResult = {
+  sn: string
+  port: string
+  ok: boolean
+  /** The ONU's new id on the OLT, when it worked. */
+  id?: string
+  error?: string
+}
+
 export type OltDriver = {
   brand: string
   label: string
   inspect(target: CliTarget, creds: OltLogin): Promise<OltInfo>
+  /** Read live: who is waiting, and who is already registered. */
+  listOnus(target: CliTarget, creds: OltLogin): Promise<OltOnuLists>
+  /**
+   * Let ONUs on, carrying their traffic on `vlan` inside the OLT. The ONUs
+   * themselves send and receive plain untagged traffic.
+   */
+  authorise(
+    target: CliTarget,
+    creds: OltLogin,
+    items: { port: string; sn: string }[],
+    vlan: number
+  ): Promise<OltAuthoriseResult[]>
 }

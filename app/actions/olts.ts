@@ -5,11 +5,12 @@ import { revalidatePath } from 'next/cache'
 import { logEvent } from '@/lib/audit'
 import { secretStorageReady } from '@/lib/crypto'
 import {
-  createOlt, deleteOlt, oltWithLogin, recordOltCheck, setOltForward,
+  createOlt, deleteOlt, oltWithLogin, recordOltCheck, setOltForward, setServiceVlan,
 } from '@/lib/data/olts'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forward'
 import { oltDriver } from '@/lib/olt'
+import type { OltAuthoriseResult, OltOnu, OltPendingOnu } from '@/lib/olt/types'
 import { can } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
 
@@ -194,4 +195,119 @@ export async function removeOlt(_prev: OltActionResult | null, fd: FormData): Pr
   })
   revalidatePath(PATH)
   return { ok: true, message: found.olt.name + ' removed.' + leftover }
+}
+
+/* -------------------------------------------------------------------------- */
+/* ONUs                                                                       */
+/* -------------------------------------------------------------------------- */
+
+/** Everything needed to open a session to an OLT, or why that is not possible. */
+async function reach(companyId: number, oltId: number) {
+  const found = await oltWithLogin(companyId, oltId)
+  if (!found) return { error: 'That OLT was not found.' } as const
+  const router = await routerLoginFor(companyId, found.olt.tunnelId)
+  if (!router) return { error: 'ISPMan has no login on the router this OLT sits behind.' } as const
+  const driver = oltDriver(found.olt.brand)
+  if (!driver) return { error: 'ISPMan cannot talk to that brand of OLT yet.' } as const
+  return {
+    olt: found.olt,
+    login: found.login,
+    driver,
+    target: { host: router.tunnelIp, port: found.olt.forwardPort ?? oltForwardPort(found.olt.id) },
+  } as const
+}
+
+export type OnuListResult =
+  | { ok: true; pending: OltPendingOnu[]; onus: OltOnu[] }
+  | { ok: false; error: string }
+
+/**
+ * Who is waiting and who is registered, read from the OLT now.
+ *
+ * LIVE, NOT STORED. An unauthorised ONU exists only while it is plugged in; a
+ * saved list would show ONUs that were unplugged an hour ago and offer to
+ * authorise them. So the list is whatever the OLT says at the moment it is
+ * opened.
+ */
+export async function loadOnus(oltId: number): Promise<OnuListResult> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'view_network_infrastructure')) {
+    return { ok: false, error: 'You do not have permission to see this.' }
+  }
+  const r = await reach(session.company.id, Number(oltId))
+  if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
+  try {
+    const lists = await r.driver.listOnus(r.target, r.login)
+    return { ok: true, ...lists }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export type AuthoriseResult =
+  | { ok: true; results: OltAuthoriseResult[]; remaining: number }
+  | { ok: false; error: string }
+
+/**
+ * How many ONUs one request authorises. Each takes about ten commands over a
+ * tunnel; a whole port of 60 in one request would outlast the web server's
+ * patience and leave the browser with an error while the OLT carried on. The
+ * page asks again until none are left.
+ */
+const BATCH = 8
+
+/**
+ * Authorise ONUs: the ones named, or the next batch of everything waiting.
+ *
+ * FOR "ALL", THE LIST IS READ AGAIN HERE rather than trusted from the browser.
+ * The page may have been open for ten minutes; what gets authorised is what is
+ * plugged in now.
+ */
+export async function authoriseOnus(input: {
+  oltId: number
+  vlan: number
+  items: { port: string; sn: string }[] | 'all'
+}): Promise<AuthoriseResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to authorise ONUs.' }
+
+  const vlan = Number(input.vlan)
+  if (!Number.isInteger(vlan) || vlan < 1 || vlan > 4094) {
+    return { ok: false, error: 'Choose the VLAN to put them on, 1 to 4094.' }
+  }
+
+  const r = await reach(session.company.id, Number(input.oltId))
+  if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
+
+  try {
+    let items: { port: string; sn: string }[]
+    let waiting = 0
+    if (input.items === 'all') {
+      const lists = await r.driver.listOnus(r.target, r.login)
+      waiting = lists.pending.length
+      items = lists.pending.slice(0, BATCH).map((p) => ({ port: p.port, sn: p.sn }))
+    } else {
+      items = input.items.slice(0, BATCH)
+      waiting = input.items.length
+    }
+    if (items.length === 0) return { ok: true, results: [], remaining: 0 }
+
+    const results = await r.driver.authorise(r.target, r.login, items, vlan)
+    const done = results.filter((x) => x.ok)
+
+    await setServiceVlan(session.company.id, r.olt.id, vlan)
+    if (done.length) {
+      await logEvent({
+        type: 'onu_authorised',
+        tag: '[olt]',
+        details:
+          done.length + ' ONU(s) authorised on ' + r.olt.name + ', VLAN ' + vlan + ': ' +
+          done.map((x) => x.sn + ' as ' + x.id).join(', ') + ' | by=' + session.profile.email,
+      })
+    }
+    revalidatePath(PATH + '/' + r.olt.id)
+    return { ok: true, results, remaining: Math.max(0, waiting - done.length) }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
