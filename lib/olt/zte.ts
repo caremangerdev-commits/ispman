@@ -320,7 +320,9 @@ function livePonPorts(cards: OltCard[]): string[] {
   const ports: string[] = []
   for (const card of cards) {
     const type = (card.actual ?? card.configured).toUpperCase()
-    if (!type.startsWith('GT') || card.status === 'OFFLINE') continue
+    // Even a slot whose card has been pulled out: the ONUs registered on it
+    // stay registered, and come back when a card goes in.
+    if (!type.startsWith('GT')) continue
     for (let p = 1; p <= Math.min(card.ports ?? 0, 32); p += 1) ports.push('gpon-olt_1/' + card.slot + '/' + p)
   }
   return ports
