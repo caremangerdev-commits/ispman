@@ -308,12 +308,18 @@ function parseStates(text: string): Map<number, string> {
   return out
 }
 
-/** The PON ports worth asking about: on a PON card that is actually running. */
+/**
+ * The PON ports worth asking about: every one on a slot that has a card in it.
+ *
+ * INCLUDING A CARD THAT HAS NOT STARTED. ONUs registered on its ports are
+ * still registered — they are simply all offline — and leaving them out would
+ * show an OLT with a failed card as having no customers at all.
+ */
 function livePonPorts(cards: OltCard[]): string[] {
   const ports: string[] = []
   for (const card of cards) {
     const type = (card.actual ?? card.configured).toUpperCase()
-    if (!type.startsWith('GT') || card.status !== 'INSERVICE') continue
+    if (!type.startsWith('GT') || card.status === 'OFFLINE') continue
     for (let p = 1; p <= Math.min(card.ports ?? 0, 32); p += 1) ports.push('gpon-olt_1/' + card.slot + '/' + p)
   }
   return ports
