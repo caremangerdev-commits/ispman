@@ -141,3 +141,21 @@ export async function deleteDevice(companyId: number, id: number): Promise<boole
     .select('id')
   return !error && Boolean(data && data.length)
 }
+
+/** Device id → whether it answered the last checks (migration 0059). Empty before it. */
+export async function deviceStatuses(
+  companyId: number
+): Promise<Map<number, { status: 'up' | 'down'; since: string | null }>> {
+  const out = new Map<number, { status: 'up' | 'down'; since: string | null }>()
+  const { data, error } = await tenantClient()
+    .from('network_devices')
+    .select('id, status, status_at')
+    .eq('company_id', companyId)
+    .not('status', 'is', null)
+    .limit(5000)
+  if (error) return out
+  for (const r of (data ?? []) as { id: number; status: string; status_at: string | null }[]) {
+    if (r.status === 'up' || r.status === 'down') out.set(r.id, { status: r.status, since: r.status_at })
+  }
+  return out
+}

@@ -601,3 +601,17 @@ export async function readNeighbours(session: RouterOsSession): Promise<Neighbou
     description: text(r['system-description']),
   }))
 }
+
+/**
+ * Ask the router to ping an address: true if anything came back.
+ *
+ * TWO PINGS, A FIFTH OF A SECOND APART. Enough to ride out one lost packet on
+ * a radio link without making a pass over fifty devices take minutes when
+ * some of them are off. The router reports a running total with each reply,
+ * so any row showing something received is a yes.
+ */
+export async function pingFrom(session: RouterOsSession, address: string): Promise<boolean> {
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(address)) return false
+  const rows = await session.command('/ping', '=address=' + address, '=count=2', '=interval=200ms')
+  return rows.some((r) => Number(r.received ?? '0') > 0)
+}

@@ -64,7 +64,7 @@ const num = (v: unknown): number | null => {
   return Number.isFinite(n) ? n : null
 }
 
-async function raise(companyId: number, customerId: number | null, message: string): Promise<void> {
+export async function raiseNetworkAlert(companyId: number, customerId: number | null, message: string): Promise<void> {
   // The staff bell (see lib/data/payment-gateways.ts for the column notes):
   // nothing is delivered from this table, and 'pending' is what counts as
   // unread.
@@ -104,7 +104,7 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
     const done = (await driver.authorise(cli, login, items, olt.serviceVlan)).filter((r) => r.ok)
     result.authorised = done.length
     if (done.length) {
-      await raise(
+      await raiseNetworkAlert(
         companyId,
         null,
         done.length + (done.length === 1 ? ' new ONU was' : ' new ONUs were') + ' authorized on ' + olt.name +
@@ -153,7 +153,7 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
       const wasWorking = [...last.values()].filter((s) => s.port === port && s.online).length
       if (wasWorking >= PORT_MIN && gone.length >= Math.ceil(wasWorking * 0.8)) {
         const names = gone.map((o) => who(o.sn.toUpperCase(), owners))
-        await raise(
+        await raiseNetworkAlert(
           companyId,
           null,
           'PON port ' + port.replace('gpon-olt_', '') + ' on ' + olt.name + ' is down. ' + gone.length +
@@ -166,7 +166,7 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
           const sn = o.sn.toUpperCase()
           const why =
             /dying/i.test(o.phase) ? 'It lost power.' : /los/i.test(o.phase) ? 'It lost the fibre signal.' : 'Status: ' + o.phase + '.'
-          await raise(companyId, owners[sn]?.customerId ?? null, 'ONU offline on ' + olt.name + ': ' + who(sn, owners) + '. ' + why)
+          await raiseNetworkAlert(companyId, owners[sn]?.customerId ?? null, 'ONU offline on ' + olt.name + ': ' + who(sn, owners) + '. ' + why)
           result.alerts += 1
         }
       }
@@ -182,7 +182,7 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
     if (rx !== null && rx < RX_TOO_LOW && !weakAlerted) {
       // Recorded on the first reading too, but not announced then.
       if (!first) {
-        await raise(
+        await raiseNetworkAlert(
           companyId,
           owners[sn]?.customerId ?? null,
           'Low signal on ' + olt.name + ': ' + who(sn, owners) + ' is receiving ' + rx.toFixed(1) +

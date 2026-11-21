@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { getSchemaCapabilities } from '@/lib/schema'
+import { watchDevices } from '@/lib/network/watch'
 import { watchOlts } from '@/lib/olt/watch'
 import { pollUsage } from '@/lib/usage/poll'
 
@@ -81,7 +82,15 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       console.error('[olt-watch] pass failed:', err instanceof Error ? err.message : String(err))
     }
-    return NextResponse.json({ ok: true, ...summary, olts })
+    // And whether each radio, switch and backhaul is answering.
+    let devices: Awaited<ReturnType<typeof watchDevices>> | null = null
+    try {
+      devices = await watchDevices()
+      if (devices.error) console.error('[device-watch] ' + devices.error)
+    } catch (err) {
+      console.error('[device-watch] pass failed:', err instanceof Error ? err.message : String(err))
+    }
+    return NextResponse.json({ ok: true, ...summary, olts, devices })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error('[usage] pass failed:', message)
