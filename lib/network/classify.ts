@@ -72,7 +72,9 @@ export function classifyDevice(input: {
     return { ...ubiquiti(all), brand: 'Ubiquiti', model }
   }
   // Ubiquiti radios often announce only their model code, with no brand word.
-  if (has(b, 'nanostation', 'nanobeam', 'litebeam', 'powerbeam', 'rocket', 'prismstation', 'airfiber')) {
+  // Checked across everything it announced: a PowerBeam on a real network put
+  // its model in the platform field and left the board field empty.
+  if (has(all, 'nanostation', 'nanobeam', 'litebeam', 'powerbeam', 'rocket', 'prismstation', 'airfiber', 'airgrid', 'bullet')) {
     return { ...ubiquiti(all), brand: 'Ubiquiti', model }
   }
 

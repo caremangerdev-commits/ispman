@@ -132,6 +132,10 @@ export async function discoverDevices(): Promise<DiscoverResult> {
   if (devices === null) return { ok: false, error: 'Devices are not set up on this system yet (migration 0056).' }
 
   const live = tunnels.filter((t) => !t.revokedAt)
+  // A connected router is heard by its neighbours like anything else. It has
+  // no MAC on record to match on, so it is recognised by announcing the same
+  // name it has in ISPMan — otherwise it would be offered as a new device.
+  const routerNames = new Set(live.map((t) => t.name.trim().toLowerCase()))
   const knownMacs = new Set(devices.map((d) => d.mac).filter(Boolean) as string[])
   const oltIps = new Set((olts ?? []).map((o) => o.mgmtIp))
 
@@ -154,7 +158,11 @@ export async function discoverDevices(): Promise<DiscoverResult> {
       )
       for (const n of heard) {
         if (!n.mac) continue
-        if (knownMacs.has(n.mac) || (n.address && oltIps.has(n.address))) {
+        if (
+          knownMacs.has(n.mac) ||
+          (n.address && oltIps.has(n.address)) ||
+          (n.identity && routerNames.has(n.identity.trim().toLowerCase()))
+        ) {
           known += 1
           continue
         }
@@ -170,7 +178,9 @@ export async function discoverDevices(): Promise<DiscoverResult> {
           version: n.version,
           routerId: t.id,
           routerName: t.name,
-          heardOn: n.heardOn,
+          // "sfp-sfpplus2,bridge": the port, then the bridge it belongs to.
+          // The port is the useful part.
+          heardOn: n.heardOn ? n.heardOn.split(',')[0].trim() : null,
         })
       }
     } catch (err) {
@@ -203,7 +213,10 @@ export async function addFoundDevices(items: FoundDevice[]): Promise<DeviceActio
     if (!m) continue
     const kind = String(item?.kind ?? '')
     clean.push({
-      kind: isDeviceKind(kind) && kind !== 'router' && kind !== 'olt' ? kind : 'other',
+      // A router that is heard but not connected to ISPMan is still a router,
+      // and is recorded as one. Only OLTs are kept out: those are added from
+      // their own page, where ISPMan logs in to them.
+      kind: isDeviceKind(kind) && kind !== 'olt' ? kind : 'other',
       name: String(item?.name ?? m).slice(0, 120) || m,
       brand: item?.brand ? String(item.brand).slice(0, 60) : null,
       model: item?.model ? String(item.model).slice(0, 80) : null,
@@ -229,7 +242,7 @@ export async function addFoundDevices(items: FoundDevice[]): Promise<DeviceActio
 export async function setDeviceKind(id: number, kind: string): Promise<DeviceActionResult> {
   const session = await manager()
   if (!session) return { ok: false, error: 'You do not have permission to do that.' }
-  if (!isDeviceKind(kind) || kind === 'router' || kind === 'olt') return { ok: false, error: 'Choose a device type.' }
+  if (!isDeviceKind(kind) || kind === 'olt') return { ok: false, error: 'Choose a device type.' }
   if (!(await updateDeviceKind(session.company.id, Number(id), kind))) {
     return { ok: false, error: 'That device was not found.' }
   }

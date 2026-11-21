@@ -358,7 +358,7 @@ function DeviceRow({ row, canManage }: { row: InventoryRow; canManage: boolean }
             onChange={(e) => void change(e.target.value)}
             className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
           >
-            {DEVICE_KINDS.filter((k) => k.kind !== 'router' && k.kind !== 'olt').map((k) => (
+            {DEVICE_KINDS.filter((k) => k.kind !== 'olt').map((k) => (
               <option key={k.kind} value={k.kind}>{k.label}</option>
             ))}
           </select>
