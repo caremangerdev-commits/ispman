@@ -173,7 +173,7 @@ export async function recordOltCheck(
   id: number,
   result: { ok: true; info: OltInfo } | { ok: false; error: string }
 ): Promise<void> {
-  await tenantClient()
+  const { error } = await tenantClient()
     .from('olts')
     .update(
       result.ok
@@ -188,6 +188,9 @@ export async function recordOltCheck(
     )
     .eq('company_id', companyId)
     .eq('id', id)
+  // Thrown, not swallowed: the caller is about to tell someone the OLT is
+  // connected, and that must not be said if the result was never saved.
+  if (error) throw new Error('Could not save the check result: ' + error.message)
 }
 
 export async function deleteOlt(companyId: number, id: number): Promise<boolean> {

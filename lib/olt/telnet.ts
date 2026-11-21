@@ -83,7 +83,11 @@ export class TelnetSession {
     for (let i = 0; i < chunk.length; i += 1) {
       const b = chunk[i]
       if (b !== IAC) {
-        out.push(b)
+        // Telnet sends a NUL after a bare carriage return. It is padding, it
+        // lands in the middle of the text, and Postgres refuses to store a
+        // NUL inside JSON — which is how an OLT that answered perfectly came
+        // to be recorded as never checked.
+        if (b !== 0) out.push(b)
         continue
       }
       const cmd = chunk[i + 1]
