@@ -554,3 +554,50 @@ export async function readRouterLive(
     upBps,
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* What the router can hear around it                                         */
+/* -------------------------------------------------------------------------- */
+
+export type Neighbour = {
+  identity: string | null
+  address: string | null
+  mac: string | null
+  platform: string | null
+  board: string | null
+  version: string | null
+  /** The port on this router the device was heard on. */
+  heardOn: string | null
+  description: string | null
+}
+
+/**
+ * Every device this router has heard announce itself.
+ *
+ * NOTHING IS SCANNED. Routers, radios and switches broadcast who they are to
+ * the link they sit on (MikroTik's own discovery, CDP, LLDP), and RouterOS
+ * keeps a table of what it has heard. This reads that table. No address range
+ * is probed and nothing is logged in to, so it cannot disturb the network or
+ * trip anyone's intrusion alarm.
+ *
+ * It also means a device that announces nothing — discovery switched off, or
+ * a brand that does not speak any of the three — is not in the list. That is
+ * what adding a device by hand is for.
+ */
+export async function readNeighbours(session: RouterOsSession): Promise<Neighbour[]> {
+  const rows = await session.command(
+    '/ip/neighbor/print',
+    '=.proplist=identity,address,mac-address,platform,board,version,interface,system-description'
+  )
+  const text = (v: string | undefined) => (v && v.trim() ? v.trim() : null)
+  return rows.map((r) => ({
+    identity: text(r.identity),
+    address: text(r.address),
+    mac: text(r['mac-address'])?.toUpperCase() ?? null,
+    platform: text(r.platform),
+    board: text(r.board),
+    version: text(r.version),
+    heardOn: text(r.interface),
+    description: text(r['system-description']),
+  }))
+}

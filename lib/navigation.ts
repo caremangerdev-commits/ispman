@@ -88,6 +88,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { label: 'Routers', href: '/dashboard/network', icon: 'router', permission: 'view_network_infrastructure' },
       { label: 'OLTs', href: '/dashboard/network/olts', icon: 'network', permission: 'view_network_infrastructure' },
+      { label: 'Devices', href: '/dashboard/network/devices', icon: 'network', permission: 'view_network_infrastructure' },
     ],
   },
   {
@@ -141,6 +142,7 @@ const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/tickets$/, title: 'Tickets' },
   { match: /^\/dashboard\/incidents$/, title: 'Outages' },
   { match: /^\/dashboard\/network$/, title: 'Network' },
+  { match: /^\/dashboard\/network\/devices$/, title: 'Devices' },
   { match: /^\/dashboard\/network\/olts$/, title: 'OLTs' },
   { match: /^\/dashboard\/network\/olts\/\d+$/, title: 'OLT' },
   { match: /^\/dashboard\/leads\/new$/, title: 'Add Prospect' },

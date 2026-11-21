@@ -5,6 +5,7 @@ import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import { checkOlt, loadOnus, type OltActionResult } from '@/app/actions/olts'
+import { DeviceIcon } from '@/components/network/DeviceIcon'
 import { OnuPanel, type OnuLists } from '@/components/network/OnuPanel'
 import type { Olt } from '@/lib/data/olts'
 
@@ -167,7 +168,9 @@ export function OltDetail({
       </Link>
 
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
+        <div className="flex items-center gap-4">
+          <DeviceIcon kind="olt" className="h-16 w-16 shrink-0 text-blue-300" />
+          <div>
           <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
             <span className={'h-2.5 w-2.5 rounded-full ' + dot} aria-hidden="true" />
             {olt.name}
@@ -175,6 +178,7 @@ export function OltDetail({
           <p className="mt-1 text-xs text-gray-500">
             {checkedText ? 'Read from the OLT ' + checkedText + '.' : 'Not read from the OLT yet.'}
           </p>
+        </div>
         </div>
         {canManage ? <Refresh id={olt.id} /> : null}
       </div>
