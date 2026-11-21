@@ -1,10 +1,12 @@
 import 'server-only'
 
 import type { OltDriver } from '@/lib/olt/types'
+import { huawei } from '@/lib/olt/huawei'
+import { vsol } from '@/lib/olt/vsol'
 import { zte } from '@/lib/olt/zte'
 
 /** Every brand ISPMan can talk to. A new brand is one more entry here. */
-const DRIVERS: Record<string, OltDriver> = { zte }
+const DRIVERS: Record<string, OltDriver> = { zte, huawei, vsol }
 
 export function oltDriver(brand: string): OltDriver | null {
   return DRIVERS[brand] ?? null
