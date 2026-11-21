@@ -72,6 +72,8 @@ export const DEFAULT_SERVER_PORT = 51820
 
 /** The router's interface, and the comments every block finds its own rows by. */
 const ROUTER_INTERFACE = 'wg-ispman'
+/** The same name, for the code that adds firewall rules against the tunnel. */
+export const ROUTER_INTERFACE_NAME = ROUTER_INTERFACE
 const COMMENT_INTERFACE = 'ISPMan RADIUS tunnel'
 const COMMENT_PEER = 'ISPMan server'
 const COMMENT_RADIUS = 'ISPMan via tunnel'

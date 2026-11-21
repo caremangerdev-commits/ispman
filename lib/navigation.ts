@@ -87,6 +87,7 @@ const SECTIONS: NavSection[] = [
     requireAny: ['view_network_infrastructure'],
     items: [
       { label: 'Routers', href: '/dashboard/network', icon: 'router', permission: 'view_network_infrastructure' },
+      { label: 'OLTs', href: '/dashboard/network/olts', icon: 'network', permission: 'view_network_infrastructure' },
     ],
   },
   {
@@ -140,6 +141,7 @@ const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/tickets$/, title: 'Tickets' },
   { match: /^\/dashboard\/incidents$/, title: 'Outages' },
   { match: /^\/dashboard\/network$/, title: 'Network' },
+  { match: /^\/dashboard\/network\/olts$/, title: 'OLTs' },
   { match: /^\/dashboard\/leads\/new$/, title: 'Add Prospect' },
   { match: /^\/dashboard\/leads\/[^/]+$/, title: 'Prospect' },
   { match: /^\/dashboard\/leads$/, title: 'Prospects' },
