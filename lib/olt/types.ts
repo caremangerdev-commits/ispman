@@ -69,6 +69,15 @@ export type OltInfo = {
   uplinks?: OltUplink[]
   ponPorts?: OltPonPort[]
   vlans?: OltVlan[]
+  /** ONU counts across the whole OLT, as of the last reading. */
+  onus?: {
+    /** Registered on a PON port and allowed on the network. */
+    authorised: number
+    /** Plugged in and detected, but not yet let on. */
+    unauthorised: number
+    /** Authorised, but not in service right now. */
+    offline: number
+  }
 }
 
 /**

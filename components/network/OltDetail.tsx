@@ -66,6 +66,26 @@ function Empty({ children }: { children: string }) {
   return <p className="px-1 py-6 text-sm text-gray-500">{children}</p>
 }
 
+function Count({
+  label, value, tone, note,
+}: {
+  label: string
+  /** Undefined when the OLT has not been read since these were added. */
+  value: number | undefined
+  tone: string
+  note: string
+}) {
+  return (
+    <div className="rounded-xl border border-gray-800 bg-gray-900 px-4 py-3">
+      <p className="text-[10px] uppercase tracking-wider text-gray-500">{label}</p>
+      <p className={'mt-1 text-3xl font-semibold tabular-nums ' + (value === undefined ? 'text-gray-600' : tone)}>
+        {value === undefined ? '—' : value}
+      </p>
+      <p className="mt-1 text-[11px] text-gray-500">{note}</p>
+    </div>
+  )
+}
+
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-4 border-t border-gray-800 py-2 first:border-t-0">
@@ -124,6 +144,31 @@ export function OltDetail({
       {olt.ok === false && olt.error ? (
         <p className="rounded-lg bg-red-950/30 px-3 py-2 text-xs text-red-300">{olt.error}</p>
       ) : null}
+
+      {/*
+        The three numbers someone opens an OLT to see. Counts only for now: each
+        becomes a way into its own list once the ONU screens exist.
+      */}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Count
+          label="Authorized"
+          value={info?.onus?.authorised}
+          tone="text-green-400"
+          note="ONUs registered on this OLT"
+        />
+        <Count
+          label="Unauthorized"
+          value={info?.onus?.unauthorised}
+          tone={info?.onus?.unauthorised ? 'text-blue-400' : 'text-white'}
+          note="Plugged in, waiting to be authorized"
+        />
+        <Count
+          label="Offline"
+          value={info?.onus?.offline}
+          tone={info?.onus?.offline ? 'text-red-400' : 'text-white'}
+          note="Authorized but not in service"
+        />
+      </div>
 
       <div className="flex flex-wrap gap-1 border-b border-gray-800" role="tablist">
         {tabs.map((t) => (

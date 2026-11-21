@@ -197,6 +197,45 @@ function parseVlan(id: number, text: string): OltVlan {
   }
 }
 
+/**
+ * ONUs waiting to be authorised, from `show gpon onu uncfg`:
+ *
+ *   OnuIndex                 Sn                  State
+ *   gpon-onu_1/1/1:1         ZTEG12345678        unknown
+ *
+ * NOT YET SEEN ON A REAL UNIT. The C320 this module was written against had
+ * no PON card in service, so it answered "No related information to show".
+ * The layout above is ZTE's documented one; only the row prefix is relied on,
+ * which is the part least likely to differ.
+ */
+function countUnauthorised(text: string): number {
+  if (refused(text)) return 0
+  return text.split('\n').filter((l) => /^\s*gpon-onu_\d+\/\d+\/\d+:\d+/.test(l)).length
+}
+
+/**
+ * Authorised ONUs that are not online, from `show gpon onu state`:
+ *
+ *   OnuIndex   Admin State  OMCC State  Phase State  Channel
+ *   1/1/1:1    enable       enable      working      1(GPON)
+ *   1/1/1:2    enable       disable     LOS          1(GPON)
+ *
+ * An ONU is online only in the "working" phase. LOS, DyingGasp and OffLine are
+ * all a customer without service, for different reasons, and count the same
+ * here. Same caveat as above: documented layout, not yet seen on a real unit.
+ */
+function countStates(text: string): { total: number; offline: number } {
+  if (refused(text)) return { total: 0, offline: 0 }
+  let total = 0
+  let offline = 0
+  for (const line of text.split('\n')) {
+    if (!/^\s*(?:gpon-onu_)?\d+\/\d+\/\d+:\d+\s/.test(line)) continue
+    total += 1
+    if (!/\bworking\b/i.test(line)) offline += 1
+  }
+  return { total, offline }
+}
+
 /** "1,100,200-205" as the OLT prints it, expanded to a list of numbers. */
 function parseVlanList(text: string): number[] {
   const ids: number[] = []
@@ -249,6 +288,17 @@ export const zte: OltDriver = {
         }
       }
 
+      // THE THREE NUMBERS AT THE TOP OF THE OLT PAGE. Authorised is every ONU
+      // registered on a port; offline is the ones among them not in service;
+      // unauthorised is the ones plugged in and waiting to be let on.
+      const states = countStates(await run(session, 'show gpon onu state'))
+      const registered = ponPorts.reduce((n, p) => n + (p.registered ?? 0), 0)
+      const onus = {
+        authorised: Math.max(registered, states.total),
+        offline: states.offline,
+        unauthorised: countUnauthorised(await run(session, 'show gpon onu uncfg')),
+      }
+
       const vlanIds = parseVlanList(await run(session, 'show vlan summary'))
       const vlans: OltVlan[] = []
       for (const id of vlanIds) {
@@ -265,7 +315,7 @@ export const zte: OltDriver = {
       const version = /Version\s+(V[\d.]+)/i.exec(description ?? '')?.[1] ?? null
       const model = /^(\S+)\s+Version/i.exec(description ?? '')?.[1] ?? null
 
-      return { name, model, version, uptime, cards, uplinks, ponPorts, vlans }
+      return { name, model, version, uptime, cards, uplinks, ponPorts, vlans, onus }
     } finally {
       session.close()
     }
