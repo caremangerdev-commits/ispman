@@ -118,6 +118,11 @@ export type OltOnu = {
    * customer without anyone typing.
    */
   macs?: string[]
+  /**
+   * Switched off on purpose from the OLT. The ONU stays registered and keeps
+   * its settings, but carries nothing until it is enabled again.
+   */
+  disabled?: boolean
 }
 
 export type OltOnuLists = { pending: OltPendingOnu[]; onus: OltOnu[] }
@@ -147,11 +152,19 @@ export type OltOnuDetail = {
   firmware: string | null
   /** The last times it came online and went off, newest as the OLT lists them. */
   history: { up: string; down: string | null; cause: string | null }[]
+  /**
+   * Traffic through the ONU right now, in bits per second, and the totals the
+   * OLT has counted. "down" is towards the customer.
+   */
+  traffic?: { downBps: number | null; upBps: number | null; downBytes: number | null; upBytes: number | null } | null
+  disabled?: boolean
 }
 
 export type OltOnuAction =
   | { kind: 'reboot' }
   | { kind: 'remove' }
+  | { kind: 'disable' }
+  | { kind: 'enable' }
   | { kind: 'rename'; name: string; description: string }
 
 export type OltAuthoriseResult = {

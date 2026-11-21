@@ -371,6 +371,7 @@ async function readDetail(session: TelnetSession, id: string): Promise<OltOnuDet
     return Number.isFinite(v) ? v : null
   }
   const online = /online/i.test(field(info, 'Run state') ?? '')
+  const disabled = /deactiv/i.test(field(info, 'Control flag') ?? '')
   const up = field(info, 'Last up time')
   const distance = field(info, 'ONT distance')
   return {
@@ -391,6 +392,7 @@ async function readDetail(session: TelnetSession, id: string): Promise<OltOnuDet
     model: field(version, 'Equipment-ID'),
     firmware: field(version, 'Main Software Version'),
     history: up ? [{ up, down: field(info, 'Last down time'), cause: field(info, 'Last down cause') }] : [],
+    disabled,
   }
 }
 
@@ -494,6 +496,10 @@ export const huawei: OltDriver = {
       const out =
         action.kind === 'reboot'
           ? await run(session, 'ont reset ' + p + ' ' + n)
+          : action.kind === 'disable'
+            ? await run(session, 'ont deactivate ' + p + ' ' + n)
+            : action.kind === 'enable'
+              ? await run(session, 'ont activate ' + p + ' ' + n)
           : action.kind === 'remove'
             ? await run(session, 'ont delete ' + p + ' ' + n)
             : await run(session, 'ont modify ' + p + ' ' + n + ' desc ' + (word(action.name || action.description, 60) || 'ONU'))

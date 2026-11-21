@@ -309,6 +309,17 @@ function parseStates(text: string): Map<number, string> {
   return out
 }
 
+/** The ONUs whose Admin State column reads "disable": switched off from the OLT. */
+function parseDisabled(text: string): Set<number> {
+  const out = new Set<number>()
+  if (refused(text)) return out
+  for (const line of text.split('\n')) {
+    const m = /^\s*(?:gpon-onu_)?\d+\/\d+\/\d+:(\d+)\s+disable\b/i.exec(line)
+    if (m) out.add(Number(m[1]))
+  }
+  return out
+}
+
 /**
  * The PON ports worth asking about: every one on a slot that has a card in it.
  *
@@ -378,7 +389,9 @@ function parsePortMacs(text: string): Map<number, string[]> {
 async function readOnusOnPort(session: TelnetSession, port: string): Promise<OltOnu[]> {
   const base = parseBaseInfo(await run(session, 'show gpon onu baseinfo ' + port))
   if (base.size === 0) return []
-  const states = parseStates(await run(session, 'show gpon onu state ' + port))
+  const stateText = await run(session, 'show gpon onu state ' + port)
+  const states = parseStates(stateText)
+  const disabled = parseDisabled(stateText)
   // Three more questions, asked only of a port with someone working on it: an
   // offline ONU sends no light and has no router behind it to be seen.
   const anyWorking = [...states.values()].some((s) => s.toLowerCase() === 'working')
@@ -401,6 +414,7 @@ async function readOnusOnPort(session: TelnetSession, port: string): Promise<Olt
       rx: rx.get(index) ?? null,
       tx: tx.get(index) ?? null,
       macs: macs.get(index) ?? [],
+      disabled: disabled.has(index),
     })
   }
   return onus.sort((a, b) => a.index - b.index)
@@ -535,6 +549,15 @@ async function readOnuDetail(session: TelnetSession, id: string): Promise<OltOnu
   const info = await run(session, 'show gpon onu detail-info ' + id)
   const power = await run(session, 'show pon power attenuation ' + id)
   const equip = await run(session, 'show gpon remote-onu equip ' + id)
+  // `show interface gpon-onu_…` as a real C320 printed it:
+  //   Input rate :   0 Bps   0 pps      (from the customer)
+  //   Output rate:   0 Bps   0 pps      (to the customer)
+  //   Input:  Bytes:0  Packets:0
+  const iface = await run(session, 'show interface ' + id)
+  const total = (which: 'Input' | 'Output'): number | null => {
+    const m = new RegExp('^\\s*' + which + ':\\s*\\n\\s*Bytes:\\s*(\\d+)', 'im').exec(iface)
+    return m ? Number(m[1]) : null
+  }
 
   const field = (text: string, label: string): string | null => {
     const m = new RegExp('^\\s*' + label + '\\s*:[ \\t]*(.*)$', 'im').exec(text)
@@ -570,6 +593,10 @@ async function readOnuDetail(session: TelnetSession, id: string): Promise<OltOnu
     model: field(equip, 'Model') ?? field(equip, 'Equipment ID'),
     firmware: field(equip, 'Version'),
     history,
+    traffic: refused(iface)
+      ? null
+      : { upBps: rateOf(iface, 'input'), downBps: rateOf(iface, 'output'), upBytes: total('Input'), downBytes: total('Output') },
+    disabled: /^\s*Admin state\s*:\s*disable/im.test(info),
   }
 }
 
@@ -738,6 +765,12 @@ export const zte: OltDriver = {
       } else if (action.kind === 'remove') {
         await must('interface ' + port, 'opening the PON port')
         await must('no onu ' + index, 'removing the ONU')
+        save = true
+      } else if (action.kind === 'disable' || action.kind === 'enable') {
+        // Accepted by a real C320: the Admin State column turns to "disable"
+        // and back. The ONU keeps its registration and every setting.
+        await must('interface ' + id, 'opening the ONU')
+        await must(action.kind === 'disable' ? 'shutdown' : 'no shutdown', action.kind === 'disable' ? 'disabling the ONU' : 'enabling the ONU')
         save = true
       } else {
         await must('interface ' + id, 'opening the ONU')

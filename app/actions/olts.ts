@@ -393,7 +393,7 @@ export async function onuCommand(input: {
   if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
 
   const kind = input.action?.kind
-  if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename') {
+  if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename' && kind !== 'disable' && kind !== 'enable') {
     return { ok: false, error: 'Unknown action.' }
   }
   try {
@@ -402,7 +402,8 @@ export async function onuCommand(input: {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 
-  const did = kind === 'reboot' ? 'rebooted' : kind === 'remove' ? 'removed' : 'renamed'
+  const did =
+    kind === 'reboot' ? 'rebooted' : kind === 'remove' ? 'removed' : kind === 'disable' ? 'disabled' : kind === 'enable' ? 'enabled' : 'renamed'
   await logEvent({
     type: 'onu_' + did,
     tag: '[olt]',
@@ -416,7 +417,11 @@ export async function onuCommand(input: {
         ? 'Reboot sent. The ONU will be back in about a minute.'
         : kind === 'remove'
           ? 'Removed. If it is still plugged in, it will appear under Unauthorized.'
-          : 'Saved.',
+          : kind === 'disable'
+            ? 'Disabled. The customer has no service until you enable it again.'
+            : kind === 'enable'
+              ? 'Enabled. Service comes back within a minute.'
+              : 'Saved.',
   }
 }
 

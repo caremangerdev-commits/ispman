@@ -144,7 +144,8 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
 
   // 3. What changed.
   const now = new Date().toISOString()
-  const dropped = onus.filter((o) => !o.online && last.get(o.sn.toUpperCase())?.online === true)
+  // An ONU someone disabled on purpose is not an outage.
+  const dropped = onus.filter((o) => !o.online && !o.disabled && last.get(o.sn.toUpperCase())?.online === true)
   const byPort = new Map<string, typeof dropped>()
   for (const o of dropped) byPort.set(o.port, [...(byPort.get(o.port) ?? []), o])
 

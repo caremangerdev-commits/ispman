@@ -163,6 +163,22 @@ function SignalHistory({ days }: { days: OnuSignalDay[] }) {
   )
 }
 
+const speed = (bps: number | null): string => {
+  if (bps === null) return '—'
+  if (bps >= 1e6) return (bps / 1e6).toFixed(1) + ' Mbps'
+  if (bps >= 1e3) return (bps / 1e3).toFixed(0) + ' kbps'
+  return bps + ' bps'
+}
+
+/** A byte count since the OLT last cleared its counters. */
+const amount = (bytes: number | null): string => {
+  if (bytes === null) return '—'
+  if (bytes >= 1e12) return (bytes / 1e12).toFixed(2) + ' TB'
+  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB'
+  if (bytes >= 1e6) return (bytes / 1e6).toFixed(0) + ' MB'
+  return Math.round(bytes / 1e3) + ' kB'
+}
+
 function Fact({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <div>
@@ -195,7 +211,10 @@ function OnuRow({
   const [history, setHistory] = useState<OnuSignalDay[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
-  const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link'>('view')
+  const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link' | 'disable'>('view')
+  // What this screen last did, until the list is read again.
+  const [disabledNow, setDisabledNow] = useState<boolean | null>(null)
+  const isDisabled = disabledNow ?? detail?.disabled ?? onu.disabled ?? false
   // A link made on this screen shows at once, without reading the OLT again.
   const [picked, setPicked] = useState<OnuCustomer | null>(null)
   const owner = picked ?? customer
@@ -239,6 +258,10 @@ function OnuRow({
     setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
     if (res.ok && action.kind === 'remove') onChanged()
     if (res.ok && action.kind === 'rename') void read()
+    if (res.ok && (action.kind === 'disable' || action.kind === 'enable')) {
+      setDisabledNow(action.kind === 'disable')
+      void read()
+    }
   }
 
   const rx = signal(detail?.onuRx ?? null)
@@ -261,8 +284,8 @@ function OnuRow({
             <span className="text-gray-600">Not linked</span>
           )}
         </td>
-        <td className={td + (onu.online ? ' text-green-400' : ' text-red-400')}>
-          {onu.online ? 'Online' : 'Offline (' + onu.phase + ')'}
+        <td className={td + (isDisabled ? ' text-amber-300' : onu.online ? ' text-green-400' : ' text-red-400')}>
+          {isDisabled ? 'Disabled' : onu.online ? 'Online' : 'Offline (' + onu.phase + ')'}
         </td>
         <td className={td}>
           <SignalBars label="RX" dbm={onu.rx ?? null} side="onu" />
@@ -301,6 +324,15 @@ function OnuRow({
                     <p className="mt-3 text-xs text-gray-400">Note: {detail.description}</p>
                   ) : null}
 
+                  {detail.traffic ? (
+                    <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+                      <Fact label="Download now" value={speed(detail.traffic.downBps)} />
+                      <Fact label="Upload now" value={speed(detail.traffic.upBps)} />
+                      <Fact label="Downloaded" value={amount(detail.traffic.downBytes)} />
+                      <Fact label="Uploaded" value={amount(detail.traffic.upBytes)} />
+                    </dl>
+                  ) : null}
+
                   <SignalHistory days={history} />
 
                   {detail.history.length ? (
@@ -330,6 +362,20 @@ function OnuRow({
                   <button type="button" onClick={() => void act({ kind: 'reboot' })} disabled={!!busy} className={small}>
                     {busy === 'reboot' ? 'Rebooting…' : 'Reboot'}
                   </button>
+                  {isDisabled ? (
+                    <button
+                      type="button"
+                      onClick={() => void act({ kind: 'enable' })}
+                      disabled={!!busy}
+                      className={small + ' text-green-300'}
+                    >
+                      {busy === 'enable' ? 'Enabling…' : 'Enable'}
+                    </button>
+                  ) : (
+                    <button type="button" onClick={() => setMode('disable')} disabled={!!busy} className={small + ' text-amber-300'}>
+                      Disable
+                    </button>
+                  )}
                   <button type="button" onClick={() => setMode('rename')} disabled={!!busy} className={small}>
                     Rename
                   </button>
@@ -383,6 +429,26 @@ function OnuRow({
                   </p>
                   <div className="flex flex-wrap items-center gap-2">
                     <CustomerPicker onPick={(id, n) => void link(id, n)} busy={busy === 'link'} />
+                    <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
+                  </div>
+                </div>
+              ) : null}
+
+              {mode === 'disable' ? (
+                <div className="mt-4 rounded-lg border border-amber-900/50 bg-amber-950/20 p-3">
+                  <p className="text-xs text-amber-100">
+                    Disable {owner ? owner.name + "'s ONU" : onu.sn ?? onu.id}? It stays registered with all its
+                    settings, but the customer has no service until you enable it again.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void act({ kind: 'disable' })}
+                      disabled={!!busy}
+                      className="rounded-md bg-amber-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-amber-500 disabled:opacity-50"
+                    >
+                      {busy === 'disable' ? 'Disabling…' : 'Yes, disable it'}
+                    </button>
                     <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
                   </div>
                 </div>

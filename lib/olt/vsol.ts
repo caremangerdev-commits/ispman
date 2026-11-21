@@ -262,6 +262,10 @@ export const vsol: OltDriver = {
       const out =
         action.kind === 'reboot'
           ? await run(session, 'onu ' + n + ' reboot')
+          : action.kind === 'disable'
+            ? await run(session, 'onu ' + n + ' deactivate')
+            : action.kind === 'enable'
+              ? await run(session, 'onu ' + n + ' activate')
           : action.kind === 'remove'
             ? await run(session, 'no onu ' + n)
             : await run(session, 'onu ' + n + ' description ' + (word(action.name || action.description, 60) || 'ONU'))
