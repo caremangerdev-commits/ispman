@@ -17,7 +17,9 @@ import { AdjustBalanceModal } from '@/components/customers/AdjustBalanceModal'
 import { CorrectExpiryModal } from '@/components/customers/CorrectExpiryModal'
 import { ExpiryRuleRow } from '@/components/customers/ExpiryRuleRow'
 import { ExtendAccessModal } from '@/components/customers/ExtendAccessModal'
+import { CustomerDevices } from '@/components/customers/CustomerDevices'
 import { MacHolderLinks } from '@/components/customers/MacHolderLinks'
+import type { CustomerDevice } from '@/lib/data/customer-devices'
 import { ProvisionModal } from '@/components/customers/ProvisionModal'
 import type { ProvisionPlan } from '@/lib/data/provision'
 import { StatusBadge } from '@/components/customers/StatusBadge'
@@ -285,7 +287,12 @@ export function CustomerDetail({
   miscCategories,
   selectedAddonIds,
   provisionPlan,
+  devices = null,
+  olts = [],
 }: {
+  /** Equipment at the premises. Null before migration 0057, and the row hides. */
+  devices?: CustomerDevice[] | null
+  olts?: { id: number; name: string }[]
   customer: DetailCustomer
   /** Null when the role may not see the customer's money. */
   money: DetailMoney | null
@@ -1001,6 +1008,17 @@ export function CustomerDetail({
                 )}
               </dd>
             </div>
+
+            {devices ? (
+              <CustomerDevices
+                customerId={c.id}
+                customerName={name}
+                customerMac={c.mac_address}
+                devices={devices}
+                olts={olts}
+                canEdit={can(role, 'edit_customer')}
+              />
+            ) : null}
 
             {editing && showPppoeFields ? (
               <>

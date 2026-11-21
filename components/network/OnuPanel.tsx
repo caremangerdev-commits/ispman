@@ -1,8 +1,12 @@
 'use client'
 
+import Link from 'next/link'
 import { useState } from 'react'
 
-import { authoriseOnus, loadOnuDetail, onuCommand } from '@/app/actions/olts'
+import { authoriseOnus, linkOnu, loadOnuDetail, onuCommand } from '@/app/actions/olts'
+import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
+import { SignalBars } from '@/components/network/SignalBars'
+import type { OnuCustomer } from '@/lib/data/customer-devices'
 import type {
   OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
 } from '@/lib/olt/types'
@@ -26,7 +30,57 @@ const td = 'py-2 pr-4 text-xs text-gray-300'
 const button =
   'rounded-md bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-blue-500 disabled:opacity-50'
 
-export type OnuLists = { pending: OltPendingOnu[]; onus: OltOnu[] }
+export type OnuLists = {
+  pending: OltPendingOnu[]
+  onus: OltOnu[]
+  /** Serial number → the customer that ONU belongs to. */
+  customers?: Record<string, OnuCustomer>
+}
+
+/**
+ * Pick the customer an ONU belongs to, for the ones ISPMan could not match by
+ * itself — an ONU that is offline, or one with a switch behind it.
+ */
+function CustomerPicker({ onPick, busy }: { onPick: (id: number, name: string) => void; busy: boolean }) {
+  const search = useCustomerSearch()
+  return (
+    <div className="relative max-w-sm">
+      <input
+        value={search.query}
+        onChange={(e) => search.onQueryChange(e.target.value)}
+        placeholder="Search the customer by name, phone or MAC"
+        disabled={busy}
+        className="w-full rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100 focus:border-blue-500 focus:outline-none"
+      />
+      {search.showList ? (
+        <ul className="absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-md border border-gray-700 bg-gray-900 shadow-xl">
+          {search.results.length === 0 ? (
+            <li className="px-2 py-1.5 text-xs text-gray-500">No customer matches.</li>
+          ) : (
+            search.results.slice(0, 8).map((c) => {
+              const label = [c.first_name, c.last_name].filter(Boolean).join(' ') || 'Customer #' + c.id
+              return (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      search.clear()
+                      onPick(c.id, label)
+                    }}
+                    className="block w-full px-2 py-1.5 text-left text-xs text-gray-200 hover:bg-gray-800"
+                  >
+                    {label}
+                    {c.address ? <span className="text-gray-500"> · {c.address}</span> : null}
+                  </button>
+                </li>
+              )
+            })
+          )}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
 
 /**
  * How good a connection is, from what the ONU receives.
@@ -61,10 +115,11 @@ function Fact({ label, value, tone }: { label: string; value: string; tone?: str
  * ONU is being moved and a bad thing to do by a slip of the mouse.
  */
 function OnuRow({
-  oltId, onu, canManage, onChanged,
+  oltId, onu, customer, canManage, onChanged,
 }: {
   oltId: number
   onu: OltOnu
+  customer: OnuCustomer | null
   canManage: boolean
   onChanged: () => void
 }) {
@@ -72,7 +127,20 @@ function OnuRow({
   const [detail, setDetail] = useState<OltOnuDetail | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
-  const [mode, setMode] = useState<'view' | 'rename' | 'remove'>('view')
+  const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link'>('view')
+  // A link made on this screen shows at once, without reading the OLT again.
+  const [picked, setPicked] = useState<OnuCustomer | null>(null)
+  const owner = picked ?? customer
+  const link = async (customerId: number, customerName: string) => {
+    if (!onu.sn) return
+    setBusy('link')
+    setNote(null)
+    const res = await linkOnu({ oltId, serial: onu.sn, onuRef: onu.id, model: onu.type, customerId })
+    setBusy(null)
+    setMode('view')
+    if (res.ok) setPicked({ customerId, name: customerName, linkedBy: 'manual' })
+    else setNote({ ok: false, text: res.error })
+  }
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
 
@@ -115,9 +183,23 @@ function OnuRow({
       <tr className="border-t border-gray-800">
         <td className={td + ' font-mono'}>{onu.id}</td>
         <td className={td + ' font-mono'}>{onu.sn ?? '—'}</td>
-        <td className={td}>{onu.type ?? '—'}</td>
+        <td className={td}>
+          {owner ? (
+            <Link href={'/dashboard/customers/' + owner.customerId} className="text-blue-400 hover:underline">
+              {owner.name}
+            </Link>
+          ) : (
+            <span className="text-gray-600">Not linked</span>
+          )}
+        </td>
         <td className={td + (onu.online ? ' text-green-400' : ' text-red-400')}>
           {onu.online ? 'Online' : 'Offline (' + onu.phase + ')'}
+        </td>
+        <td className={td}>
+          <SignalBars label="RX" dbm={onu.rx ?? null} side="onu" />
+        </td>
+        <td className={td}>
+          <SignalBars label="TX" dbm={onu.tx ?? null} side="olt" />
         </td>
         <td className={td + ' text-right'}>
           <button type="button" onClick={toggle} className={small} aria-expanded={open}>
@@ -127,7 +209,7 @@ function OnuRow({
       </tr>
       {open ? (
         <tr>
-          <td colSpan={5} className="pb-4">
+          <td colSpan={7} className="pb-4">
             <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-4">
               {busy === 'read' && !detail ? (
                 <p className="text-xs text-gray-500">Reading the ONU…</p>
@@ -180,6 +262,11 @@ function OnuRow({
                   <button type="button" onClick={() => setMode('rename')} disabled={!!busy} className={small}>
                     Rename
                   </button>
+                  {onu.sn ? (
+                    <button type="button" onClick={() => setMode('link')} disabled={!!busy} className={small}>
+                      {owner ? 'Change customer' : 'Link to a customer'}
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => setMode('remove')}
@@ -213,6 +300,20 @@ function OnuRow({
                   <p className="text-[11px] text-gray-500 sm:col-span-4">
                     The OLT stores these as single words, so spaces are saved as dashes.
                   </p>
+                </div>
+              ) : null}
+
+              {mode === 'link' ? (
+                <div className="mt-4 space-y-2">
+                  <p className="text-xs text-gray-400">
+                    {owner
+                      ? 'Linked to ' + owner.name + (owner.linkedBy === 'auto' ? ', matched by ISPMan.' : '.') + ' Pick another customer to change it.'
+                      : 'Pick the customer this ONU is installed for.'}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CustomerPicker onPick={(id, n) => void link(id, n)} busy={busy === 'link'} />
+                    <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
+                  </div>
                 </div>
               ) : null}
 
@@ -444,17 +545,31 @@ export function OnuPanel({
               <tr>
                 <th className={th}>ONU</th>
                 <th className={th}>Serial number</th>
-                <th className={th}>Type</th>
+                <th className={th}>Customer</th>
                 <th className={th}>Status</th>
+                <th className={th}>RX</th>
+                <th className={th}>TX</th>
                 <th className={th}></th>
               </tr>
             </thead>
             <tbody>
               {shown.map((o) => (
-                <OnuRow key={o.id} oltId={oltId} onu={o} canManage={canManage} onChanged={onReload} />
+                <OnuRow
+                  key={o.id}
+                  oltId={oltId}
+                  onu={o}
+                  customer={(o.sn && lists.customers?.[o.sn.toUpperCase()]) || null}
+                  canManage={canManage}
+                  onChanged={onReload}
+                />
               ))}
             </tbody>
           </table>
+          <p className="pt-3 text-[11px] leading-relaxed text-gray-500">
+            RX is the signal the ONU receives. TX is the ONU&apos;s own signal as it reaches the OLT.
+            Both in dBm; closer to zero is stronger. A customer is filled in when the OLT sees
+            their router behind the ONU.
+          </p>
         </div>
       )}
     </div>

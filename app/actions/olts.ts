@@ -7,6 +7,7 @@ import { secretStorageReady } from '@/lib/crypto'
 import {
   createOlt, deleteOlt, oltWithLogin, recordOltCheck, setOltForward, setServiceVlan,
 } from '@/lib/data/olts'
+import { linkOnuToCustomer, linkOnusToCustomers, type OnuCustomer } from '@/lib/data/customer-devices'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forward'
 import { oltDriver } from '@/lib/olt'
@@ -220,7 +221,13 @@ async function reach(companyId: number, oltId: number) {
 }
 
 export type OnuListResult =
-  | { ok: true; pending: OltPendingOnu[]; onus: OltOnu[] }
+  | {
+      ok: true
+      pending: OltPendingOnu[]
+      onus: OltOnu[]
+      /** Serial number → the customer that ONU belongs to. */
+      customers: Record<string, OnuCustomer>
+    }
   | { ok: false; error: string }
 
 /**
@@ -240,7 +247,17 @@ export async function loadOnus(oltId: number): Promise<OnuListResult> {
   if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
   try {
     const lists = await r.driver.listOnus(r.target, r.login)
-    return { ok: true, ...lists }
+    // Worked out on every reading: the OLT has just said which customer router
+    // sits behind each ONU. A failure here must not hide the list itself.
+    let customers: Record<string, OnuCustomer> = {}
+    try {
+      customers = await linkOnusToCustomers(session.company.id, r.olt.id, lists.onus)
+    } catch {
+      customers = {}
+    }
+    // The addresses were only needed for the matching above.
+    const onus = lists.onus.map((o) => ({ ...o, macs: undefined }))
+    return { ok: true, pending: lists.pending, onus, customers }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
@@ -375,4 +392,35 @@ export async function onuCommand(input: {
           ? 'Removed. If it is still plugged in, it will appear under Unauthorized.'
           : 'Saved.',
   }
+}
+
+/** Link an ONU to a customer by hand, from the ONU list. */
+export async function linkOnu(input: {
+  oltId: number
+  serial: string
+  onuRef: string
+  model: string | null
+  customerId: number
+}): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to do that.' }
+  const serial = String(input.serial ?? '').trim().toUpperCase()
+  if (!/^[A-Z0-9]{8,20}$/.test(serial)) return { ok: false, error: 'That ONU has no serial number to link by.' }
+  const found = await oltWithLogin(session.company.id, Number(input.oltId))
+  if (!found) return { ok: false, error: 'That OLT was not found.' }
+  const res = await linkOnuToCustomer(session.company.id, session.profile.id ?? null, {
+    customerId: Number(input.customerId),
+    serial,
+    oltId: found.olt.id,
+    onuRef: String(input.onuRef ?? '').slice(0, 40),
+    model: input.model ? String(input.model).slice(0, 80) : null,
+  })
+  if (!res.ok) return res
+  await logEvent({
+    type: 'device_linked',
+    tag: '[network]',
+    details: 'ONU ' + serial + ' linked to customer #' + Number(input.customerId) + ' | by=' + session.profile.email,
+  })
+  revalidatePath('/dashboard/customers/' + Number(input.customerId))
+  return { ok: true, message: 'Linked.' }
 }

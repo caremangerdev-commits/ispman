@@ -328,10 +328,63 @@ function livePonPorts(cards: OltCard[]): string[] {
   return ports
 }
 
+/**
+ * `show pon power onu-rx gpon-olt_1/1/1` and `... olt-rx ...`: one light level
+ * per ONU on the port.
+ *
+ * NOT YET SEEN WITH AN ONU ONLINE. A real C320 accepted both commands and
+ * answered "No related information to show" with nothing working on the port.
+ * ZTE documents the rows as an ONU reference followed by a level such as
+ * "-21.4(dbm)", so each row is read as: which ONU, then the first signed
+ * number after it. A row with no number (an ONU that is off) gives no reading.
+ */
+function parsePortPower(text: string): Map<number, number> {
+  const out = new Map<number, number>()
+  if (refused(text)) return out
+  for (const line of text.split('\n')) {
+    const m = /gpon-onu_\d+\/\d+\/\d+:(\d+)\s+(-?\d+(?:\.\d+)?)\s*\(?dbm/i.exec(line)
+    if (!m) continue
+    const level = Number.parseFloat(m[2])
+    if (Number.isFinite(level)) out.set(Number(m[1]), level)
+  }
+  return out
+}
+
+/**
+ * `show mac gpon olt gpon-olt_1/1/1`: the addresses learned behind each ONU.
+ * The table is the one `show mac` printed on a real C320,
+ *
+ *   Mac address      Vlan  Type      Port                Vc
+ *   2cc8.1bf8.7bd7   100   Dynamic   gei_1/4/3
+ *
+ * with the ONU in the Port column for a customer's address. Addresses come
+ * back as AA:BB:CC:DD:EE:FF, the form customers are stored in.
+ */
+function parsePortMacs(text: string): Map<number, string[]> {
+  const out = new Map<number, string[]>()
+  if (refused(text)) return out
+  for (const line of text.split('\n')) {
+    const m = /^\s*([0-9a-f]{4})\.([0-9a-f]{4})\.([0-9a-f]{4})\s.*gpon-onu_\d+\/\d+\/\d+:(\d+)/i.exec(line)
+    if (!m) continue
+    const mac = ((m[1] + m[2] + m[3]).toUpperCase().match(/.{2}/g) ?? []).join(':')
+    const index = Number(m[4])
+    const list = out.get(index) ?? []
+    if (!list.includes(mac)) list.push(mac)
+    out.set(index, list)
+  }
+  return out
+}
+
 async function readOnusOnPort(session: TelnetSession, port: string): Promise<OltOnu[]> {
   const base = parseBaseInfo(await run(session, 'show gpon onu baseinfo ' + port))
   if (base.size === 0) return []
   const states = parseStates(await run(session, 'show gpon onu state ' + port))
+  // Three more questions, asked only of a port with someone working on it: an
+  // offline ONU sends no light and has no router behind it to be seen.
+  const anyWorking = [...states.values()].some((s) => s.toLowerCase() === 'working')
+  const rx = anyWorking ? parsePortPower(await run(session, 'show pon power onu-rx ' + port)) : new Map<number, number>()
+  const tx = anyWorking ? parsePortPower(await run(session, 'show pon power olt-rx ' + port)) : new Map<number, number>()
+  const macs = anyWorking ? parsePortMacs(await run(session, 'show mac gpon olt ' + port)) : new Map<number, string[]>()
   const onus: OltOnu[] = []
   for (const [index, info] of base) {
     const phase = states.get(index) ?? 'unknown'
@@ -345,6 +398,9 @@ async function readOnusOnPort(session: TelnetSession, port: string): Promise<Olt
       // Only "working" is a customer with service. LOS, DyingGasp and OffLine
       // are three reasons for the same result.
       online: phase.toLowerCase() === 'working',
+      rx: rx.get(index) ?? null,
+      tx: tx.get(index) ?? null,
+      macs: macs.get(index) ?? [],
     })
   }
   return onus.sort((a, b) => a.index - b.index)

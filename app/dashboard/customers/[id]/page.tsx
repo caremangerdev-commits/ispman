@@ -20,6 +20,8 @@ import { lastBalanceAdjustment } from '@/lib/data/balance-adjustments'
 import { lastChargeFor } from '@/lib/data/billing-engine'
 import { companySymbol } from '@/lib/data/currency'
 import { customerUsage } from '@/lib/data/usage'
+import { customerDevices } from '@/lib/data/customer-devices'
+import { listOlts } from '@/lib/data/olts'
 import { UsageBlock } from '@/components/customers/UsageBlock'
 import { listCustomerChanges } from '@/lib/data/customer-changes'
 import { listNetworkHistory } from '@/lib/data/network-events'
@@ -65,7 +67,7 @@ export default async function CustomerDetailPage({
   const [
     payments, tickets, radius, networkHistory, plans, addons, miscCats, selectedAddonIds,
     balanceAdjustment, changeHistory, settings, caps, lastCharge, charges, paymentCategories,
-    calendar, symbol, usage,
+    calendar, symbol, usage, devices, olts,
   ] = await Promise.all([
       money ? getCustomerPayments(company.id, customerId) : none([]),
       getCustomerTickets(company.id, customerId),
@@ -108,6 +110,9 @@ export default async function CustomerDetailPage({
       // which carries no octets for a DHCP customer — see the migration.
       // Absent until 0053 is applied, and the block then hides itself.
       customerUsage(company.id, customerId),
+      // What is installed at the premises (0057). Null hides the row.
+      customerDevices(company.id, customerId),
+      listOlts(company.id),
     ])
 
   // "Email bill" beside "Bill (PDF)": shown when the company has bill emails
@@ -217,6 +222,8 @@ export default async function CustomerDetailPage({
         miscCategories={miscCats}
         selectedAddonIds={selectedAddonIds}
         provisionPlan={provision}
+        devices={devices}
+        olts={(olts ?? []).map((o) => ({ id: o.id, name: o.name }))}
       />
 
       {/* Money owed that is not service. Beside the record rather than inside

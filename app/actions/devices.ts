@@ -3,6 +3,9 @@
 import { revalidatePath } from 'next/cache'
 
 import { logEvent } from '@/lib/audit'
+import {
+  linkDevicesByMac, saveCustomerDevice, unlinkCustomerDevice,
+} from '@/lib/data/customer-devices'
 import { addDevices, deleteDevice, listDevices, updateDeviceKind, type NewDevice } from '@/lib/data/devices'
 import { listOlts } from '@/lib/data/olts'
 import { routerLoginFor } from '@/lib/data/router-logins'
@@ -80,6 +83,7 @@ export async function addDevice(_prev: DeviceActionResult | null, fd: FormData):
   ])
   if (!res.ok) return res
   if (res.added === 0) return { ok: false, error: 'A device with that MAC address is already listed.' }
+  await linkDevicesByMac(session.company.id)
   revalidatePath(PATH)
   return { ok: true, message: name + ' added.' }
 }
@@ -235,8 +239,15 @@ export async function addFoundDevices(items: FoundDevice[]): Promise<DeviceActio
     tag: '[network]',
     details: res.added + ' device(s) added from discovery | by=' + session.profile.email,
   })
+  // A radio that carries a customer's own MAC address is that customer's.
+  const linked = await linkDevicesByMac(session.company.id)
   revalidatePath(PATH)
-  return { ok: true, message: res.added + (res.added === 1 ? ' device added.' : ' devices added.') }
+  return {
+    ok: true,
+    message:
+      res.added + (res.added === 1 ? ' device added.' : ' devices added.') +
+      (linked ? ' ' + linked + ' matched to a customer.' : ''),
+  }
 }
 
 export async function setDeviceKind(id: number, kind: string): Promise<DeviceActionResult> {
@@ -256,4 +267,78 @@ export async function removeDevice(id: number): Promise<DeviceActionResult> {
   if (!(await deleteDevice(session.company.id, Number(id)))) return { ok: false, error: 'That device was not found.' }
   revalidatePath(PATH)
   return { ok: true, message: 'Removed.' }
+}
+
+/**
+ * Link a device to a customer from the customer's page.
+ *
+ * Allowed for anyone who may edit the customer: fitting an ONU or a radio at a
+ * house is the installer's job, and recording it should not need an admin.
+ */
+export async function linkCustomerDevice(input: {
+  customerId: number
+  kind: string
+  name: string
+  brand: string
+  model: string
+  ip: string
+  mac: string
+  serial: string
+  oltId: number | null
+  notes: string
+}): Promise<DeviceActionResult> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'edit_customer') && !can(session.profile.role, 'manage_router_tunnels')) {
+    return { ok: false, error: 'You do not have permission to link devices.' }
+  }
+  const kind = String(input.kind ?? '')
+  if (!isDeviceKind(kind) || kind === 'olt') return { ok: false, error: 'Choose a device type.' }
+  const rawIp = String(input.ip ?? '').trim()
+  const rawMac = String(input.mac ?? '').trim()
+  const serial = String(input.serial ?? '').trim().toUpperCase()
+  if (rawIp && !ipv4(rawIp)) return { ok: false, error: 'That IP address is not valid.' }
+  if (rawMac && !mac(rawMac)) return { ok: false, error: 'That MAC address is not valid.' }
+  if (serial && !/^[A-Z0-9-]{4,30}$/.test(serial)) return { ok: false, error: 'That serial number is not valid.' }
+  if (kind === 'onu' && !serial) return { ok: false, error: 'Enter the serial number printed on the ONU.' }
+  if (!serial && !rawMac) return { ok: false, error: 'Enter a MAC address or a serial number, so the device can be told apart.' }
+
+  const oltId = input.oltId != null && Number.isInteger(Number(input.oltId)) ? Number(input.oltId) : null
+  if (oltId != null && !(await listOlts(session.company.id))?.some((o) => o.id === oltId)) {
+    return { ok: false, error: 'That OLT was not found.' }
+  }
+  const name = String(input.name ?? '').trim() || serial || (rawMac ? (mac(rawMac) as string) : '')
+  const res = await saveCustomerDevice(session.company.id, session.profile.id ?? null, {
+    customerId: Number(input.customerId),
+    kind,
+    name,
+    brand: String(input.brand ?? '').trim().slice(0, 60) || null,
+    model: String(input.model ?? '').trim().slice(0, 80) || null,
+    ip: rawIp || null,
+    mac: rawMac ? mac(rawMac) : null,
+    serial: serial || null,
+    oltId: kind === 'onu' ? oltId : null,
+    notes: String(input.notes ?? '').trim().slice(0, 500) || null,
+  })
+  if (!res.ok) return res
+  await logEvent({
+    type: 'device_linked',
+    tag: '[network]',
+    details: name + ' linked to customer #' + Number(input.customerId) + ' | by=' + session.profile.email,
+  })
+  revalidatePath('/dashboard/customers/' + Number(input.customerId))
+  revalidatePath(PATH)
+  return { ok: true, message: 'Linked.' }
+}
+
+export async function unlinkDevice(deviceId: number, customerId: number): Promise<DeviceActionResult> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'edit_customer') && !can(session.profile.role, 'manage_router_tunnels')) {
+    return { ok: false, error: 'You do not have permission to do that.' }
+  }
+  if (!(await unlinkCustomerDevice(session.company.id, Number(deviceId)))) {
+    return { ok: false, error: 'That device was not found.' }
+  }
+  revalidatePath('/dashboard/customers/' + Number(customerId))
+  revalidatePath(PATH)
+  return { ok: true, message: 'Unlinked.' }
 }

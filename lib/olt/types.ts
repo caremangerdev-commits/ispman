@@ -105,6 +105,19 @@ export type OltOnu = {
   /** As the OLT words it: working, LOS, DyingGasp, OffLine... */
   phase: string
   online: boolean
+  /**
+   * Light levels in dBm, for the bars in the list. rx is what the ONU
+   * receives from the OLT; tx is the ONU's own light as it arrives at the
+   * OLT. Null when the ONU is offline or the OLT gave no reading.
+   */
+  rx?: number | null
+  tx?: number | null
+  /**
+   * MAC addresses the OLT has seen behind this ONU, as AA:BB:CC:DD:EE:FF.
+   * Normally one: the customer's router. This is what ties an ONU to a
+   * customer without anyone typing.
+   */
+  macs?: string[]
 }
 
 export type OltOnuLists = { pending: OltPendingOnu[]; onus: OltOnu[] }
