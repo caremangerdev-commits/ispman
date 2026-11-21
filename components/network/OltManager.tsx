@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
@@ -147,90 +148,75 @@ function OltRow({ olt, routerName, canManage }: { olt: Olt; routerName: string; 
 
   const dot = olt.ok === true ? 'bg-green-400' : olt.ok === false ? 'bg-red-500' : 'bg-gray-500'
   const status = olt.ok === true ? 'Connected' : olt.ok === false ? 'Not connected' : 'Not checked yet'
+  const cards = olt.info?.cards ?? []
+  const working = cards.filter((c) => cardFine(c.status)).length
+  const pon = olt.info?.ponPorts ?? []
+  const onus = pon.reduce((n, p) => n + (p.registered ?? 0), 0)
+  const cell = 'px-4 py-3 text-xs text-gray-300'
 
   return (
-    <li className="space-y-3 px-4 py-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-white">{olt.name}</p>
-          <p className="mt-0.5 text-[11px] text-gray-500">
-            <span className="font-mono text-gray-400">{olt.mgmtIp}</span>
-            {' · behind '}{routerName}
-            {olt.info?.model ? ' · ' + olt.info.model : ''}
-            {olt.info?.version ? ' ' + olt.info.version : ''}
-          </p>
-        </div>
-        <span className="flex shrink-0 items-center gap-1.5">
-          <span className={'h-2 w-2 rounded-full ' + dot} aria-hidden="true" />
-          <span className="text-[11px] text-gray-400">{status}</span>
-        </span>
-      </div>
-
-      {olt.ok === false && olt.error ? (
-        <p className="rounded-lg bg-red-950/30 px-3 py-2 text-xs text-red-300">{olt.error}</p>
+    <>
+      <tr className="border-t border-gray-800">
+        <td className={cell}>
+          <Link href={'/dashboard/network/olts/' + olt.id} className="font-semibold text-white hover:underline">
+            {olt.name}
+          </Link>
+          <p className="mt-0.5 text-[11px] text-gray-500">behind {routerName}</p>
+        </td>
+        <td className={cell + ' font-mono'}>{olt.mgmtIp}</td>
+        <td className={cell}>{olt.info?.model ?? '—'}</td>
+        <td className={cell}>{olt.info?.version ?? '—'}</td>
+        <td className={cell + (cards.length && working < cards.length ? ' text-amber-300' : '')}>
+          {cards.length ? working + ' of ' + cards.length + ' working' : '—'}
+        </td>
+        <td className={cell + ' tabular-nums'}>{pon.length ? onus : '—'}</td>
+        <td className={cell}>
+          <span className="flex items-center gap-1.5">
+            <span className={'h-2 w-2 rounded-full ' + dot} aria-hidden="true" />
+            {status}
+          </span>
+        </td>
+        <td className={cell}>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Link href={'/dashboard/network/olts/' + olt.id} className={smallButton}>
+              View
+            </Link>
+            {canManage ? (
+              <>
+                <form action={check}>
+                  <input type="hidden" name="id" value={olt.id} />
+                  <Submit small pending="Reading…">Refresh</Submit>
+                </form>
+                {confirming ? (
+                  <form action={remove} className="flex items-center gap-1.5">
+                    <input type="hidden" name="id" value={olt.id} />
+                    <Submit small pending="Removing…">Yes, remove</Submit>
+                    <button type="button" onClick={() => setConfirming(false)} className={smallButton}>
+                      Cancel
+                    </button>
+                  </form>
+                ) : (
+                  <button type="button" onClick={() => setConfirming(true)} className={smallButton}>
+                    Remove
+                  </button>
+                )}
+              </>
+            ) : null}
+          </div>
+        </td>
+      </tr>
+      {(olt.ok === false && olt.error) || checked || removed ? (
+        <tr>
+          <td colSpan={8} className="px-4 pb-3">
+            {olt.ok === false && olt.error && !checked ? (
+              <p className="rounded-lg bg-red-950/30 px-3 py-2 text-xs text-red-300">{olt.error}</p>
+            ) : null}
+            <Result state={checked} />
+            <Result state={removed} />
+          </td>
+        </tr>
       ) : null}
-
-      {olt.info?.cards.length ? (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="text-[10px] uppercase tracking-wider text-gray-500">
-              <tr>
-                <th className="py-1 pr-4 font-medium">Slot</th>
-                <th className="py-1 pr-4 font-medium">Card</th>
-                <th className="py-1 pr-4 font-medium">Ports</th>
-                <th className="py-1 pr-4 font-medium">Software</th>
-                <th className="py-1 font-medium">Status</th>
-              </tr>
-            </thead>
-            <tbody className="text-gray-300">
-              {olt.info.cards.map((c) => (
-                <tr key={c.slot} className="border-t border-gray-800">
-                  <td className="py-1.5 pr-4 tabular-nums">{c.slot}</td>
-                  <td className="py-1.5 pr-4">{c.actual ?? c.configured}</td>
-                  <td className="py-1.5 pr-4 tabular-nums">{c.ports ?? '—'}</td>
-                  <td className="py-1.5 pr-4">{c.software ?? '—'}</td>
-                  <td className={'py-1.5 ' + (cardFine(c.status) ? 'text-green-400' : 'text-amber-300')}>
-                    {c.status}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {olt.info.cards.some((c) => !cardFine(c.status)) ? (
-            <p className="mt-2 text-[11px] leading-relaxed text-amber-300/80">
-              A card that is not in service cannot carry customers. HWONLINE means the card is
-              plugged in but has not started, usually because the OLT has no software for that
-              card model.
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-
-      {canManage ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <form action={check}>
-            <input type="hidden" name="id" value={olt.id} />
-            <Submit small pending="Checking…">Check again</Submit>
-          </form>
-          {confirming ? (
-            <form action={remove} className="flex items-center gap-2">
-              <input type="hidden" name="id" value={olt.id} />
-              <span className="text-[11px] text-gray-400">Remove {olt.name}?</span>
-              <Submit small pending="Removing…">Yes, remove</Submit>
-              <button type="button" onClick={() => setConfirming(false)} className={smallButton}>
-                Cancel
-              </button>
-            </form>
-          ) : (
-            <button type="button" onClick={() => setConfirming(true)} className={smallButton}>
-              Remove
-            </button>
-          )}
-        </div>
-      ) : null}
-      <Result state={checked} />
-      <Result state={removed} />
-    </li>
+    </>
   )
 }
 
@@ -245,7 +231,7 @@ export function OltManager({
   const nameOf = (id: number) => routers.find((r) => r.id === id)?.name ?? 'a removed router'
 
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="max-w-6xl space-y-6">
       <p className="text-sm text-gray-500">
         The OLTs on your network, whether ISPMan can reach each one, and the cards inside it.
       </p>
@@ -254,11 +240,27 @@ export function OltManager({
         {olts.length === 0 ? (
           <p className="px-5 py-8 text-center text-sm text-gray-600">No OLTs yet.</p>
         ) : (
-          <ul className="divide-y divide-gray-800">
-            {olts.map((o) => (
-              <OltRow key={o.id} olt={o} routerName={nameOf(o.tunnelId)} canManage={canManage} />
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="text-[10px] uppercase tracking-wider text-gray-500">
+                  <th className="px-4 py-2 font-medium">Name</th>
+                  <th className="px-4 py-2 font-medium">IP address</th>
+                  <th className="px-4 py-2 font-medium">Model</th>
+                  <th className="px-4 py-2 font-medium">Software</th>
+                  <th className="px-4 py-2 font-medium">Cards</th>
+                  <th className="px-4 py-2 font-medium">ONUs</th>
+                  <th className="px-4 py-2 font-medium">Status</th>
+                  <th className="px-4 py-2 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {olts.map((o) => (
+                  <OltRow key={o.id} olt={o} routerName={nameOf(o.tunnelId)} canManage={canManage} />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 

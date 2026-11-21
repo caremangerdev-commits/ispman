@@ -142,6 +142,7 @@ const TITLES: { match: RegExp; title: string }[] = [
   { match: /^\/dashboard\/incidents$/, title: 'Outages' },
   { match: /^\/dashboard\/network$/, title: 'Network' },
   { match: /^\/dashboard\/network\/olts$/, title: 'OLTs' },
+  { match: /^\/dashboard\/network\/olts\/\d+$/, title: 'OLT' },
   { match: /^\/dashboard\/leads\/new$/, title: 'Add Prospect' },
   { match: /^\/dashboard\/leads\/[^/]+$/, title: 'Prospect' },
   { match: /^\/dashboard\/leads$/, title: 'Prospects' },

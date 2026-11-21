@@ -86,6 +86,21 @@ export async function listOlts(companyId: number): Promise<Olt[] | null> {
   return ((data ?? []) as unknown as Row[]).map(toOlt)
 }
 
+export async function getOlt(companyId: number, id: number): Promise<Olt | null> {
+  if (!Number.isInteger(id) || id <= 0) return null
+  const { data, error } = await tenantClient()
+    .from('olts')
+    .select(COLUMNS)
+    .eq('company_id', companyId)
+    .eq('id', id)
+    .maybeSingle()
+  if (error) {
+    if (missing(error.code)) return null
+    throw new Error('Could not load the OLT: ' + error.message)
+  }
+  return data ? toOlt(data as unknown as Row) : null
+}
+
 export async function oltWithLogin(
   companyId: number,
   id: number

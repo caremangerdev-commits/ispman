@@ -161,6 +161,7 @@ export async function checkOlt(_prev: OltActionResult | null, fd: FormData): Pro
   if (!session) return { ok: false, error: 'You do not have permission to do that.' }
   const result = await connect(session.company.id, Number(str(fd, 'id')))
   revalidatePath(PATH)
+  revalidatePath(PATH + '/' + Number(str(fd, 'id')))
   return result
 }
 
