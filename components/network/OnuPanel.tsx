@@ -2,8 +2,10 @@
 
 import { useState } from 'react'
 
-import { authoriseOnus } from '@/app/actions/olts'
-import type { OltAuthoriseResult, OltOnu, OltPendingOnu } from '@/lib/olt/types'
+import { authoriseOnus, loadOnuDetail, onuCommand } from '@/app/actions/olts'
+import type {
+  OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
+} from '@/lib/olt/types'
 
 /**
  * The ONU lists on an OLT's page: those waiting to be authorised, and those
@@ -25,6 +27,232 @@ const button =
   'rounded-md bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-blue-500 disabled:opacity-50'
 
 export type OnuLists = { pending: OltPendingOnu[]; onus: OltOnu[] }
+
+/**
+ * How good a connection is, from what the ONU receives.
+ *
+ * The usual working limits for GPON: better than -25 dBm is comfortable, -25
+ * to -27 works but has no margin left for a dirty connector or a bent fibre,
+ * and below -27 the ONU will drop. Shown in words as well as colour.
+ */
+function signal(rx: number | null): { text: string; tone: string } {
+  if (rx === null) return { text: 'No reading', tone: 'text-gray-500' }
+  if (rx >= -25) return { text: rx.toFixed(1) + ' dBm · Good', tone: 'text-green-400' }
+  if (rx >= -27) return { text: rx.toFixed(1) + ' dBm · Weak', tone: 'text-amber-300' }
+  return { text: rx.toFixed(1) + ' dBm · Too low', tone: 'text-red-400' }
+}
+
+function Fact({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div>
+      <dt className="text-[10px] uppercase tracking-wider text-gray-500">{label}</dt>
+      <dd className={'mt-0.5 text-xs ' + (tone ?? 'text-gray-200')}>{value}</dd>
+    </div>
+  )
+}
+
+/**
+ * One authorised ONU. The row is the summary; opening it reads the ONU's
+ * signal and history from the OLT there and then, and offers what can be done
+ * to it.
+ *
+ * REMOVE ASKS FIRST, AND SAYS WHAT IT DOES. It takes the customer off the
+ * network until the ONU is authorised again, which is the right thing when an
+ * ONU is being moved and a bad thing to do by a slip of the mouse.
+ */
+function OnuRow({
+  oltId, onu, canManage, onChanged,
+}: {
+  oltId: number
+  onu: OltOnu
+  canManage: boolean
+  onChanged: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [detail, setDetail] = useState<OltOnuDetail | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
+  const [mode, setMode] = useState<'view' | 'rename' | 'remove'>('view')
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+
+  const read = async () => {
+    setBusy('read')
+    const res = await loadOnuDetail(oltId, onu.id)
+    setBusy(null)
+    if (res.ok) {
+      setDetail(res.detail)
+      setName(res.detail.name ?? '')
+      setDescription(res.detail.description ?? '')
+    } else {
+      setNote({ ok: false, text: res.error })
+    }
+  }
+  const toggle = () => {
+    const next = !open
+    setOpen(next)
+    if (next && !detail && !busy) void read()
+  }
+  const act = async (action: OltOnuAction) => {
+    setBusy(action.kind)
+    setNote(null)
+    const res = await onuCommand({ oltId, onuId: onu.id, action })
+    setBusy(null)
+    setMode('view')
+    setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
+    if (res.ok && action.kind === 'remove') onChanged()
+    if (res.ok && action.kind === 'rename') void read()
+  }
+
+  const rx = signal(detail?.onuRx ?? null)
+  const small =
+    'rounded-md bg-gray-800 px-2.5 py-1 text-[11px] font-medium text-gray-200 hover:bg-gray-700 disabled:opacity-50'
+  const field =
+    'w-full rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100 focus:border-blue-500 focus:outline-none'
+
+  return (
+    <>
+      <tr className="border-t border-gray-800">
+        <td className={td + ' font-mono'}>{onu.id}</td>
+        <td className={td + ' font-mono'}>{onu.sn ?? '—'}</td>
+        <td className={td}>{onu.type ?? '—'}</td>
+        <td className={td + (onu.online ? ' text-green-400' : ' text-red-400')}>
+          {onu.online ? 'Online' : 'Offline (' + onu.phase + ')'}
+        </td>
+        <td className={td + ' text-right'}>
+          <button type="button" onClick={toggle} className={small} aria-expanded={open}>
+            {open ? 'Close' : 'Open'}
+          </button>
+        </td>
+      </tr>
+      {open ? (
+        <tr>
+          <td colSpan={5} className="pb-4">
+            <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-4">
+              {busy === 'read' && !detail ? (
+                <p className="text-xs text-gray-500">Reading the ONU…</p>
+              ) : detail ? (
+                <>
+                  <dl className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+                    <Fact label="Name" value={detail.name ?? '—'} />
+                    <Fact label="Signal at the ONU" value={rx.text} tone={rx.tone} />
+                    <Fact
+                      label="Signal at the OLT"
+                      value={detail.oltRx === null ? 'No reading' : detail.oltRx.toFixed(1) + ' dBm'}
+                    />
+                    <Fact label="Distance" value={detail.distance ?? '—'} />
+                    <Fact label="Online for" value={detail.online ? detail.onlineFor ?? '—' : 'Offline'} />
+                    <Fact label="Make" value={detail.vendor ?? '—'} />
+                    <Fact label="Model" value={detail.model ?? '—'} />
+                    <Fact label="Firmware" value={detail.firmware ?? '—'} />
+                  </dl>
+                  {detail.description ? (
+                    <p className="mt-3 text-xs text-gray-400">Note: {detail.description}</p>
+                  ) : null}
+
+                  {detail.history.length ? (
+                    <div className="mt-4">
+                      <p className="mb-1 text-[10px] uppercase tracking-wider text-gray-500">
+                        Recent ups and downs
+                      </p>
+                      <ul className="space-y-0.5 text-[11px] text-gray-400">
+                        {detail.history.slice(0, 5).map((h) => (
+                          <li key={h.up}>
+                            Up {h.up}
+                            {h.down ? ' · down ' + h.down : ' · still up'}
+                            {h.cause ? ' · ' + h.cause : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+
+              {canManage && mode === 'view' ? (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => void read()} disabled={!!busy} className={small}>
+                    {busy === 'read' ? 'Reading…' : 'Read again'}
+                  </button>
+                  <button type="button" onClick={() => void act({ kind: 'reboot' })} disabled={!!busy} className={small}>
+                    {busy === 'reboot' ? 'Rebooting…' : 'Reboot'}
+                  </button>
+                  <button type="button" onClick={() => setMode('rename')} disabled={!!busy} className={small}>
+                    Rename
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode('remove')}
+                    disabled={!!busy}
+                    className={small + ' text-red-300'}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : null}
+
+              {mode === 'rename' ? (
+                <div className="mt-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto_auto]">
+                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" className={field} maxLength={60} />
+                  <input
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Note (address, pole, customer)"
+                    className={field}
+                    maxLength={120}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void act({ kind: 'rename', name, description })}
+                    disabled={!!busy || (!name.trim() && !description.trim())}
+                    className={button}
+                  >
+                    {busy === 'rename' ? 'Saving…' : 'Save'}
+                  </button>
+                  <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
+                  <p className="text-[11px] text-gray-500 sm:col-span-4">
+                    The OLT stores these as single words, so spaces are saved as dashes.
+                  </p>
+                </div>
+              ) : null}
+
+              {mode === 'remove' ? (
+                <div className="mt-4 rounded-lg border border-red-900/50 bg-red-950/20 p-3">
+                  <p className="text-xs text-red-200">
+                    Remove {onu.sn ?? onu.id} from the OLT? The customer on it loses service until
+                    the ONU is authorized again.
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void act({ kind: 'remove' })}
+                      disabled={!!busy}
+                      className="rounded-md bg-red-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+                    >
+                      {busy === 'remove' ? 'Removing…' : 'Yes, remove it'}
+                    </button>
+                    <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
+                  </div>
+                </div>
+              ) : null}
+
+              {note ? (
+                <p
+                  className={
+                    'mt-3 rounded-lg px-3 py-2 text-xs ' +
+                    (note.ok ? 'bg-emerald-950/40 text-emerald-300' : 'bg-red-950/30 text-red-300')
+                  }
+                >
+                  {note.text}
+                </p>
+              ) : null}
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
+  )
+}
 
 export function OnuPanel({
   oltId, view, lists, loading, error, canManage, vlans, defaultVlan, onReload,
@@ -218,18 +446,12 @@ export function OnuPanel({
                 <th className={th}>Serial number</th>
                 <th className={th}>Type</th>
                 <th className={th}>Status</th>
+                <th className={th}></th>
               </tr>
             </thead>
             <tbody>
               {shown.map((o) => (
-                <tr key={o.id} className="border-t border-gray-800">
-                  <td className={td + ' font-mono'}>{o.id}</td>
-                  <td className={td + ' font-mono'}>{o.sn ?? '—'}</td>
-                  <td className={td}>{o.type ?? '—'}</td>
-                  <td className={td + (o.online ? ' text-green-400' : ' text-red-400')}>
-                    {o.online ? 'Online' : 'Offline (' + o.phase + ')'}
-                  </td>
-                </tr>
+                <OnuRow key={o.id} oltId={oltId} onu={o} canManage={canManage} onChanged={onReload} />
               ))}
             </tbody>
           </table>

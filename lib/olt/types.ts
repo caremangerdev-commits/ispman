@@ -109,6 +109,38 @@ export type OltOnu = {
 
 export type OltOnuLists = { pending: OltPendingOnu[]; onus: OltOnu[] }
 
+/** Everything one ONU reports about itself and its light levels. */
+export type OltOnuDetail = {
+  id: string
+  name: string | null
+  description: string | null
+  type: string | null
+  sn: string | null
+  phase: string
+  online: boolean
+  /** As the OLT words it, e.g. "1234m". */
+  distance: string | null
+  onlineFor: string | null
+  /**
+   * Light levels in dBm. onuRx is the one that decides connection quality:
+   * what the customer's ONU receives from the OLT.
+   */
+  onuRx: number | null
+  onuTx: number | null
+  oltRx: number | null
+  oltTx: number | null
+  vendor: string | null
+  model: string | null
+  firmware: string | null
+  /** The last times it came online and went off, newest as the OLT lists them. */
+  history: { up: string; down: string | null; cause: string | null }[]
+}
+
+export type OltOnuAction =
+  | { kind: 'reboot' }
+  | { kind: 'remove' }
+  | { kind: 'rename'; name: string; description: string }
+
 export type OltAuthoriseResult = {
   sn: string
   port: string
@@ -124,6 +156,8 @@ export type OltDriver = {
   inspect(target: CliTarget, creds: OltLogin): Promise<OltInfo>
   /** Read live: who is waiting, and who is already registered. */
   listOnus(target: CliTarget, creds: OltLogin): Promise<OltOnuLists>
+  onuDetail(target: CliTarget, creds: OltLogin, id: string): Promise<OltOnuDetail>
+  onuAction(target: CliTarget, creds: OltLogin, id: string, action: OltOnuAction): Promise<void>
   /**
    * Let ONUs on, carrying their traffic on `vlan` inside the OLT. The ONUs
    * themselves send and receive plain untagged traffic.

@@ -2,7 +2,8 @@ import 'server-only'
 
 import { CliError, TelnetSession } from '@/lib/olt/telnet'
 import type {
-  OltAuthoriseResult, OltCard, OltDriver, OltInfo, OltLogin, OltOnu, OltOnuLists, OltPendingOnu,
+  OltAuthoriseResult, OltCard, OltDriver, OltInfo, OltLogin, OltOnu, OltOnuDetail, OltOnuLists,
+  OltPendingOnu,
   OltPonPort, OltUplink, OltVlan,
 } from '@/lib/olt/types'
 
@@ -438,6 +439,91 @@ async function authoriseOne(
   return null
 }
 
+/* -------------------------------------------------------------------------- */
+/* One ONU: what it reports, and what can be done to it                       */
+/* -------------------------------------------------------------------------- */
+
+const ONU_ID = /^gpon-onu_(\d+\/\d+\/\d+):(\d+)$/
+
+/** A value the OLT prints as N/A, empty or zero-dated is no value. */
+const real = (v: string | undefined): string | null => {
+  const t = (v ?? '').trim()
+  return t && t !== 'N/A' && !t.startsWith('0000-00-00') ? t : null
+}
+
+const dbm = (v: string | undefined): number | null => {
+  const n = Number.parseFloat(v ?? '')
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * Everything one ONU reports, from three commands a real C320 printed:
+ *
+ *   show gpon onu detail-info      name, state, distance, time online, and
+ *                                  the last ten times it came up and went down
+ *   show pon power attenuation     light levels in both directions
+ *   show gpon remote-onu equip     what the ONU says it is
+ *
+ * LIGHT LEVELS ARE READ FROM THE ROW, NOT THE COLUMN HEADER. The table is
+ *
+ *    up      Rx :-21.4(dbm)      Tx:2.1(dbm)      23.5(dB)
+ *    down    Tx :3.9(dbm)        Rx:-19.8(dbm)    23.7(dB)
+ *
+ * where "up" is OLT-receives / ONU-sends and "down" is the reverse. The figure
+ * that decides whether a customer has a good connection is the ONU's receive
+ * level on the "down" row.
+ */
+async function readOnuDetail(session: TelnetSession, id: string): Promise<OltOnuDetail> {
+  const info = await run(session, 'show gpon onu detail-info ' + id)
+  const power = await run(session, 'show pon power attenuation ' + id)
+  const equip = await run(session, 'show gpon remote-onu equip ' + id)
+
+  const field = (text: string, label: string): string | null => {
+    const m = new RegExp('^\\s*' + label + '\\s*:[ \\t]*(.*)$', 'im').exec(text)
+    return real(m?.[1])
+  }
+
+  const history: OltOnuDetail['history'] = []
+  for (const line of info.split('\n')) {
+    const m = /^\s*\d+\s+(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\s+(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\s*(.*)$/.exec(line)
+    if (!m || !real(m[1])) continue
+    history.push({ up: m[1], down: real(m[2]), cause: real(m[3]) })
+  }
+
+  const up = /up\s+Rx\s*:\s*(\S+?)(?:\(dbm\))?\s+Tx\s*:\s*(\S+?)(?:\(dbm\))?\s/i.exec(power)
+  const down = /down\s+Tx\s*:\s*(\S+?)(?:\(dbm\))?\s+Rx\s*:\s*(\S+?)(?:\(dbm\))?\s/i.exec(power)
+  const phase = field(info, 'Phase state') ?? 'unknown'
+
+  return {
+    id,
+    name: field(info, 'Name'),
+    description: field(info, 'Description'),
+    type: field(info, 'Type'),
+    sn: field(info, 'Serial number'),
+    phase,
+    online: phase.toLowerCase() === 'working',
+    distance: field(info, 'ONU Distance'),
+    onlineFor: field(info, 'Online Duration'),
+    oltRx: dbm(up?.[1]),
+    onuTx: dbm(up?.[2]),
+    oltTx: dbm(down?.[1]),
+    onuRx: dbm(down?.[2]),
+    vendor: field(equip, 'Vendor ID'),
+    model: field(equip, 'Model') ?? field(equip, 'Equipment ID'),
+    firmware: field(equip, 'Version'),
+    history,
+  }
+}
+
+/** A name the command line takes as one word: no spaces, nothing it treats specially. */
+function cliWord(raw: string, max: number): string {
+  return raw
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Za-z0-9_.@#-]/g, '')
+    .slice(0, max)
+}
+
 /** "1,100,200-205" as the OLT prints it, expanded to a list of numbers. */
 function parseVlanList(text: string): number[] {
   const ids: number[] = []
@@ -534,6 +620,81 @@ export const zte: OltDriver = {
       const onus: OltOnu[] = []
       for (const port of livePonPorts(cards)) onus.push(...(await readOnusOnPort(session, port)))
       return { pending, onus }
+    } finally {
+      session.close()
+    }
+  },
+
+  async onuDetail(target, creds, id): Promise<OltOnuDetail> {
+    if (!ONU_ID.test(id)) throw new CliError('That is not an ONU on this OLT.')
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      await run(session, 'terminal length 0')
+      return await readOnuDetail(session, id)
+    } finally {
+      session.close()
+    }
+  },
+
+  /**
+   * Reboot, rename or remove one ONU. Each was accepted by a real C320.
+   *
+   * REMOVE TAKES THE ONU OFF THE OLT ENTIRELY: its registration and its
+   * service settings go, and it reappears under Unauthorized if it is still
+   * plugged in. That is the intended way to move an ONU to another customer.
+   */
+  async onuAction(target, creds, id, action): Promise<void> {
+    const m = ONU_ID.exec(id)
+    if (!m) throw new CliError('That is not an ONU on this OLT.')
+    const port = 'gpon-olt_' + m[1]
+    const index = m[2]
+
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      await run(session, 'terminal length 0')
+      await run(session, 'configure terminal')
+
+      const must = async (command: string, what: string) => {
+        const out = await run(session, command)
+        if (refused(out)) {
+          const said = out.split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? ''
+          await run(session, 'end')
+          throw new CliError('The OLT refused ' + what + ': ' + said)
+        }
+      }
+
+      let save = false
+      if (action.kind === 'reboot') {
+        await must('pon-onu-mng ' + id, 'opening the ONU')
+        // Some software asks "are you sure"; answer it rather than hang.
+        session.send('reboot')
+        const out = await session.until(/\[yes\/no\]:?\s*$|[>#] ?$/i, 'rebooting the ONU')
+        if (/\[yes\/no\]/i.test(out)) {
+          session.send('yes')
+          await session.until(PROMPT, 'rebooting the ONU')
+        }
+      } else if (action.kind === 'remove') {
+        await must('interface ' + port, 'opening the PON port')
+        await must('no onu ' + index, 'removing the ONU')
+        save = true
+      } else {
+        await must('interface ' + id, 'opening the ONU')
+        const name = cliWord(action.name, 60)
+        const description = cliWord(action.description, 120)
+        if (name) await must('name ' + name, 'setting the name')
+        if (description) await must('description ' + description, 'setting the description')
+        save = true
+      }
+
+      await run(session, 'end')
+      if (save) {
+        session.send('write')
+        await session.until(/\[OK\]|%Error|%Code/i, 'saving the configuration')
+      }
     } finally {
       session.close()
     }

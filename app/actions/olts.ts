@@ -10,7 +10,9 @@ import {
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forward'
 import { oltDriver } from '@/lib/olt'
-import type { OltAuthoriseResult, OltOnu, OltPendingOnu } from '@/lib/olt/types'
+import type {
+  OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
+} from '@/lib/olt/types'
 import { can } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
 
@@ -309,5 +311,68 @@ export async function authoriseOnus(input: {
     return { ok: true, results, remaining: Math.max(0, waiting - done.length) }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export type OnuDetailResult = { ok: true; detail: OltOnuDetail } | { ok: false; error: string }
+
+/** One ONU's signal, distance, model and recent history, read from the OLT now. */
+export async function loadOnuDetail(oltId: number, onuId: string): Promise<OnuDetailResult> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'view_network_infrastructure')) {
+    return { ok: false, error: 'You do not have permission to see this.' }
+  }
+  const r = await reach(session.company.id, Number(oltId))
+  if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
+  try {
+    return { ok: true, detail: await r.driver.onuDetail(r.target, r.login, String(onuId)) }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * Reboot, rename or remove one ONU.
+ *
+ * EVERY ONE IS WRITTEN TO THE ACTIVITY LOG with who did it. A reboot drops a
+ * customer for a minute and a removal takes them off the network until
+ * someone authorises the ONU again; "who did that, and when" has to have an
+ * answer.
+ */
+export async function onuCommand(input: {
+  oltId: number
+  onuId: string
+  action: OltOnuAction
+}): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to do that.' }
+  const r = await reach(session.company.id, Number(input.oltId))
+  if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
+
+  const kind = input.action?.kind
+  if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename') {
+    return { ok: false, error: 'Unknown action.' }
+  }
+  try {
+    await r.driver.onuAction(r.target, r.login, String(input.onuId), input.action)
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+
+  const did = kind === 'reboot' ? 'rebooted' : kind === 'remove' ? 'removed' : 'renamed'
+  await logEvent({
+    type: 'onu_' + did,
+    tag: '[olt]',
+    details: 'ONU ' + input.onuId + ' ' + did + ' on ' + r.olt.name + ' | by=' + session.profile.email,
+  })
+  revalidatePath(PATH + '/' + r.olt.id)
+  return {
+    ok: true,
+    message:
+      kind === 'reboot'
+        ? 'Reboot sent. The ONU will be back in about a minute.'
+        : kind === 'remove'
+          ? 'Removed. If it is still plugged in, it will appear under Unauthorized.'
+          : 'Saved.',
   }
 }
