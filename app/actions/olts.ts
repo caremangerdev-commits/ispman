@@ -74,15 +74,25 @@ async function connect(companyId: number, oltId: number): Promise<OltActionResul
   const driver = oltDriver(olt.brand)
   if (!driver) return { ok: false, error: 'ISPMan cannot talk to that brand of OLT yet.' }
 
-  try {
-    const info = await driver.inspect({ host: router.tunnelIp, port }, login)
-    await recordOltCheck(companyId, olt.id, { ok: true, info })
-    return { ok: true, message: olt.name + ' is connected.' }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    await recordOltCheck(companyId, olt.id, { ok: false, error: message })
-    return { ok: false, error: olt.name + ': ' + message }
+  // UP TO THREE TRIES, a moment apart. A rule added a second ago may not be
+  // carrying traffic yet, and an OLT that has just closed one session can
+  // refuse the next for an instant. Neither is worth showing a red dot for. A
+  // refused login is not retried: the same password will be refused again,
+  // and repeated failures are what gets an account locked.
+  let last = ''
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const info = await driver.inspect({ host: router.tunnelIp, port }, login)
+      await recordOltCheck(companyId, olt.id, { ok: true, info })
+      return { ok: true, message: olt.name + ' is connected.' }
+    } catch (err) {
+      last = err instanceof Error ? err.message : String(err)
+      if (!last.startsWith('Could not connect') && !last.startsWith('No answer')) break
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 1500))
+    }
   }
+  await recordOltCheck(companyId, olt.id, { ok: false, error: last })
+  return { ok: false, error: olt.name + ': ' + last }
 }
 
 export async function addOlt(_prev: OltActionResult | null, fd: FormData): Promise<OltActionResult> {

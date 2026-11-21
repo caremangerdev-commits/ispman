@@ -55,6 +55,32 @@ export async function addOltForward(
   const comment = oltRuleComment(olt.id)
   const port = String(oltForwardPort(olt.id))
   await withRouter(target(router), async (session) => {
+    // ALREADY IN PLACE AND STILL RIGHT: leave them alone. Removing and
+    // re-adding the rules on every check opens a moment in which the port
+    // leads nowhere, and the login that follows straight away is refused.
+    const nat = await session.command(
+      '/ip/firewall/nat/print',
+      '?comment=' + comment,
+      '=.proplist=chain,dst-port,to-addresses,to-ports,dst-address'
+    )
+    const filter = await session.command(
+      '/ip/firewall/filter/print',
+      '?comment=' + comment,
+      '=.proplist=dst-address,dst-port'
+    )
+    const dst = nat.find((r) => r.chain === 'dstnat')
+    const src = nat.find((r) => r.chain === 'srcnat')
+    const current =
+      nat.length === 2 &&
+      filter.length === 1 &&
+      dst?.['dst-port'] === port &&
+      dst?.['to-addresses'] === olt.mgmtIp &&
+      dst?.['to-ports'] === String(olt.cliPort) &&
+      src?.['dst-address'] === olt.mgmtIp &&
+      filter[0]['dst-address'] === olt.mgmtIp &&
+      filter[0]['dst-port'] === String(olt.cliPort)
+    if (current) return
+
     await removeRules(session, comment)
 
     await session.command(
