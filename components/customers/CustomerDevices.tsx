@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom'
 
 import { linkCustomerDevice, unlinkDevice } from '@/app/actions/devices'
 import { DeviceIcon } from '@/components/network/DeviceIcon'
+import { SignalBars } from '@/components/network/SignalBars'
 import { Modal, settingsInput } from '@/components/settings/Modal'
 import { MacAddressInput } from '@/components/ui/MacAddressInput'
 import type { CustomerDevice } from '@/lib/data/customer-devices'
@@ -259,6 +260,18 @@ export function CustomerDevices({
             <>
               <DeviceIcon kind={d.kind} className="h-4 w-4 shrink-0 text-gray-400" />
               <span className="font-mono">{id}</span>
+              {d.live ? (
+                <>
+                  <span
+                    className={'h-1.5 w-1.5 rounded-full ' + (d.live.online ? 'bg-green-400' : 'bg-red-500')}
+                    aria-hidden
+                  />
+                  <span className={d.live.online ? 'text-green-400' : 'text-red-400'}>
+                    {d.live.online ? 'Online' : 'Offline'}
+                  </span>
+                  {d.live.online ? <SignalBars label="Signal" dbm={d.live.rx} side="onu" /> : null}
+                </>
+              ) : null}
             </>
           )
           return (

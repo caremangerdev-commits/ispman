@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from 'react'
 import {
-  AlertCircle, Bell, CreditCard, LifeBuoy, UserPlus, type LucideIcon,
+  AlertCircle, Bell, CreditCard, LifeBuoy, Router, UserPlus, type LucideIcon,
 } from 'lucide-react'
 
 import { markAllNotificationsRead } from '@/app/actions/notifications'
@@ -14,6 +14,7 @@ const ICONS: Record<string, { icon: LucideIcon; tone: string }> = {
   payment: { icon: CreditCard, tone: 'bg-amber-500/15 text-amber-400' },
   ticket: { icon: LifeBuoy, tone: 'bg-blue-500/15 text-blue-400' },
   customer: { icon: UserPlus, tone: 'bg-emerald-500/15 text-emerald-400' },
+  network: { icon: Router, tone: 'bg-red-500/15 text-red-400' },
 }
 
 export function NotificationBell({

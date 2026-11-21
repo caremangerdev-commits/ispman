@@ -30,6 +30,8 @@ export type CustomerDevice = {
   onuRef: string | null
   linkedBy: 'auto' | 'manual' | null
   notes: string | null
+  /** For an ONU: its last reading by the background pass. Absent if never read. */
+  live?: { online: boolean; rx: number | null; phase: string | null; readAt: string } | null
 }
 
 type Row = {
@@ -81,7 +83,24 @@ export async function customerDevices(companyId: number, customerId: number): Pr
     if (NOT_READY.has(error.code ?? '')) return null
     throw new Error('Could not load the customer devices: ' + error.message)
   }
-  return ((data ?? []) as Row[]).map(toDevice)
+  const devices = ((data ?? []) as Row[]).map(toDevice)
+  const serials = devices.filter((d) => d.kind === 'onu' && d.serial).map((d) => d.serial as string)
+  if (serials.length) {
+    // Tolerant: before migration 0058 there is no reading, and the tag shows without one.
+    const live = await tenantClient()
+      .from('olt_onus')
+      .select('serial, online, rx, phase, updated_at')
+      .eq('company_id', companyId)
+      .in('serial', serials)
+    if (!live.error) {
+      for (const r of (live.data ?? []) as { serial: string; online: boolean; rx: unknown; phase: string | null; updated_at: string }[]) {
+        const rx = Number.parseFloat(String(r.rx ?? ''))
+        const d = devices.find((x) => x.serial === r.serial)
+        if (d) d.live = { online: r.online, rx: Number.isFinite(rx) ? rx : null, phase: r.phase, readAt: r.updated_at }
+      }
+    }
+  }
+  return devices
 }
 
 export type OnuCustomer = { customerId: number; name: string; linkedBy: 'auto' | 'manual' }

@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { getSchemaCapabilities } from '@/lib/schema'
+import { watchOlts } from '@/lib/olt/watch'
 import { pollUsage } from '@/lib/usage/poll'
 
 /**
@@ -71,7 +72,16 @@ export async function POST(req: NextRequest) {
 
   try {
     const summary = await pollUsage()
-    return NextResponse.json({ ok: true, ...summary })
+    // OLTs ride on the same tick: read each one's ONUs, raise alerts, keep the
+    // signal history. Its own try, so an OLT problem never loses a usage pass.
+    let olts: Awaited<ReturnType<typeof watchOlts>> = []
+    try {
+      olts = await watchOlts()
+      for (const o of olts) if (!o.ok) console.error('[olt-watch] ' + o.name + ': ' + (o.error ?? 'failed'))
+    } catch (err) {
+      console.error('[olt-watch] pass failed:', err instanceof Error ? err.message : String(err))
+    }
+    return NextResponse.json({ ok: true, ...summary, olts })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error('[usage] pass failed:', message)

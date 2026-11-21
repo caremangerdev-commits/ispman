@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { useState } from 'react'
 
-import { authoriseOnus, linkOnu, loadOnuDetail, onuCommand } from '@/app/actions/olts'
+import { authoriseOnus, linkOnu, loadOnuDetail, onuCommand, type OnuSignalDay } from '@/app/actions/olts'
 import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
 import { SignalBars } from '@/components/network/SignalBars'
 import type { OnuCustomer } from '@/lib/data/customer-devices'
@@ -96,6 +96,73 @@ function signal(rx: number | null): { text: string; tone: string } {
   return { text: rx.toFixed(1) + ' dBm · Too low', tone: 'text-red-400' }
 }
 
+/**
+ * An ONU's signal day by day. The line is the last reading of each day and the
+ * band behind it runs from that day's weakest to its strongest.
+ *
+ * WHAT TO LOOK FOR IS THE SLOPE. A steady line near the limit is a long drop
+ * that has always been that way; a line that falls week after week is a
+ * connector going bad or a fibre being bent, and it will cut out.
+ */
+function SignalHistory({ days }: { days: OnuSignalDay[] }) {
+  const points = days.filter((d) => d.last !== null)
+  if (points.length < 2) {
+    return (
+      <p className="mt-4 text-[11px] text-gray-500">
+        Signal history builds up from today, one point a day. It shows here after two days of readings.
+      </p>
+    )
+  }
+  const W = 560
+  const H = 90
+  const top = -8
+  const bottom = -32
+  const x = (i: number) => (points.length === 1 ? 0 : (i / (points.length - 1)) * W)
+  const y = (v: number) => ((top - Math.max(bottom, Math.min(top, v))) / (top - bottom)) * H
+  const line = points.map((d, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(d.last as number).toFixed(1)).join(' ')
+  const band =
+    points.map((d, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(d.max ?? (d.last as number)).toFixed(1)).join(' ') +
+    ' ' +
+    points
+      .map((d, i) => ({ d, i }))
+      .reverse()
+      .map(({ d, i }) => 'L' + x(i).toFixed(1) + ' ' + y(d.min ?? (d.last as number)).toFixed(1))
+      .join(' ') +
+    ' Z'
+  const first = points[0]
+  const latest = points[points.length - 1]
+  const change = (latest.last as number) - (first.last as number)
+  return (
+    <div className="mt-4">
+      <p className="mb-1 text-[10px] uppercase tracking-wider text-gray-500">
+        Signal at the ONU, last {points.length} days
+      </p>
+      <svg
+        viewBox={'0 0 ' + W + ' ' + H}
+        className="h-24 w-full max-w-xl"
+        role="img"
+        aria-label={
+          'Signal from ' + (first.last as number).toFixed(1) + ' dBm on ' + first.day + ' to ' +
+          (latest.last as number).toFixed(1) + ' dBm on ' + latest.day
+        }
+        preserveAspectRatio="none"
+      >
+        <rect x="0" y={y(-27)} width={W} height={H - y(-27)} className="fill-red-500/10" />
+        <line x1="0" x2={W} y1={y(-27)} y2={y(-27)} className="stroke-red-500/50" strokeDasharray="4 4" strokeWidth="1" />
+        <path d={band} className="fill-blue-500/15" />
+        <path d={line} className="fill-none stroke-blue-400" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+      </svg>
+      <p className="text-[11px] text-gray-500">
+        {first.day}: {(first.last as number).toFixed(1)} dBm · {latest.day}: {(latest.last as number).toFixed(1)} dBm ·{' '}
+        <span className={change <= -1.5 ? 'text-amber-300' : ''}>
+          {Math.abs(change) < 0.5 ? 'steady' : (change < 0 ? 'down ' : 'up ') + Math.abs(change).toFixed(1) + ' dB'}
+        </span>
+        . The dashed line is -27 dBm, where the connection drops.
+      </p>
+    </div>
+  )
+}
+
 function Fact({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <div>
@@ -125,6 +192,7 @@ function OnuRow({
 }) {
   const [open, setOpen] = useState(false)
   const [detail, setDetail] = useState<OltOnuDetail | null>(null)
+  const [history, setHistory] = useState<OnuSignalDay[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
   const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link'>('view')
@@ -150,6 +218,7 @@ function OnuRow({
     setBusy(null)
     if (res.ok) {
       setDetail(res.detail)
+      setHistory(res.signal)
       setName(res.detail.name ?? '')
       setDescription(res.detail.description ?? '')
     } else {
@@ -231,6 +300,8 @@ function OnuRow({
                   {detail.description ? (
                     <p className="mt-3 text-xs text-gray-400">Note: {detail.description}</p>
                   ) : null}
+
+                  <SignalHistory days={history} />
 
                   {detail.history.length ? (
                     <div className="mt-4">

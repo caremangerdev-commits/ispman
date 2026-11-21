@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { notFound, redirect } from 'next/navigation'
 
 import { OltDetail } from '@/components/network/OltDetail'
-import { getOlt } from '@/lib/data/olts'
+import { getAutoAuthorise, getOlt } from '@/lib/data/olts'
 import { listRouterTunnels } from '@/lib/data/tunnels'
 import { can } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
@@ -22,6 +22,7 @@ export default async function OltPage({ params }: { params: Promise<{ id: string
   if (!olt) notFound()
 
   const tunnels = await listRouterTunnels(company.id)
+  const autoAuthorise = await getAutoAuthorise(company.id, olt.id)
   const routerName = tunnels.find((t) => t.id === olt.tunnelId)?.name ?? 'a removed router'
 
   // Worded here, on the server, against one clock reading: a component that
@@ -35,6 +36,7 @@ export default async function OltPage({ params }: { params: Promise<{ id: string
       olt={olt}
       routerName={routerName}
       checkedText={checkedText}
+      autoAuthorise={autoAuthorise}
       canManage={can(profile.role, 'manage_router_tunnels')}
     />
   )

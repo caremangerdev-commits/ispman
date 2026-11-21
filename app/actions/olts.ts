@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { logEvent } from '@/lib/audit'
 import { secretStorageReady } from '@/lib/crypto'
 import {
-  createOlt, deleteOlt, oltWithLogin, recordOltCheck, setOltForward, setServiceVlan,
+  createOlt, deleteOlt, oltWithLogin, recordOltCheck, setAutoAuthorise, setOltForward, setServiceVlan,
 } from '@/lib/data/olts'
 import { linkOnuToCustomer, linkOnusToCustomers, type OnuCustomer } from '@/lib/data/customer-devices'
 import { routerLoginFor } from '@/lib/data/router-logins'
@@ -16,6 +16,7 @@ import type {
 } from '@/lib/olt/types'
 import { can } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
+import { tenantClient } from '@/lib/supabase/tenant'
 
 /**
  * Adding, checking and removing a company's OLTs.
@@ -331,7 +332,31 @@ export async function authoriseOnus(input: {
   }
 }
 
-export type OnuDetailResult = { ok: true; detail: OltOnuDetail } | { ok: false; error: string }
+export type OnuSignalDay = { day: string; min: number | null; max: number | null; last: number | null }
+export type OnuDetailResult =
+  | { ok: true; detail: OltOnuDetail; signal: OnuSignalDay[] }
+  | { ok: false; error: string }
+
+/** The last 60 days of an ONU's signal, oldest first. Empty before migration 0058. */
+async function signalHistory(companyId: number, oltId: number, serial: string | null): Promise<OnuSignalDay[]> {
+  if (!serial) return []
+  const { data, error } = await tenantClient()
+    .from('onu_signal_daily')
+    .select('day, rx_min, rx_max, rx_last')
+    .eq('company_id', companyId)
+    .eq('olt_id', oltId)
+    .eq('serial', serial.toUpperCase())
+    .order('day', { ascending: false })
+    .limit(60)
+  if (error) return []
+  const n = (v: unknown) => {
+    const x = Number.parseFloat(String(v ?? ''))
+    return Number.isFinite(x) ? x : null
+  }
+  return ((data ?? []) as { day: string; rx_min: unknown; rx_max: unknown; rx_last: unknown }[])
+    .map((r) => ({ day: r.day, min: n(r.rx_min), max: n(r.rx_max), last: n(r.rx_last) }))
+    .reverse()
+}
 
 /** One ONU's signal, distance, model and recent history, read from the OLT now. */
 export async function loadOnuDetail(oltId: number, onuId: string): Promise<OnuDetailResult> {
@@ -342,7 +367,8 @@ export async function loadOnuDetail(oltId: number, onuId: string): Promise<OnuDe
   const r = await reach(session.company.id, Number(oltId))
   if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
   try {
-    return { ok: true, detail: await r.driver.onuDetail(r.target, r.login, String(onuId)) }
+    const detail = await r.driver.onuDetail(r.target, r.login, String(onuId))
+    return { ok: true, detail, signal: await signalHistory(session.company.id, r.olt.id, detail.sn) }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
@@ -423,4 +449,25 @@ export async function linkOnu(input: {
   })
   revalidatePath('/dashboard/customers/' + Number(input.customerId))
   return { ok: true, message: 'Linked.' }
+}
+
+/** Switch automatic authorising of new ONUs on or off for one OLT. */
+export async function setOltAutoAuthorise(oltId: number, on: boolean): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to do that.' }
+  const found = await oltWithLogin(session.company.id, Number(oltId))
+  if (!found) return { ok: false, error: 'That OLT was not found.' }
+  if (on && !found.olt.serviceVlan) {
+    return { ok: false, error: 'Authorize one ONU by hand first, so ISPMan knows which VLAN to use.' }
+  }
+  if (!(await setAutoAuthorise(session.company.id, found.olt.id, on === true))) {
+    return { ok: false, error: 'Could not save that. Migration 0058 may not be applied.' }
+  }
+  await logEvent({
+    type: 'olt_auto_authorise',
+    tag: '[olt]',
+    details: 'Automatic authorizing switched ' + (on ? 'on' : 'off') + ' for ' + found.olt.name + ' | by=' + session.profile.email,
+  })
+  revalidatePath(PATH + '/' + found.olt.id)
+  return { ok: true, message: on ? 'On.' : 'Off.' }
 }

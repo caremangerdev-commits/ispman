@@ -242,3 +242,69 @@ export async function deleteOlt(companyId: number, id: number): Promise<boolean>
     .select('id')
   return !error && Boolean(data && data.length)
 }
+
+/** An OLT the background pass will read: its login, and what it may do there. */
+export type OltWatchTarget = {
+  companyId: number
+  olt: Olt
+  login: OltLogin
+  autoAuthorise: boolean
+}
+
+/**
+ * Every OLT of every company that last answered, for the background pass.
+ * Empty before migration 0058, which is what makes the pass skip OLTs.
+ *
+ * An OLT whose last check failed is left out: a wrong password retried every
+ * few minutes is how an account gets locked. Refresh on its page brings it
+ * back in.
+ */
+export async function oltWatchTargets(): Promise<OltWatchTarget[]> {
+  const { data, error } = await tenantClient()
+    .from('olts')
+    .select(COLUMNS + ', company_id, cli_secret, enable_secret, service_vlan, auto_authorise')
+    .eq('ok', true)
+    .order('id')
+  if (error) return []
+  const out: OltWatchTarget[] = []
+  for (const raw of data ?? []) {
+    const row = raw as unknown as Row & {
+      company_id: number
+      cli_secret: string
+      enable_secret: string | null
+      service_vlan: number | null
+      auto_authorise: boolean | null
+    }
+    const password = decryptSecret(row.cli_secret)
+    if (!password) continue
+    out.push({
+      companyId: row.company_id,
+      olt: toOlt(row, new Map(row.service_vlan ? [[row.id, row.service_vlan]] : [])),
+      login: { user: row.cli_user, password, enablePassword: decryptSecret(row.enable_secret) },
+      autoAuthorise: row.auto_authorise === true,
+    })
+  }
+  return out
+}
+
+/** Whether new ONUs are let on without a click. False before migration 0058. */
+export async function getAutoAuthorise(companyId: number, id: number): Promise<boolean> {
+  const { data, error } = await tenantClient()
+    .from('olts')
+    .select('auto_authorise')
+    .eq('company_id', companyId)
+    .eq('id', id)
+    .maybeSingle()
+  if (error || !data) return false
+  return (data as { auto_authorise: boolean | null }).auto_authorise === true
+}
+
+export async function setAutoAuthorise(companyId: number, id: number, on: boolean): Promise<boolean> {
+  const { data, error } = await tenantClient()
+    .from('olts')
+    .update({ auto_authorise: on })
+    .eq('company_id', companyId)
+    .eq('id', id)
+    .select('id')
+  return !error && Boolean(data && data.length)
+}

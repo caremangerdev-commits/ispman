@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
-import { checkOlt, loadOnus, type OltActionResult } from '@/app/actions/olts'
+import { checkOlt, loadOnus, setOltAutoAuthorise, type OltActionResult } from '@/app/actions/olts'
 import { DeviceIcon } from '@/components/network/DeviceIcon'
 import { OnuPanel, type OnuLists } from '@/components/network/OnuPanel'
 import type { Olt } from '@/lib/data/olts'
@@ -109,14 +109,24 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 export function OltDetail({
-  olt, routerName, checkedText, canManage,
+  olt, routerName, checkedText, canManage, autoAuthorise = false,
 }: {
   olt: Olt
   routerName: string
   /** When the figures were read, already in words. Null if never. */
   checkedText: string | null
   canManage: boolean
+  autoAuthorise?: boolean
 }) {
+  const [auto, setAuto] = useState(autoAuthorise)
+  const [autoNote, setAutoNote] = useState<string | null>(null)
+  const toggleAuto = async () => {
+    const next = !auto
+    setAutoNote(null)
+    const res = await setOltAutoAuthorise(olt.id, next)
+    if (res.ok) setAuto(next)
+    else setAutoNote(res.error)
+  }
   const [tab, setTab] = useState<Tab>('details')
   const [lists, setLists] = useState<OnuLists | null>(null)
   const [loading, setLoading] = useState(false)
@@ -252,6 +262,40 @@ export function OltDetail({
             <Field label="PON ports" value={pon.length ? String(pon.length) : '—'} />
             <Field label="ONUs registered" value={pon.length ? String(registered) : '—'} />
             <Field label="Login used" value={olt.cliUser} />
+            <div className="flex items-start justify-between gap-4 border-t border-gray-800 py-3">
+              <div className="min-w-0">
+                <dt className="text-xs font-medium text-gray-200">Authorize new ONUs automatically</dt>
+                <dd className="mt-0.5 max-w-xl text-[11px] leading-relaxed text-gray-500">
+                  {olt.serviceVlan
+                    ? 'A new ONU plugged into this OLT is let on within about five minutes, on VLAN ' +
+                      olt.serviceVlan + ', and you get a notification. Leave this off if anyone else can reach your fibre.'
+                    : 'Authorize one ONU by hand first. That sets the VLAN new ONUs go on, and this can then be switched on.'}
+                  {autoNote ? <span className="block text-red-300">{autoNote}</span> : null}
+                </dd>
+              </div>
+              {canManage ? (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={auto}
+                  aria-label="Authorize new ONUs automatically"
+                  disabled={!olt.serviceVlan && !auto}
+                  onClick={() => void toggleAuto()}
+                  className={
+                    'relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition disabled:opacity-40 ' +
+                    (auto ? 'bg-blue-600' : 'bg-gray-700')
+                  }
+                >
+                  <span
+                    className={
+                      'absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ' + (auto ? 'left-[18px]' : 'left-0.5')
+                    }
+                  />
+                </button>
+              ) : (
+                <span className="text-xs text-gray-400">{auto ? 'On' : 'Off'}</span>
+              )}
+            </div>
           </dl>
         ) : null}
 
