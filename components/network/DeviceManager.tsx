@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
+import { assignToSite } from '@/app/actions/sites'
 import {
   addDevice, addFoundDevices, discoverDevices, removeDevice, setDeviceKind,
   type DeviceActionResult, type DiscoverResult, type FoundDevice,
@@ -22,6 +23,8 @@ import { DEVICE_BRANDS, DEVICE_KINDS, kindLabel } from '@/lib/network/classify'
  * rather than offering a form that could not do the job.
  */
 
+export type SiteOption = { id: number; name: string }
+
 export type InventoryRow = {
   key: string
   kind: string
@@ -38,6 +41,11 @@ export type InventoryRow = {
   /** Set for rows that live in the devices table and can be edited here. */
   deviceId: number | null
   status: 'up' | 'down' | null
+  /** How to put this row at a site: which table, which id. */
+  place: { table: 'device' | 'olt' | 'router'; id: number }
+  siteId: number | null
+  /** Backhauls: the site at the far end. */
+  linksToSiteId: number | null
 }
 
 const input =
@@ -270,7 +278,8 @@ function FoundTable({
   )
 }
 
-function Discover() {
+function Discover({ sites }: { sites: SiteOption[] }) {
+  const [site, setSite] = useState('')
   const [result, setResult] = useState<DiscoverResult | null>(null)
   const [busy, setBusy] = useState(false)
   const [picked, setPicked] = useState<Record<string, boolean>>({})
@@ -296,7 +305,10 @@ function Discover() {
 
   const add = async (items: FoundDevice[]) => {
     setBusy(true)
-    const res = await addFoundDevices(items.map((f) => ({ ...f, kind: (kinds[f.mac] ?? f.kind) as FoundDevice['kind'] })))
+    const res = await addFoundDevices(
+      items.map((f) => ({ ...f, kind: (kinds[f.mac] ?? f.kind) as FoundDevice['kind'] })),
+      site ? Number(site) : null
+    )
     setSaved(res)
     setBusy(false)
     if (res.ok) await scan()
@@ -319,6 +331,21 @@ function Discover() {
             <button type="button" onClick={() => void add(chosen)} disabled={busy || chosen.length === 0} className={primary}>
               Add selected ({chosen.length})
             </button>
+            {sites.length ? (
+              <label className="flex items-center gap-2 text-xs text-gray-400">
+                at site
+                <select
+                  value={site}
+                  onChange={(e) => setSite(e.target.value)}
+                  className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
+                >
+                  <option value="">No site yet</option>
+                  {sites.map((x) => (
+                    <option key={x.id} value={x.id}>{x.name}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
           </>
         ) : null}
       </div>
@@ -393,7 +420,52 @@ function Discover() {
 
 /* ------------------------------- Inventory -------------------------------- */
 
-function DeviceRow({ row, canManage }: { row: InventoryRow; canManage: boolean }) {
+function SitePicker({ row, sites, canManage }: { row: InventoryRow; sites: SiteOption[]; canManage: boolean }) {
+  const [value, setValue] = useState(row.siteId ? String(row.siteId) : '')
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState<string | null>(null)
+  const name = sites.find((s) => String(s.id) === value)?.name
+  if (!canManage || sites.length === 0) {
+    return name ? <Link href={'/dashboard/network/sites/' + value} className="text-blue-400 hover:underline">{name}</Link> : <span className="text-gray-600">—</span>
+  }
+  const change = async (next: string) => {
+    const before = value
+    setValue(next)
+    setBusy(true)
+    const res = await assignToSite([row.place], next ? Number(next) : null)
+    setBusy(false)
+    if (!res.ok) {
+      setValue(before)
+      setProblem(res.error)
+    } else setProblem(null)
+  }
+  return (
+    <span>
+      <select
+        aria-label={'Site of ' + row.name}
+        value={value}
+        disabled={busy}
+        onChange={(e) => void change(e.target.value)}
+        className="max-w-[10rem] rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
+      >
+        <option value="">No site</option>
+        {sites.map((s) => (
+          <option key={s.id} value={s.id}>{s.name}</option>
+        ))}
+      </select>
+      {problem ? <span className="block text-[11px] text-red-300">{problem}</span> : null}
+    </span>
+  )
+}
+
+function DeviceRow({
+  row, canManage, sites, showSite,
+}: {
+  row: InventoryRow
+  canManage: boolean
+  sites: SiteOption[]
+  showSite: boolean
+}) {
   const [busy, setBusy] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
@@ -449,6 +521,11 @@ function DeviceRow({ row, canManage }: { row: InventoryRow; canManage: boolean }
           kindLabel(row.kind)
         )}
       </td>
+      {showSite ? (
+        <td className={td}>
+          <SitePicker row={row} sites={sites} canManage={canManage} />
+        </td>
+      ) : null}
       <td className={td + ' font-mono'}>{row.ip ?? '—'}</td>
       <td className={td + ' font-mono'}>{row.mac ?? '—'}</td>
       <td className={td}>
@@ -494,15 +571,18 @@ const CUSTOMER_KINDS = new Set(['onu', 'cpe'])
 const CHIP_LABEL: Record<string, string> = { onu: 'Fiber (ONU)', cpe: 'Wireless (radio)' }
 
 export function DeviceManager({
-  rows, canManage, ready,
+  rows, sites, canManage, ready,
 }: {
   rows: InventoryRow[]
+  sites: SiteOption[]
   canManage: boolean
   /** False when the devices table is not there yet: routers and OLTs still list. */
   ready: boolean
 }) {
   const [side, setSide] = useState<'network' | 'customers'>('network')
   const [filter, setFilter] = useState('all')
+  // '' every site, 'none' not at a site, else a site id.
+  const [siteFilter, setSiteFilter] = useState('')
   const [panel, setPanel] = useState<'none' | 'discover' | 'add'>('none')
 
   // Two lists, because they answer two questions: what the network is built
@@ -510,7 +590,10 @@ export function DeviceManager({
   // would bury the ten devices that keep everyone online.
   const network = rows.filter((r) => !CUSTOMER_KINDS.has(r.kind))
   const customers = rows.filter((r) => CUSTOMER_KINDS.has(r.kind))
-  const list = side === 'network' ? network : customers
+  const showSite = side === 'network'
+  const bySite = (r: InventoryRow) =>
+    !showSite || siteFilter === '' ? true : siteFilter === 'none' ? r.siteId == null : String(r.siteId) === siteFilter
+  const list = (side === 'network' ? network : customers).filter(bySite)
   const counts = new Map<string, number>()
   for (const r of list) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1)
   const shown = filter === 'all' ? list : list.filter((r) => r.kind === filter)
@@ -569,7 +652,21 @@ export function DeviceManager({
           ))}
         </div>
         {canManage && ready ? (
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {showSite && sites.length ? (
+              <select
+                aria-label="Show one site"
+                value={siteFilter}
+                onChange={(e) => setSiteFilter(e.target.value)}
+                className="rounded-lg border border-gray-700 bg-gray-950 px-2 py-2 text-xs text-gray-100"
+              >
+                <option value="">Every site</option>
+                <option value="none">Not at a site</option>
+                {sites.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            ) : null}
             <button type="button" onClick={() => setPanel(panel === 'discover' ? 'none' : 'discover')} className={primary}>
               Find devices
             </button>
@@ -593,7 +690,7 @@ export function DeviceManager({
       {panel === 'discover' ? (
         <section className="rounded-xl border border-gray-800 bg-gray-900 p-5">
           <h2 className="mb-3 text-sm font-semibold text-white">Find devices on your network</h2>
-          <Discover />
+          <Discover sites={sites} />
         </section>
       ) : null}
       {panel === 'add' ? (
@@ -614,16 +711,17 @@ export function DeviceManager({
                 <tr>
                   <th className={th}>Device</th>
                   <th className={th}>Type</th>
+                  {showSite ? <th className={th}>Site</th> : null}
                   <th className={th}>IP</th>
                   <th className={th}>MAC</th>
-                  <th className={th}>Where</th>
+                  <th className={th}>{showSite ? 'Where' : 'Customer'}</th>
                   <th className={th}>Status</th>
                   <th className={th}></th>
                 </tr>
               </thead>
               <tbody>
                 {shown.map((r) => (
-                  <DeviceRow key={r.key} row={r} canManage={canManage} />
+                  <DeviceRow key={r.key} row={r} canManage={canManage} sites={sites} showSite={showSite} />
                 ))}
               </tbody>
             </table>

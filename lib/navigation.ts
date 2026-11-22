@@ -86,6 +86,7 @@ const SECTIONS: NavSection[] = [
     heading: 'Network',
     requireAny: ['view_network_infrastructure'],
     items: [
+      { label: 'Sites', href: '/dashboard/network/sites', icon: 'mapPin', permission: 'view_network_infrastructure' },
       { label: 'Routers', href: '/dashboard/network', icon: 'router', permission: 'view_network_infrastructure' },
       { label: 'OLTs', href: '/dashboard/network/olts', icon: 'network', permission: 'view_network_infrastructure' },
       { label: 'Devices', href: '/dashboard/network/devices', icon: 'network', permission: 'view_network_infrastructure' },

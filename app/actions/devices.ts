@@ -8,6 +8,7 @@ import {
 } from '@/lib/data/customer-devices'
 import { addDevices, deleteDevice, listDevices, updateDeviceKind, type NewDevice } from '@/lib/data/devices'
 import { listOlts } from '@/lib/data/olts'
+import { siteExists } from '@/lib/data/sites'
 import { routerLoginFor, type PollTarget } from '@/lib/data/router-logins'
 import { routersWithLogin } from '@/lib/data/router-usage'
 import { listRouterTunnels } from '@/lib/data/tunnels'
@@ -15,6 +16,7 @@ import { isDeviceKind } from '@/lib/network/classify'
 import { applyDeviceUpdates, discoverForCompany, type FoundDevice } from '@/lib/network/discover'
 import { can } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
+import { tenantClient } from '@/lib/supabase/tenant'
 
 /**
  * The device inventory: adding by hand, and finding what is already out there.
@@ -145,7 +147,7 @@ export async function discoverDevices(): Promise<DiscoverResult> {
 }
 
 /** Add devices the owner picked from a discovery list. */
-export async function addFoundDevices(items: FoundDevice[]): Promise<DeviceActionResult> {
+export async function addFoundDevices(items: FoundDevice[], siteId: number | null = null): Promise<DeviceActionResult> {
   const session = await manager()
   if (!session) return { ok: false, error: 'You do not have permission to add devices.' }
   if (!Array.isArray(items) || items.length === 0) return { ok: false, error: 'Nothing was selected.' }
@@ -181,6 +183,16 @@ export async function addFoundDevices(items: FoundDevice[]): Promise<DeviceActio
     tag: '[network]',
     details: res.added + ' device(s) added from discovery | by=' + session.profile.email,
   })
+  // Put at the chosen site. By MAC, since the insert skips ones already
+  // there; only rows not yet at any site are moved.
+  if (siteId != null && (await siteExists(session.company.id, Number(siteId)))) {
+    await tenantClient()
+      .from('network_devices')
+      .update({ site_id: Number(siteId) })
+      .eq('company_id', session.company.id)
+      .is('site_id', null)
+      .in('mac', clean.map((c) => c.mac as string))
+  }
   // A radio that carries a customer's own MAC address is that customer's.
   const linked = await linkDevicesByMac(session.company.id)
   revalidatePath(PATH)
