@@ -139,6 +139,7 @@ export function SiteManager({
 
       <NetworkMap
         map={map}
+        rows={rows}
         routers={rows
           .filter((r) => r.place.table === 'router')
           .map((r): MapRouterInfo => ({ tunnelId: r.place.id, name: r.name, siteId: r.siteId }))}
