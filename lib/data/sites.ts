@@ -124,12 +124,19 @@ export async function placeAtSite(
   for (const table of Object.keys(TABLE) as SiteTable[]) {
     const ids = items.filter((i) => i.table === table).map((i) => i.id)
     if (ids.length === 0) continue
-    const { data, error } = await db
-      .from(TABLE[table])
-      .update({ site_id: siteId })
-      .eq('company_id', companyId)
-      .in('id', ids)
-      .select('id')
+    // A person chose this: the background pass leaves it alone from now on.
+    const patch: Record<string, unknown> =
+      table === 'device' ? { site_id: siteId, site_source: siteId == null ? null : 'manual' } : { site_id: siteId }
+    let { data, error } = await db.from(TABLE[table]).update(patch).eq('company_id', companyId).in('id', ids).select('id')
+    // Before migration 0062 there is no site_source column.
+    if (error && table === 'device' && NOT_READY.has(error.code ?? '')) {
+      ;({ data, error } = await db
+        .from(TABLE[table])
+        .update({ site_id: siteId })
+        .eq('company_id', companyId)
+        .in('id', ids)
+        .select('id'))
+    }
     if (!error) moved += (data ?? []).length
   }
   return moved

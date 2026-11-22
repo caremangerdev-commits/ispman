@@ -6,6 +6,8 @@ import { useState } from 'react'
 
 import { addSite, editSite, type SiteActionResult } from '@/app/actions/sites'
 import type { InventoryRow } from '@/components/network/DeviceManager'
+import { NetworkMap, type MapRouterInfo } from '@/components/network/NetworkMap'
+import type { NetworkMap as NetworkMapData } from '@/lib/network/topology'
 import { Modal } from '@/components/settings/Modal'
 import { kindLabel } from '@/lib/network/classify'
 import { SITE_KINDS, siteKindLabel } from '@/lib/network/site-kinds'
@@ -98,10 +100,11 @@ export function SiteForm({ site, onDone }: { site?: SiteView; onDone: (id?: numb
 }
 
 export function SiteManager({
-  sites, rows, canManage, ready,
+  sites, rows, map, canManage, ready,
 }: {
   sites: SiteView[]
   rows: InventoryRow[]
+  map: NetworkMapData
   canManage: boolean
   ready: boolean
 }) {
@@ -133,6 +136,15 @@ export function SiteManager({
           </button>
         ) : null}
       </div>
+
+      <NetworkMap
+        map={map}
+        routers={rows
+          .filter((r) => r.place.table === 'router')
+          .map((r): MapRouterInfo => ({ tunnelId: r.place.id, name: r.name, siteId: r.siteId }))}
+        sites={sites.map((s) => ({ id: s.id, name: s.name }))}
+        canManage={canManage}
+      />
 
       {loose.length && sites.length ? (
         <p className="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 text-xs text-gray-400">
@@ -175,6 +187,11 @@ export function SiteManager({
                   ) : null}
                 </div>
                 <p className="mt-3 text-xs text-gray-300">{summarise(here)}</p>
+                {map.customersBySite[s.id] ? (
+                  <p className="mt-1 text-xs text-gray-300">
+                    Serves {map.customersBySite[s.id]} {map.customersBySite[s.id] === 1 ? 'customer' : 'customers'}
+                  </p>
+                ) : null}
                 {linked.length ? (
                   <p className="mt-1 text-[11px] text-gray-500">
                     Links to {linked.map((id) => name.get(id) ?? 'a removed site').join(', ')}

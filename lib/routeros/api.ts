@@ -569,6 +569,8 @@ export type Neighbour = {
   /** The port on this router the device was heard on. */
   heardOn: string | null
   description: string | null
+  /** The neighbour's own port that faces this router, when it says. */
+  theirPort: string | null
 }
 
 /**
@@ -587,7 +589,7 @@ export type Neighbour = {
 export async function readNeighbours(session: RouterOsSession): Promise<Neighbour[]> {
   const rows = await session.command(
     '/ip/neighbor/print',
-    '=.proplist=identity,address,mac-address,platform,board,version,interface,system-description'
+    '=.proplist=identity,address,mac-address,platform,board,version,interface,system-description,interface-name'
   )
   const text = (v: string | undefined) => (v && v.trim() ? v.trim() : null)
   return rows.map((r) => ({
@@ -599,7 +601,38 @@ export async function readNeighbours(session: RouterOsSession): Promise<Neighbou
     version: text(r.version),
     heardOn: text(r.interface),
     description: text(r['system-description']),
+    theirPort: text(r['interface-name']),
   }))
+}
+
+/**
+ * Which port each MAC address was last seen on, from the router's bridge.
+ *
+ * THIS IS HOW A ROUTER KNOWS WHAT IS BEHIND EACH PORT. Every frame that
+ * arrives on a bridged port teaches the bridge that its sender is out that
+ * way. So everyone reached through the Retrieve backhaul is listed against
+ * the port that backhaul is plugged into. The router's own addresses are
+ * left out.
+ */
+export type BridgeHost = { mac: string; port: string }
+
+export async function readBridgeHosts(session: RouterOsSession): Promise<BridgeHost[]> {
+  const rows = await session.command('/interface/bridge/host/print', '=.proplist=mac-address,on-interface,local')
+  const out: BridgeHost[] = []
+  for (const r of rows) {
+    if (r.local === 'true') continue
+    const mac = (r['mac-address'] ?? '').trim().toUpperCase()
+    const port = (r['on-interface'] ?? '').trim()
+    if (mac && port) out.push({ mac, port })
+  }
+  return out
+}
+
+/** The router's physical and VLAN ports by name: what a link can be plugged into. */
+export async function readPorts(session: RouterOsSession): Promise<string[]> {
+  const rows = await session.command('/interface/print', '=.proplist=name,type')
+  const keep = new Set(['ether', 'vlan', 'wlan', 'eoip', 'eoip-tunnel', 'gre-tunnel', 'wifi', 'cap'])
+  return rows.filter((r) => keep.has((r.type ?? '').trim())).map((r) => (r.name ?? '').trim()).filter(Boolean)
 }
 
 /** One row of the router's ARP table: every address it has talked to on its links. */

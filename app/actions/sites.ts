@@ -6,6 +6,11 @@ import { logEvent } from '@/lib/audit'
 import {
   createSite, deleteSite, isSiteKind, placeAtSite, setLinkTarget, siteExists, updateSite, type SiteTable,
 } from '@/lib/data/sites'
+import { routerLoginFor, type PollTarget } from '@/lib/data/router-logins'
+import { routersWithLogin } from '@/lib/data/router-usage'
+import { listRouterTunnels } from '@/lib/data/tunnels'
+import { autoDiscover } from '@/lib/network/discover'
+import { autoPlace, setPortSite } from '@/lib/network/topology'
 import { can } from '@/lib/permissions'
 import { getSession } from '@/lib/session'
 
@@ -95,4 +100,60 @@ export async function linkBackhaul(deviceId: number, siteId: number | null): Pro
   revalidatePath(SITES)
   revalidatePath(DEVICES)
   return { ok: true, message: 'Saved.' }
+}
+
+/**
+ * Which site a router port leads to. Equipment behind it is placed at once,
+ * rather than at the next half-hourly pass.
+ */
+export async function setPortLeadsTo(portId: number, siteId: number | null): Promise<SiteActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to do that.' }
+  const target = siteId == null ? null : Number(siteId)
+  if (target != null && !(await siteExists(session.company.id, target))) return { ok: false, error: 'That site was not found.' }
+  if (!(await setPortSite(session.company.id, Number(portId), target))) return { ok: false, error: 'That port was not found.' }
+  const placed = await autoPlace(session.company.id)
+  revalidatePath(SITES)
+  revalidatePath(DEVICES)
+  return { ok: true, message: placed ? placed + ' placed at the site.' : 'Saved.' }
+}
+
+/** Make a new site and point a port at it, in one step from the map. */
+export async function addSiteForPort(portId: number, name: string): Promise<SiteActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to add sites.' }
+  const clean = String(name ?? '').trim().slice(0, 80)
+  if (clean.length < 2) return { ok: false, error: 'Give the site a name.' }
+  const res = await createSite(session.company.id, session.profile.id ?? null, { name: clean, kind: 'tower', notes: null })
+  if (!res.ok) return res
+  await setPortSite(session.company.id, Number(portId), res.id)
+  await autoPlace(session.company.id)
+  revalidatePath(SITES)
+  revalidatePath(DEVICES)
+  return { ok: true, message: clean + ' added.', id: res.id }
+}
+
+/** Read every router's wiring and devices now, instead of waiting for the next pass. */
+export async function refreshNetwork(): Promise<SiteActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to do that.' }
+  const companyId = session.company.id
+  const [tunnels, logins] = await Promise.all([listRouterTunnels(companyId), routersWithLogin(companyId)])
+  const routers: PollTarget[] = []
+  for (const t of tunnels) {
+    if (t.revokedAt || !logins.has(t.id)) continue
+    const r = await routerLoginFor(companyId, t.id)
+    if (r) routers.push(r)
+  }
+  if (routers.length === 0) return { ok: false, error: 'None of your routers has had its setup command yet.' }
+  const res = await autoDiscover(routers)
+  revalidatePath(SITES)
+  revalidatePath(DEVICES)
+  return {
+    ok: true,
+    message:
+      'Read ' + routers.length + (routers.length === 1 ? ' router' : ' routers') + '.' +
+      (res.added ? ' ' + res.added + ' customer radios added.' : '') +
+      (res.placed ? ' ' + res.placed + ' devices placed at sites.' : ''),
+  }
 }

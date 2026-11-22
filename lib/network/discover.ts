@@ -7,6 +7,7 @@ import type { PollTarget } from '@/lib/data/router-logins'
 import { listRouterTunnels } from '@/lib/data/tunnels'
 import { classifyDevice, type DeviceKind } from '@/lib/network/classify'
 import { makerFromMac, RADIO_MAKERS } from '@/lib/network/oui'
+import { autoPlace, learnWiring } from '@/lib/network/topology'
 import { readArp, readLeases, readNeighbours, withRouter } from '@/lib/routeros/api'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -280,11 +281,21 @@ export async function applyDeviceUpdates(companyId: number, updates: DiscoveryRe
  * the owner's call. Addresses that moved are kept current, so the
  * up-or-down checks ping the right place.
  */
-export async function autoDiscover(targets: PollTarget[]): Promise<{ added: number; linked: number; moved: number }> {
-  const out = { added: 0, linked: 0, moved: 0 }
+export async function autoDiscover(
+  targets: PollTarget[]
+): Promise<{ added: number; linked: number; moved: number; placed: number }> {
+  const out = { added: 0, linked: 0, moved: 0, placed: 0 }
   const byCompany = new Map<number, PollTarget[]>()
   for (const t of targets) byCompany.set(t.companyId, [...(byCompany.get(t.companyId) ?? []), t])
   for (const [companyId, routers] of byCompany) {
+    // The wiring first: which port leads where, and what is behind each.
+    for (const r of routers) {
+      try {
+        await learnWiring(r)
+      } catch (err) {
+        console.error('[wiring] ' + r.name + ':', err instanceof Error ? err.message : String(err))
+      }
+    }
     try {
       const report = await discoverForCompany(companyId, routers)
       await applyDeviceUpdates(companyId, report.updates)
@@ -310,6 +321,7 @@ export async function autoDiscover(targets: PollTarget[]): Promise<{ added: numb
         if (res.ok) out.added += res.added
       }
       out.linked += await linkDevicesByMac(companyId)
+      out.placed += await autoPlace(companyId)
     } catch (err) {
       console.error('[discover] company ' + companyId + ':', err instanceof Error ? err.message : String(err))
     }
