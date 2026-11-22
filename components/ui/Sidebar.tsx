@@ -95,13 +95,16 @@ export function Sidebar({
 
       <nav className="flex-1 overflow-y-auto px-3 py-3" aria-label="Main">
         {sections.map((section) => (
-          <div key={section.heading} className="mb-3">
+          // Sections are told apart by a rule and a coloured heading, so a
+          // heading never reads as one more link in the list.
+          <div key={section.heading} className="mb-2 border-t border-gray-800 pt-3 first:border-t-0 first:pt-0">
             <p
               className={
-                'px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500 ' +
+                'flex items-center gap-2 px-3 pb-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-sky-400 ' +
                 hideOnRail
               }
             >
+              <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-sky-400" />
               {section.heading}
             </p>
             <ul className="space-y-0.5">
@@ -124,7 +127,7 @@ export function Sidebar({
                         railCentre + ' ' +
                         (active
                           ? 'border-blue-500 bg-blue-500/10 font-medium text-blue-400'
-                          : 'border-transparent text-gray-400 hover:bg-gray-800 hover:text-gray-200')
+                          : 'border-transparent text-gray-200 hover:bg-gray-800 hover:text-white')
                       }
                     >
                       {(() => {

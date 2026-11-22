@@ -113,12 +113,17 @@ export function ShellMain({
   children: ReactNode
 }) {
   const { collapsed } = useShell()
+  // The network pages are white: they show photos of equipment, which read
+  // far better on white than on the dark shell. See .theme-light in
+  // app/globals.css.
+  const light = (usePathname() ?? '').startsWith('/dashboard/network')
 
   return (
     <main
       className={
         'transition-[margin] duration-200 ' +
-        (collapsed ? SIDEBAR.main.collapsed : SIDEBAR.main.expanded) + ' ' + topPadding
+        (collapsed ? SIDEBAR.main.collapsed : SIDEBAR.main.expanded) + ' ' + topPadding +
+        (light ? ' theme-light min-h-screen bg-white' : '')
       }
     >
       {/* p-4 on a phone, not p-6: 24px a side off a 360px screen is 13% of the
