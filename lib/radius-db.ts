@@ -575,6 +575,49 @@ export async function getRadiusUsage(identity: string): Promise<RadiusUsage> {
 }
 
 /**
+ * Last seen and online for many identities in one query: the same two figures
+ * getRadiusUsage gives one customer, worked out the same way, for a list such
+ * as every customer behind an OLT. Keyed by the normalised username.
+ */
+export async function batchGetRadiusSeen(
+  identities: (string | null | undefined)[]
+): Promise<Map<string, { lastSeen: Date | null; online: boolean }>> {
+  const out = new Map<string, { lastSeen: Date | null; online: boolean }>()
+  const list = [...new Set(
+    identities.filter((m): m is string => Boolean(m && m.trim())).map(normaliseUsername)
+  )]
+  if (list.length === 0) return out
+  const [rows] = await withRetry(() =>
+    radiusPool().query(
+      `SELECT username,
+              MAX(acctstarttime)                                         AS last_start,
+              MAX(CASE WHEN acctstoptime IS NULL THEN acctstarttime END) AS last_open_start,
+              MAX(GREATEST(acctstarttime,
+                           COALESCE(acctstoptime, acctstarttime)))       AS last_seen_at
+         FROM radacct
+        WHERE username IN (?)
+        GROUP BY username`,
+      [list]
+    )
+  )
+  for (const r of rows as {
+    username: string
+    last_start: Date | null
+    last_open_start: Date | null
+    last_seen_at: Date | null
+  }[]) {
+    out.set(normaliseUsername(r.username), {
+      lastSeen: r.last_seen_at ? new Date(r.last_seen_at) : null,
+      online: Boolean(
+        r.last_open_start && r.last_start &&
+        new Date(r.last_open_start).getTime() === new Date(r.last_start).getTime()
+      ),
+    })
+  }
+  return out
+}
+
+/**
  * The Framed-IP-Address of one identity's newest session that carries one.
  * Read only.
  *

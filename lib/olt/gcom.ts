@@ -78,6 +78,40 @@ async function login(session: TelnetSession, creds: OltLogin): Promise<void> {
 
 const ONU_ID = /^0\/(\d+)\/(\d+)$/
 
+/**
+ * Make a V-SOL ONU pass traffic on this OLT: `device type c40-210` and
+ * `wan 1 default vlan 1`, inside that one ONU.
+ *
+ * NEVER ON ANYTHING BUT A V-SOL, AND NEVER ON THE GROUP. On 21 Nov 2026 the
+ * wan line was pushed to every ONU slot and about 20 customers with other
+ * makes lost internet. `no wan 1` is accepted and silently does nothing, so
+ * the only way back was `no config` and the group settings typed again, ONU
+ * by ONU. So the OLT itself is asked who made this ONU, here, at the moment
+ * of the change — not the page, not a serial prefix.
+ */
+async function vsolFix(session: TelnetSession, id: string): Promise<void> {
+  const version = await run(session, 'show ont version ' + id)
+  const vendor = /^\s*Vendor-ID\s*:\s*(\S+)/im.exec(version)?.[1] ?? ''
+  if (!/^VSOL$/i.test(vendor)) {
+    throw new CliError(
+      'Not changed: this ONU is ' + (vendor ? 'made by ' + vendor : 'not reporting who made it') +
+        '. These settings are only for V-SOL ONUs and cut other makes off.'
+    )
+  }
+  await run(session, 'configure terminal')
+  try {
+    const entered = await run(session, 'ont ' + id)
+    if (refused(entered)) throw new CliError('The OLT would not open that ONU: ' + lastLine(entered))
+    for (const line of ['device type c40-210', 'wan 1 default vlan 1']) {
+      const out = await run(session, line)
+      if (refused(out)) throw new CliError('The OLT refused "' + line + '": ' + lastLine(out))
+    }
+  } finally {
+    await run(session, 'end')
+  }
+  await run(session, 'copy running-config startup-config')
+}
+
 /** "GPON007edebf" → "GPON007EDEBF": the vendor letters stay, the hex goes upper case. */
 const serial = (raw: string) => raw.toUpperCase()
 
@@ -286,6 +320,10 @@ export const gcom: OltDriver = {
     await session.open()
     try {
       await login(session, creds)
+      if (action.kind === 'vsol-fix') {
+        await vsolFix(session, id)
+        return
+      }
       await run(session, 'configure terminal')
       const entered = await run(session, 'ont ' + id)
       if (refused(entered)) throw new CliError('The OLT would not open that ONU: ' + lastLine(entered))

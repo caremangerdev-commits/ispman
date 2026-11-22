@@ -141,7 +141,7 @@ export function OltDetail({
     setListError(null)
     try {
       const res = await loadOnus(olt.id)
-      if (res.ok) setLists({ pending: res.pending, onus: res.onus, customers: res.customers })
+      if (res.ok) setLists({ pending: res.pending, onus: res.onus, customers: res.customers, seen: res.seen })
       else setListError(res.error)
     } catch {
       setListError('Could not reach ISPMan.')
@@ -303,6 +303,7 @@ export function OltDetail({
           <OnuPanel
             key={tab}
             oltId={olt.id}
+            brand={olt.brand}
             view={tab}
             lists={lists}
             loading={loading}

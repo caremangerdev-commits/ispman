@@ -166,6 +166,11 @@ export type OltOnuAction =
   | { kind: 'disable' }
   | { kind: 'enable' }
   | { kind: 'rename'; name: string; description: string }
+  /**
+   * GCOM only: the two settings a V-SOL ONU needs on a GCOM OLT before it
+   * passes traffic. Set on that one ONU, never on the group.
+   */
+  | { kind: 'vsol-fix' }
 
 export type OltAuthoriseResult = {
   sn: string

@@ -35,7 +35,36 @@ export type OnuLists = {
   onus: OltOnu[]
   /** Serial number → the customer that ONU belongs to. */
   customers?: Record<string, OnuCustomer>
+  /** Customer id → whether their router is logged in now, by RADIUS. */
+  seen?: Record<number, { online: boolean; lastSeen: string | null }>
 }
+
+/** "5 min ago", "3 h ago", "4 days ago". */
+function ago(iso: string): string {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000))
+  if (mins < 60) return mins + ' min ago'
+  const hours = Math.round(mins / 60)
+  if (hours < 48) return hours + ' h ago'
+  return Math.round(hours / 24) + ' days ago'
+}
+
+/**
+ * Is the customer actually logged in. The OLT seeing their router's address
+ * behind the ONU only says the ONU passes something; this is RADIUS saying the
+ * router got on the internet.
+ */
+function Browsing({ seen, onuOnline }: { seen?: { online: boolean; lastSeen: string | null }; onuOnline: boolean }) {
+  if (!seen) return null
+  if (seen.online) return <span className="block text-[10px] text-green-400">Browsing now</span>
+  return (
+    <span className={'block text-[10px] ' + (onuOnline ? 'text-amber-300' : 'text-gray-500')}>
+      {seen.lastSeen ? 'Not logged in · last online ' + ago(seen.lastSeen) : 'Never logged in'}
+    </span>
+  )
+}
+
+/** V-SOL ONUs, as the OLT names their maker. */
+const isVsol = (vendor: string | null | undefined) => /^VSOL$/i.test(vendor ?? '')
 
 /**
  * Pick the customer an ONU belongs to, for the ones ISPMan could not match by
@@ -198,11 +227,13 @@ function Fact({ label, value, tone }: { label: string; value: string; tone?: str
  * ONU is being moved and a bad thing to do by a slip of the mouse.
  */
 function OnuRow({
-  oltId, onu, customer, canManage, onChanged,
+  oltId, brand, onu, customer, seen, canManage, onChanged,
 }: {
   oltId: number
+  brand: string
   onu: OltOnu
   customer: OnuCustomer | null
+  seen?: { online: boolean; lastSeen: string | null }
   canManage: boolean
   onChanged: () => void
 }) {
@@ -211,7 +242,7 @@ function OnuRow({
   const [history, setHistory] = useState<OnuSignalDay[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
-  const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link' | 'disable'>('view')
+  const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link' | 'disable' | 'vsol'>('view')
   // What this screen last did, until the list is read again.
   const [disabledNow, setDisabledNow] = useState<boolean | null>(null)
   const isDisabled = disabledNow ?? detail?.disabled ?? onu.disabled ?? false
@@ -283,9 +314,25 @@ function OnuRow({
           ) : (
             <span className="text-gray-600">Not linked</span>
           )}
+          {owner && !picked ? <Browsing seen={seen} onuOnline={onu.online} /> : null}
         </td>
-        <td className={td + (isDisabled ? ' text-amber-300' : onu.online ? ' text-green-400' : ' text-red-400')}>
-          {isDisabled ? 'Disabled' : onu.online ? 'Online' : 'Offline (' + onu.phase + ')'}
+        <td
+          className={
+            td +
+            (isDisabled || (onu.online && /fail/i.test(onu.phase))
+              ? ' text-amber-300'
+              : onu.online
+                ? ' text-green-400'
+                : ' text-red-400')
+          }
+        >
+          {isDisabled
+            ? 'Disabled'
+            : onu.online
+              ? /fail/i.test(onu.phase)
+                ? 'Online, settings not applied'
+                : 'Online'
+              : 'Offline (' + onu.phase + ')'}
         </td>
         <td className={td}>
           <SignalBars label="RX" dbm={onu.rx ?? null} side="onu" />
@@ -379,6 +426,11 @@ function OnuRow({
                   <button type="button" onClick={() => setMode('rename')} disabled={!!busy} className={small}>
                     Rename
                   </button>
+                  {brand === 'gcom' && isVsol(detail?.vendor) ? (
+                    <button type="button" onClick={() => setMode('vsol')} disabled={!!busy} className={small}>
+                      Set up for V-SOL
+                    </button>
+                  ) : null}
                   {onu.sn ? (
                     <button type="button" onClick={() => setMode('link')} disabled={!!busy} className={small}>
                       {owner ? 'Change customer' : 'Link to a customer'}
@@ -392,6 +444,22 @@ function OnuRow({
                   >
                     Remove
                   </button>
+                </div>
+              ) : null}
+
+              {mode === 'vsol' ? (
+                <div className="mt-4 space-y-2 rounded-md border border-amber-900/60 bg-amber-950/30 p-3">
+                  <p className="text-xs text-amber-200">
+                    This sets the two things a V-SOL ONU needs on this OLT before it passes traffic, on
+                    this ONU only. The OLT is asked who made the ONU first, and nothing is changed unless
+                    it says V-SOL. The same settings on any other make cut the customer off.
+                  </p>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => void act({ kind: 'vsol-fix' })} disabled={!!busy} className={button}>
+                      {busy === 'vsol-fix' ? 'Setting up…' : 'Set up for V-SOL'}
+                    </button>
+                    <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
+                  </div>
                 </div>
               ) : null}
 
@@ -493,9 +561,10 @@ function OnuRow({
 }
 
 export function OnuPanel({
-  oltId, view, lists, loading, error, canManage, vlans, defaultVlan, onReload,
+  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload,
 }: {
   oltId: number
+  brand: string
   view: 'authorised' | 'offline' | 'pending'
   lists: OnuLists | null
   loading: boolean
@@ -694,8 +763,13 @@ export function OnuPanel({
                 <OnuRow
                   key={o.id}
                   oltId={oltId}
+                  brand={brand}
                   onu={o}
                   customer={(o.sn && lists.customers?.[o.sn.toUpperCase()]) || null}
+                  seen={(() => {
+                    const c = o.sn ? lists.customers?.[o.sn.toUpperCase()] : undefined
+                    return c ? lists.seen?.[c.customerId] : undefined
+                  })()}
                   canManage={canManage}
                   onChanged={onReload}
                 />
@@ -705,7 +779,8 @@ export function OnuPanel({
           <p className="pt-3 text-[11px] leading-relaxed text-gray-500">
             RX is the signal the ONU receives. TX is the ONU&apos;s own signal as it reaches the OLT.
             Both in dBm; closer to zero is stronger. A customer is filled in when the OLT sees
-            their router behind the ONU.
+            their router behind the ONU. That alone does not mean they can browse: under the name,
+            Browsing now means their router is logged in.
           </p>
         </div>
       )}

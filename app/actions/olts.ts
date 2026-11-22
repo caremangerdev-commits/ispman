@@ -15,6 +15,8 @@ import type {
   OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
 } from '@/lib/olt/types'
 import { can } from '@/lib/permissions'
+import { batchGetRadiusSeen, radiusConfigured } from '@/lib/radius-db'
+import { normaliseUsername } from '@/lib/radius/format'
 import { getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 
@@ -228,6 +230,11 @@ export type OnuListResult =
       onus: OltOnu[]
       /** Serial number → the customer that ONU belongs to. */
       customers: Record<string, OnuCustomer>
+      /**
+       * Customer id → whether their router is actually logged in now, from
+       * RADIUS. A MAC showing behind an ONU is not proof of that.
+       */
+      seen: Record<number, { online: boolean; lastSeen: string | null }>
     }
   | { ok: false; error: string }
 
@@ -239,6 +246,36 @@ export type OnuListResult =
  * authorise them. So the list is whatever the OLT says at the moment it is
  * opened.
  */
+/**
+ * Whether each customer's router is logged in, by RADIUS. Never fails the
+ * list: with RADIUS unreachable the column is simply left blank.
+ */
+async function customersSeen(
+  companyId: number,
+  ids: number[]
+): Promise<Record<number, { online: boolean; lastSeen: string | null }>> {
+  const out: Record<number, { online: boolean; lastSeen: string | null }> = {}
+  const unique = [...new Set(ids)]
+  if (unique.length === 0 || !radiusConfigured()) return out
+  try {
+    const { data } = await tenantClient()
+      .from('customers')
+      .select('id, mac_address')
+      .eq('company_id', companyId)
+      .in('id', unique)
+    const rows = (data ?? []) as { id: number; mac_address: string | null }[]
+    const withMac = rows.filter((r) => r.mac_address && r.mac_address.trim())
+    const radius = await batchGetRadiusSeen(withMac.map((r) => r.mac_address))
+    for (const r of withMac) {
+      const hit = radius.get(normaliseUsername(r.mac_address as string))
+      out[r.id] = { online: hit?.online ?? false, lastSeen: hit?.lastSeen ? hit.lastSeen.toISOString() : null }
+    }
+  } catch {
+    return out
+  }
+  return out
+}
+
 export async function loadOnus(oltId: number): Promise<OnuListResult> {
   const session = await getSession()
   if (!can(session.profile.role, 'view_network_infrastructure')) {
@@ -258,7 +295,8 @@ export async function loadOnus(oltId: number): Promise<OnuListResult> {
     }
     // The addresses were only needed for the matching above.
     const onus = lists.onus.map((o) => ({ ...o, macs: undefined }))
-    return { ok: true, pending: lists.pending, onus, customers }
+    const seen = await customersSeen(session.company.id, Object.values(customers).map((c) => c.customerId))
+    return { ok: true, pending: lists.pending, onus, customers, seen }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
@@ -393,8 +431,11 @@ export async function onuCommand(input: {
   if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
 
   const kind = input.action?.kind
-  if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename' && kind !== 'disable' && kind !== 'enable') {
+  if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename' && kind !== 'disable' && kind !== 'enable' && kind !== 'vsol-fix') {
     return { ok: false, error: 'Unknown action.' }
+  }
+  if (kind === 'vsol-fix' && r.olt.brand !== 'gcom') {
+    return { ok: false, error: 'That setting is only for V-SOL ONUs on a GCOM OLT.' }
   }
   try {
     await r.driver.onuAction(r.target, r.login, String(input.onuId), input.action)
@@ -403,11 +444,11 @@ export async function onuCommand(input: {
   }
 
   const did =
-    kind === 'reboot' ? 'rebooted' : kind === 'remove' ? 'removed' : kind === 'disable' ? 'disabled' : kind === 'enable' ? 'enabled' : 'renamed'
+    kind === 'reboot' ? 'rebooted' : kind === 'remove' ? 'removed' : kind === 'disable' ? 'disabled' : kind === 'enable' ? 'enabled' : kind === 'vsol-fix' ? 'set_up_for_vsol' : 'renamed'
   await logEvent({
     type: 'onu_' + did,
     tag: '[olt]',
-    details: 'ONU ' + input.onuId + ' ' + did + ' on ' + r.olt.name + ' | by=' + session.profile.email,
+    details: 'ONU ' + input.onuId + ' ' + did.split('_').join(' ') + ' on ' + r.olt.name + ' | by=' + session.profile.email,
   })
   revalidatePath(PATH + '/' + r.olt.id)
   return {
@@ -421,7 +462,9 @@ export async function onuCommand(input: {
             ? 'Disabled. The customer has no service until you enable it again.'
             : kind === 'enable'
               ? 'Enabled. Service comes back within a minute.'
-              : 'Saved.',
+              : kind === 'vsol-fix'
+                ? 'V-SOL settings saved on this ONU only. Reboot it if the customer is not browsing within a minute.'
+                : 'Saved.',
   }
 }
 

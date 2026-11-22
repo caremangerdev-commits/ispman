@@ -348,6 +348,7 @@ export const cdata: OltDriver = {
   },
 
   async onuAction(target, creds, id, action): Promise<void> {
+    if (action.kind === 'vsol-fix') throw new CliError('That setting is only for V-SOL ONUs on a GCOM OLT.')
     const m = ONU_ID.exec(id)
     if (!m) throw new CliError('That is not an ONU on this OLT.')
     const [, p, n] = m
