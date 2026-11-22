@@ -64,13 +64,22 @@ async function run(session: TelnetSession, command: string): Promise<string> {
 
 const refused = (text: string) => /^\s*%|Unknown command|Failure|Error:|Invalid|\^\s*$/im.test(text)
 
-async function login(session: TelnetSession, creds: OltLogin): Promise<void> {
-  await session.until(/(User ?name|Username|Login)\s*:/i, 'waiting for the login prompt')
+/**
+ * Logs in and goes to config mode. Returns the model, read off the prompt: an
+ * FD1608S-B1 prompts "FD1608S-B1>". `show version` does not name the model on
+ * this firmware (V3.2.24), so the prompt is the one place it shows.
+ */
+async function login(session: TelnetSession, creds: OltLogin): Promise<string | null> {
+  const banner = await session.until(/(User ?name|Username|Login)\s*:/i, 'waiting for the login prompt')
   session.send(creds.user)
   await session.until(/password\s*:/i, 'waiting for the password prompt')
   session.send(creds.password)
   const after = await session.until(/((User ?name|Username|Login)\s*:|invalid|incorrect|fail|[>#] ?$)/i, 'logging in')
   if (!/[>#] ?$/.test(after)) throw new CliError('The OLT refused that username and password.')
+  const model =
+    /([A-Za-z0-9][A-Za-z0-9-]{2,30})[>#] ?$/.exec(after.trim())?.[1] ??
+    /Device Model\s*:\s*(\S+)/i.exec(banner)?.[1] ??
+    null
   if (/> ?$/.test(after)) {
     session.send('enable')
     const step = await session.until(/(password\s*:|[>#] ?$)/i, 'entering enable mode')
@@ -81,6 +90,7 @@ async function login(session: TelnetSession, creds: OltLogin): Promise<void> {
     }
   }
   await run(session, 'config')
+  return model
 }
 
 const SERIAL = /^[A-Za-z0-9]{4}[0-9A-Fa-f]{8}$/
@@ -94,43 +104,47 @@ function asSerial(token: string): string | null {
   return /^[A-Za-z0-9]{4}$/.test(vendor) ? (vendor + token.slice(8)).toUpperCase() : null
 }
 
-/** How many PON ports the box has, from its model: FD1601S → 1, FD1608 → 8. */
-function ponCount(version: string): number {
-  const m = /FD16(\d{2})/i.exec(version)
+/** How many PON ports the box has, from its model: FD1601S → 1, FD1608S-B1 → 8. */
+function ponCount(model: string | null): number {
+  const m = /FD1[16](\d{2})/i.exec(model ?? '')
   const n = m ? Number(m[1]) : 0
   return n >= 1 && n <= 16 ? n : 1
 }
 
 /**
- * `show ont info <port> all`: one row per ONU. Read as: the ONU's number is
- * the last small number before its serial, and the row says "online" or
- * "offline" somewhere after it.
+ * `show ont info all` (or `<port> all`), as a real FD1608S-B1 prints it:
+ *
+ *     F/S P  ONT    SN               Control  Run     Config    Match     Last
+ *            ID                      flag     state   state     state     down-cause
+ *     0/0 1  2      RTEGC60B1514     Active   Online  success   match     LOS
+ *     0/0 1  5      DE29E6DB0DC2     Active   Offline initial   initial   --
+ *
+ * "Last down-cause" is the reason it last went down, which for an ONU that is
+ * online now is history, not its state.
  */
-function parseOnus(port: number, text: string): OltOnu[] {
+function parseOnus(text: string): OltOnu[] {
   const out: OltOnu[] = []
   if (refused(text)) return out
   for (const line of text.split('\n')) {
-    const fields = line.trim().split(/\s+/)
-    const at = fields.findIndex((f) => asSerial(f) !== null)
-    if (at < 1) continue
-    const numbers = fields.slice(0, at).filter((f) => /^\d{1,3}$/.test(f))
-    if (numbers.length === 0) continue
-    const index = Number(numbers[numbers.length - 1])
-    const rest = fields.slice(at + 1).join(' ').toLowerCase()
-    const online = /\bonline\b/.test(rest)
-    const cause = /(dying-?gasp|los[a-z]*|lofi|deactiv\w*)/i.exec(rest)?.[1]
+    const m = /^\s*0\/0\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)/.exec(line)
+    if (!m) continue
+    const [, port, index, sn, control, run, config, , cause] = m
+    const online = /^online$/i.test(run)
+    const disabled = /^deactiv/i.test(control)
     out.push({
       id: '0/0/' + port + ':' + index,
       port: '0/0/' + port,
-      index,
+      index: Number(index),
       type: null,
-      sn: asSerial(fields[at]),
-      phase: online ? 'working' : cause ?? 'offline',
+      sn: asSerial(sn) ?? sn.toUpperCase(),
+      // "failed" means the ONU is up but rejected its settings: it shows
+      // online and passes nothing, which is worth seeing in the list.
+      phase: online ? (/^failed$/i.test(config) ? 'config failed' : 'working') : cause !== '--' ? cause : 'offline',
       online,
       rx: null,
       tx: null,
       macs: [],
-      disabled: /\bdeactiv/.test(rest),
+      disabled,
     })
   }
   return out
@@ -192,26 +206,29 @@ function parseMacs(text: string): Map<string, string[]> {
   return out
 }
 
+/**
+ * Every ONU on every port in one command, then light levels for each port
+ * that has an ONU online. Asking port by port would miss ports the model
+ * name does not account for, which is how only port 1 was being read.
+ */
 async function readAll(session: TelnetSession, ports: number): Promise<{ onus: OltOnu[]; pending: OltPendingOnu[] }> {
   const macs = parseMacs(await run(session, 'show mac-address all'))
   await run(session, 'interface gpon 0/0')
   const pending = parsePending(await run(session, 'show ont autofind all'), ports)
-  const onus: OltOnu[] = []
-  for (let port = 1; port <= ports; port += 1) {
-    const here = parseOnus(port, await run(session, 'show ont info ' + port + ' all'))
-    if (here.some((o) => o.online)) {
-      const light = parseOptical(await run(session, 'show ont optical-info ' + port + ' all'))
-      for (const o of here) {
-        const reading = light.get(o.index)
-        if (reading) {
-          o.rx = reading.rx
-          o.tx = reading.oltRx
-        }
+  const onus = parseOnus(await run(session, 'show ont info all'))
+  const live = [...new Set(onus.filter((o) => o.online).map((o) => o.port))]
+  for (const port of live) {
+    const light = parseOptical(await run(session, 'show ont optical-info ' + port.split('/')[2] + ' all'))
+    for (const o of onus) {
+      if (o.port !== port) continue
+      const reading = light.get(o.index)
+      if (reading) {
+        o.rx = reading.rx
+        o.tx = reading.oltRx
       }
     }
-    for (const o of here) o.macs = macs.get(o.id) ?? []
-    onus.push(...here)
   }
+  for (const o of onus) o.macs = macs.get(o.id) ?? []
   await run(session, 'exit')
   return { onus, pending }
 }
@@ -232,10 +249,12 @@ export const cdata: OltDriver = {
     const session = new TelnetSession(target)
     await session.open()
     try {
-      await login(session, creds)
+      const model = await login(session, creds)
       const version = await run(session, 'show version')
-      const ports = ponCount(version)
-      const { onus, pending } = await readAll(session, ports)
+      const { onus, pending } = await readAll(session, ponCount(model))
+      // The model gives the port count; an ONU seen on a higher port than that
+      // wins, so a misread model never hides a port.
+      const ports = Math.max(ponCount(model), ...onus.map((o) => Number(o.port.split('/')[2]) || 0))
       const ponPorts: OltPonPort[] = []
       for (let p = 1; p <= ports; p += 1) {
         const here = onus.filter((o) => o.port === '0/0/' + p)
@@ -250,12 +269,14 @@ export const cdata: OltDriver = {
           outBps: null,
         })
       }
-      const pick = (label: RegExp) => new RegExp(label.source + '[^:\\n]*:\\s*(.+)', 'i').exec(version)?.[1]?.trim() ?? null
+      // `show version` on V3.2.24:
+      //   Software version V3.2.24
+      //   GPON OLT uptime is 0 weeks, 5 days, 9 hours, 11 minutes.
       return {
         name: null,
-        model: /\b(FD16\d{2}[A-Za-z0-9-]*)/i.exec(version)?.[1] ?? pick(/(Product|Model|Device)/) ?? 'C-Data GPON OLT',
-        version: pick(/(Software|Firmware)\s*version/) ?? /\b(V\d+\.\d+\.\d+\S*)/.exec(version)?.[1] ?? null,
-        uptime: pick(/Up\s*time/),
+        model: model ?? 'C-Data GPON OLT',
+        version: /Software version\s+(\S+)/i.exec(version)?.[1] ?? null,
+        uptime: /uptime is\s+([^\n]+?)\.?\s*$/im.exec(version)?.[1] ?? null,
         cards: [],
         uplinks: [],
         ponPorts,
@@ -271,8 +292,7 @@ export const cdata: OltDriver = {
     const session = new TelnetSession(target)
     await session.open()
     try {
-      await login(session, creds)
-      return await readAll(session, ponCount(await run(session, 'show version')))
+      return await readAll(session, ponCount(await login(session, creds)))
     } finally {
       session.close()
     }
@@ -287,7 +307,7 @@ export const cdata: OltDriver = {
     try {
       await login(session, creds)
       await run(session, 'interface gpon 0/0')
-      const list = parseOnus(Number(p), await run(session, 'show ont info ' + p + ' all')).find((o) => o.index === Number(n))
+      const list = parseOnus(await run(session, 'show ont info ' + p + ' all')).find((o) => o.index === Number(n))
       const info = await run(session, 'show ont info ' + p + ' ' + n)
       const version = await run(session, 'show ont version ' + p + ' ' + n)
       const optical = await run(session, 'show ont optical-info ' + p + ' ' + n)
@@ -311,7 +331,7 @@ export const cdata: OltDriver = {
         phase: list?.phase ?? 'unknown',
         online: list?.online ?? /online/i.test(field(info, /Run state/) ?? ''),
         distance: field(info, /distance/),
-        onlineFor: field(info, /online duration/),
+        onlineFor: list?.online ? field(info, /Online\s+time/) : null,
         onuRx: level(/Rx optical power/),
         onuTx: level(/Tx optical power/),
         oltRx: level(/OLT Rx/),
@@ -373,7 +393,7 @@ export const cdata: OltDriver = {
           results.push({ sn: item.sn, port: item.port, ok: false, error: 'Not a valid port or serial number.' })
           continue
         }
-        const taken = new Set(parseOnus(Number(p[1]), await run(session, 'show ont info ' + p[1] + ' all')).map((o) => o.index))
+        const taken = new Set(parseOnus(await run(session, 'show ont info ' + p[1] + ' all')).map((o) => o.index))
         let n = 1
         while (taken.has(n) && n < 128) n += 1
         const out = await run(

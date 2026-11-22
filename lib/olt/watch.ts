@@ -115,7 +115,18 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
     }
   }
 
-  const onus = lists.onus.filter((o): o is OltOnu & { sn: string } => Boolean(o.sn))
+  // ONE ROW PER SERIAL NUMBER. An ONU moved to another port without being
+  // removed from the first stays registered on both — a real C-Data had two
+  // like that — and saving both under one serial fails the whole reading. The
+  // copy that is online is the real one; failing that, the first.
+  const bySerial = new Map<string, OltOnu & { sn: string }>()
+  for (const o of lists.onus) {
+    if (!o.sn) continue
+    const key = o.sn.toUpperCase()
+    const had = bySerial.get(key)
+    if (!had || (!had.online && o.online)) bySerial.set(key, o as OltOnu & { sn: string })
+  }
+  const onus = [...bySerial.values()]
   result.onus = onus.length
   result.online = onus.filter((o) => o.online).length
 
