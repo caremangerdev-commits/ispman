@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
+import { oltFeatures } from '@/lib/olt/features'
 import { checkOlt, loadOnus, setOltAutoAuthorise, type OltActionResult } from '@/app/actions/olts'
 import { DeviceIcon } from '@/components/network/DeviceIcon'
 import { OnuPanel, type OnuLists } from '@/components/network/OnuPanel'
@@ -158,15 +159,20 @@ export function OltDetail({
   const uplinks = info?.uplinks ?? []
   const vlans = info?.vlans ?? []
 
-  const tabs: { id: Tab; label: string; count?: number }[] = [
+  // Only what this make of OLT can show. A ZTE that has simply not been read
+  // yet still gets its tabs; a GCOM never gets a Cards tab.
+  const has = oltFeatures(olt.brand)
+  const tabs = ([
     { id: 'details', label: 'OLT details' },
     { id: 'authorised', label: 'Authorized' },
-    { id: 'pending', label: 'Unauthorized' },
-    { id: 'cards', label: 'Cards', count: cards.length },
+    has.authorise ? { id: 'pending', label: 'Unauthorized' } : null,
+    has.cards ? { id: 'cards', label: 'Cards', count: cards.length } : null,
     { id: 'pon', label: 'PON ports', count: pon.length },
-    { id: 'uplinks', label: 'Uplinks', count: uplinks.length },
-    { id: 'vlans', label: 'VLANs', count: vlans.length },
-  ]
+    has.uplinks ? { id: 'uplinks', label: 'Uplinks', count: uplinks.length } : null,
+    has.vlans ? { id: 'vlans', label: 'VLANs', count: vlans.length } : null,
+  ] as ({ id: Tab; label: string; count?: number } | null)[]).filter(
+    (t): t is { id: Tab; label: string; count?: number } => t !== null
+  )
 
   const dot = olt.ok === true ? 'bg-green-400' : olt.ok === false ? 'bg-red-500' : 'bg-gray-500'
   const registered = pon.reduce((n, p) => n + (p.registered ?? 0), 0)
@@ -201,7 +207,7 @@ export function OltDetail({
         The three numbers someone opens an OLT to see. Each opens its own
         list, read from the OLT at that moment.
       */}
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className={'grid gap-3 ' + (has.authorise ? 'sm:grid-cols-3' : 'sm:grid-cols-2')}>
         <Count
           label="Authorized"
           value={lists ? lists.onus.length : info?.onus?.authorised}
@@ -210,6 +216,7 @@ export function OltDetail({
           active={tab === 'authorised'}
           onOpen={() => open('authorised')}
         />
+        {has.authorise ? (
         <Count
           label="Unauthorized"
           value={lists ? lists.pending.length : info?.onus?.unauthorised}
@@ -218,6 +225,7 @@ export function OltDetail({
           active={tab === 'pending'}
           onOpen={() => open('pending')}
         />
+        ) : null}
         <Count
           label="Offline"
           value={lists ? lists.onus.filter((o) => !o.online).length : info?.onus?.offline}
@@ -262,6 +270,7 @@ export function OltDetail({
             <Field label="PON ports" value={pon.length ? String(pon.length) : '—'} />
             <Field label="ONUs registered" value={pon.length ? String(registered) : '—'} />
             <Field label="Login used" value={olt.cliUser} />
+            {has.authorise ? (
             <div className="flex items-start justify-between gap-4 border-t border-gray-800 py-3">
               <div className="min-w-0">
                 <dt className="text-xs font-medium text-gray-200">Authorize new ONUs automatically</dt>
@@ -296,6 +305,9 @@ export function OltDetail({
                 <span className="text-xs text-gray-400">{auto ? 'On' : 'Off'}</span>
               )}
             </div>
+            ) : (
+              <Field label="New ONUs" value="Added by the OLT itself when plugged in" />
+            )}
           </dl>
         ) : null}
 

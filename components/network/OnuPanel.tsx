@@ -63,6 +63,34 @@ function Browsing({ seen, onuOnline }: { seen?: { online: boolean; lastSeen: str
   )
 }
 
+/** How a PON port is shown: "1/3/1" rather than "gpon-olt_1/3/1". */
+const portLabel = (p: string) => p.replace(/^gpon-olt_/, '')
+
+/** Show one PON port's ONUs. Hidden when they are all on one port. */
+function PortFilter({ ports, value, onChange }: { ports: string[]; value: string; onChange: (p: string) => void }) {
+  const list = [...new Set(ports.filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true })
+  )
+  if (list.length < 2 && !value) return null
+  return (
+    <label className="flex items-center gap-2 text-xs text-gray-400">
+      PON port
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
+      >
+        <option value="">All</option>
+        {list.map((p) => (
+          <option key={p} value={p}>
+            {portLabel(p)} ({ports.filter((x) => x === p).length})
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 /** V-SOL ONUs, as the OLT names their maker. */
 const isVsol = (vendor: string | null | undefined) => /^VSOL$/i.test(vendor ?? '')
 
@@ -577,6 +605,8 @@ export function OnuPanel({
 }) {
   const [vlan, setVlan] = useState<number | null>(defaultVlan)
   const [busy, setBusy] = useState<string | null>(null)
+  // One PON port at a time, or all of them.
+  const [port, setPort] = useState<string>('')
   const [progress, setProgress] = useState<string | null>(null)
   const [outcomes, setOutcomes] = useState<OltAuthoriseResult[]>([])
   const [problem, setProblem] = useState<string | null>(null)
@@ -656,6 +686,7 @@ export function OnuPanel({
             )}
           </label>
           <div className="flex items-center gap-2">
+            <PortFilter ports={lists.pending.map((p) => p.port)} value={port} onChange={setPort} />
             <button type="button" onClick={onReload} disabled={loading || !!busy} className={button + ' bg-gray-700 hover:bg-gray-600'}>
               {loading ? 'Reading…' : 'Look again'}
             </button>
@@ -696,7 +727,7 @@ export function OnuPanel({
                 </tr>
               </thead>
               <tbody>
-                {lists.pending.map((p) => (
+                {(port ? lists.pending.filter((p) => p.port === port) : lists.pending).map((p) => (
                   <tr key={p.port + p.sn} className="border-t border-gray-800">
                     <td className={td + ' font-mono'}>{p.port}</td>
                     <td className={td + ' font-mono'}>{p.sn}</td>
@@ -727,15 +758,19 @@ export function OnuPanel({
     )
   }
 
-  const shown = view === 'offline' ? lists.onus.filter((o) => !o.online) : lists.onus
+  const onPort = port ? lists.onus.filter((o) => o.port === port) : lists.onus
+  const shown = view === 'offline' ? onPort.filter((o) => !o.online) : onPort
   return (
     <div className="py-2">
-      <div className="flex items-center justify-between pb-3">
-        <p className="text-xs text-gray-500">
-          {view === 'offline'
-            ? shown.length + ' of ' + lists.onus.length + ' authorized ONUs are not in service'
-            : lists.onus.filter((o) => o.online).length + ' of ' + lists.onus.length + ' online'}
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <PortFilter ports={lists.onus.map((o) => o.port)} value={port} onChange={setPort} />
+          <p className="text-xs text-gray-500">
+            {view === 'offline'
+              ? shown.length + ' of ' + onPort.length + ' authorized ONUs are not in service'
+              : onPort.filter((o) => o.online).length + ' of ' + onPort.length + ' online'}
+          </p>
+        </div>
         <button type="button" onClick={onReload} disabled={loading} className={button + ' bg-gray-700 hover:bg-gray-600'}>
           {loading ? 'Reading…' : 'Look again'}
         </button>
