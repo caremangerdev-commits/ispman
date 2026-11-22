@@ -69,7 +69,7 @@ function Wire({
     onChanged()
   }
   return (
-    <div className="group relative flex w-16 shrink-0 items-center self-center sm:w-20">
+    <div className="group relative mt-7 flex w-16 shrink-0 items-center self-start sm:w-20">
       <button
         type="button"
         onClick={() => void cycle()}
@@ -120,7 +120,7 @@ function Node({
         onClick={() => setOpen(!open)}
         aria-expanded={open}
         className={
-          'flex w-44 items-start gap-2.5 rounded-lg border bg-gray-900 p-2.5 text-left shadow-sm transition hover:border-blue-500 ' +
+          'flex h-[4.5rem] w-48 items-center gap-2.5 rounded-lg border bg-gray-900 px-2.5 text-left shadow-sm transition hover:border-blue-500 ' +
           (down ? 'border-red-400' : 'border-gray-700')
         }
       >
@@ -131,15 +131,13 @@ function Node({
             {row ? kindLabel(row.kind).replace(' / sector', '') : ''}
             {row?.ip ? ' · ' + row.ip : ''}
           </span>
+          {node.port ? <span className="block truncate font-mono text-[9px] text-gray-500">its port {node.port}</span> : null}
           <span className={'mt-0.5 block truncate text-[10px] ' + (site ? 'text-blue-400' : 'text-gray-500')}>
             {site ? site.name : 'No site'}
             {down ? <span className="text-red-400"> · not answering</span> : null}
           </span>
         </span>
       </button>
-      {node.port ? (
-        <span className="absolute -top-2 left-2 rounded bg-gray-950 px-1 font-mono text-[9px] text-gray-500">{node.port}</span>
-      ) : null}
 
       {open ? (
         <Modal title={row?.name ?? 'Device'} onClose={() => setOpen(false)}>
@@ -278,7 +276,7 @@ function Lane({
       <div className="overflow-x-auto pb-1">
         <div className="flex min-w-max items-start">
           {/* The router's own socket. */}
-          <span className="mt-4 h-4 w-4 shrink-0 rounded-sm border-2 border-gray-500 bg-gray-950" aria-hidden />
+          <span className="mt-[1.94rem] h-2.5 w-2.5 shrink-0 rounded-full bg-gray-500" aria-hidden title="The router's port" />
           {first ? (
             <div className="flex flex-col gap-3">
               {[first, ...more].map((n) => (
@@ -289,13 +287,13 @@ function Lane({
               ))}
             </div>
           ) : (
-            <div className="flex items-center">
-              <span className="mt-4 block w-10 border-t-2 border-dashed border-gray-600" aria-hidden />
+            <div className="flex items-start">
+              <span className="mt-[2.19rem] block w-10 self-start border-t-2 border-dashed border-gray-600" aria-hidden />
               {canManage ? (
                 <button
                   type="button"
                   onClick={() => plug({ at: 'port', tunnelId: port.tunnelId, port: port.port })}
-                  className="ml-2 mt-1 rounded-lg border border-dashed border-gray-600 px-3 py-2 text-xs text-gray-300 hover:border-blue-500 hover:text-blue-400"
+                  className="ml-2 mt-[1.1rem] rounded-lg border border-dashed border-gray-600 px-3 py-2 text-xs text-gray-300 hover:border-blue-500 hover:text-blue-400"
                 >
                   {port.neighbour ? 'What connects to ' + port.neighbour.name + '?' : 'What is plugged in here?'}
                 </button>
