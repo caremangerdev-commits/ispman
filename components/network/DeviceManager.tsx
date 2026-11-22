@@ -319,8 +319,9 @@ function Discover({ sites }: { sites: SiteOption[] }) {
       <p className="text-xs leading-relaxed text-gray-400">
         ISPMan reads what each connected router already knows: the devices it has talked to and
         the addresses it handed out. Radios, switches and routers are recognised by their maker.
-        Customers&apos; radios are matched to the customer by MAC address, and are also added
-        automatically every half hour. Nothing is logged in to, so it is safe to run at any time.
+        Your radios, switches and routers, and customers&apos; radios matched by MAC address, are
+        added automatically every half hour; this shows what is new right now. A device you
+        remove stays removed. Nothing is logged in to, so it is safe to run at any time.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button type="button" onClick={() => void scan()} disabled={busy} className={primary}>

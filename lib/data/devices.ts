@@ -133,6 +133,19 @@ export async function updateDeviceKind(companyId: number, id: number, kind: Devi
 }
 
 export async function deleteDevice(companyId: number, id: number): Promise<boolean> {
+  // Remembered by MAC, so the automatic pass does not add it straight back.
+  const { data: row } = await tenantClient()
+    .from('network_devices')
+    .select('mac')
+    .eq('company_id', companyId)
+    .eq('id', id)
+    .maybeSingle()
+  const mac = (row as { mac: string | null } | null)?.mac
+  if (mac) {
+    await tenantClient()
+      .from('network_device_dismissed')
+      .upsert({ company_id: companyId, mac: mac.toUpperCase() }, { onConflict: 'company_id,mac', ignoreDuplicates: true })
+  }
   const { data, error } = await tenantClient()
     .from('network_devices')
     .delete()

@@ -300,7 +300,16 @@ export async function autoDiscover(
       const report = await discoverForCompany(companyId, routers)
       await applyDeviceUpdates(companyId, report.updates)
       out.moved += report.updates.length
-      const radios = report.found.filter((f) => f.group === 'customer')
+      // Customers' radios, and the network's own radios, switches and
+      // routers: everything except radios that look like a customer's but
+      // match nobody, which a person should look at first. Anything a person
+      // removed stays removed.
+      const { data: gone } = await tenantClient()
+        .from('network_device_dismissed')
+        .select('mac')
+        .eq('company_id', companyId)
+      const dismissed = new Set(((gone ?? []) as { mac: string }[]).map((g) => g.mac.toUpperCase()))
+      const radios = report.found.filter((f) => f.group !== 'unmatched' && !dismissed.has(f.mac.toUpperCase()))
       if (radios.length) {
         const res = await addDevices(
           companyId,
