@@ -65,7 +65,7 @@ export default async function DevicesPage() {
       key: 'olt-' + o.id,
       kind: 'olt',
       name: o.name,
-      brand: o.brand === 'zte' ? 'ZTE' : o.brand === 'huawei' ? 'Huawei' : o.brand === 'vsol' ? 'V-SOL' : o.brand,
+      brand: o.brand === 'zte' ? 'ZTE' : o.brand === 'huawei' ? 'Huawei' : o.brand === 'vsol' ? 'V-SOL' : o.brand === 'cdata' ? 'C-Data' : o.brand === 'gcom' ? 'GCOM' : o.brand,
       model: [o.info?.model, o.info?.version].filter(Boolean).join(' ') || null,
       ip: o.mgmtIp,
       mac: null,
