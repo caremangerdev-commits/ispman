@@ -602,6 +602,39 @@ export async function readNeighbours(session: RouterOsSession): Promise<Neighbou
   }))
 }
 
+/** One row of the router's ARP table: every address it has talked to on its links. */
+export type ArpEntry = { address: string; mac: string; interface: string | null }
+
+export async function readArp(session: RouterOsSession): Promise<ArpEntry[]> {
+  const rows = await session.command('/ip/arp/print', '=.proplist=address,mac-address,interface,complete')
+  const out: ArpEntry[] = []
+  for (const r of rows) {
+    const mac = (r['mac-address'] ?? '').trim().toUpperCase()
+    const address = (r.address ?? '').trim()
+    if (!mac || !address) continue
+    out.push({ address, mac, interface: (r.interface ?? '').trim() || null })
+  }
+  return out
+}
+
+/** One DHCP lease the router handed out, with the name the device gave. */
+export type NamedLease = { address: string; mac: string; hostName: string | null }
+
+export async function readLeases(session: RouterOsSession): Promise<NamedLease[]> {
+  const rows = await session.command(
+    '/ip/dhcp-server/lease/print',
+    '=.proplist=address,active-address,mac-address,active-mac-address,host-name'
+  )
+  const out: NamedLease[] = []
+  for (const r of rows) {
+    const mac = (r['active-mac-address'] || r['mac-address'] || '').trim().toUpperCase()
+    const address = (r['active-address'] || r.address || '').trim()
+    if (!mac || !address) continue
+    out.push({ address, mac, hostName: (r['host-name'] ?? '').trim() || null })
+  }
+  return out
+}
+
 /**
  * Ask the router to ping an address: true if anything came back.
  *

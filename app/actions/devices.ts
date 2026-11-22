@@ -8,12 +8,12 @@ import {
 } from '@/lib/data/customer-devices'
 import { addDevices, deleteDevice, listDevices, updateDeviceKind, type NewDevice } from '@/lib/data/devices'
 import { listOlts } from '@/lib/data/olts'
-import { routerLoginFor } from '@/lib/data/router-logins'
+import { routerLoginFor, type PollTarget } from '@/lib/data/router-logins'
 import { routersWithLogin } from '@/lib/data/router-usage'
 import { listRouterTunnels } from '@/lib/data/tunnels'
-import { classifyDevice, isDeviceKind, type DeviceKind } from '@/lib/network/classify'
+import { isDeviceKind } from '@/lib/network/classify'
+import { applyDeviceUpdates, discoverForCompany, type FoundDevice } from '@/lib/network/discover'
 import { can } from '@/lib/permissions'
-import { readNeighbours, withRouter } from '@/lib/routeros/api'
 import { getSession } from '@/lib/session'
 
 /**
@@ -88,24 +88,13 @@ export async function addDevice(_prev: DeviceActionResult | null, fd: FormData):
   return { ok: true, message: name + ' added.' }
 }
 
-export type FoundDevice = {
-  name: string
-  kind: DeviceKind
-  brand: string | null
-  model: string | null
-  ip: string | null
-  mac: string
-  version: string | null
-  routerId: number
-  routerName: string
-  heardOn: string | null
-}
+export type { FoundDevice } from '@/lib/network/discover'
 
 export type DiscoverResult =
   | {
       ok: true
       found: FoundDevice[]
-      /** How many announced devices are already in the inventory. */
+      /** How many devices heard are already in the inventory. */
       known: number
       routersAsked: number
       /** Routers that could not be read, with why. */
@@ -116,88 +105,41 @@ export type DiscoverResult =
   | { ok: false; error: string }
 
 /**
- * Ask every router what it can hear, and return what is not already listed.
+ * Ask every router what it knows about, and return what is not already
+ * listed. See lib/network/discover.ts for how each thing is sorted.
  *
- * NOTHING IS SAVED HERE. The owner sees the list and chooses; a network has
- * plenty on it that is not theirs to track — a neighbour's router on a shared
- * link, a printer — and adding it all unasked would bury the inventory.
+ * ONLY ADDRESSES ARE SAVED HERE: a listed device that moved, or one added by
+ * IP whose MAC is now known. New devices are shown, and the owner chooses.
  */
 export async function discoverDevices(): Promise<DiscoverResult> {
   const session = await manager()
   if (!session) return { ok: false, error: 'You do not have permission to do that.' }
   const companyId = session.company.id
 
-  const [tunnels, logins, devices, olts] = await Promise.all([
+  const [tunnels, logins, devices] = await Promise.all([
     listRouterTunnels(companyId),
     routersWithLogin(companyId),
     listDevices(companyId),
-    listOlts(companyId),
   ])
   if (devices === null) return { ok: false, error: 'Devices are not set up on this system yet (migration 0056).' }
 
   const live = tunnels.filter((t) => !t.revokedAt)
-  // A connected router is heard by its neighbours like anything else. It has
-  // no MAC on record to match on, so it is recognised by announcing the same
-  // name it has in ISPMan — otherwise it would be offered as a new device.
-  const routerNames = new Set(live.map((t) => t.name.trim().toLowerCase()))
-  const knownMacs = new Set(devices.map((d) => d.mac).filter(Boolean) as string[])
-  const oltIps = new Set((olts ?? []).map((o) => o.mgmtIp))
-
-  const found = new Map<string, FoundDevice>()
-  const failed: { router: string; error: string }[] = []
-  let known = 0
-  let asked = 0
-
-  // One router at a time: the same reasoning as the usage poller. These share
-  // one tunnel with RADIUS, which has a one-second timeout.
+  const routers: PollTarget[] = []
   for (const t of live) {
     if (!logins.has(t.id)) continue
-    const router = await routerLoginFor(companyId, t.id)
-    if (!router) continue
-    asked += 1
-    try {
-      const heard = await withRouter(
-        { host: router.tunnelIp, port: router.login.port, user: router.login.user, password: router.login.password },
-        (s) => readNeighbours(s)
-      )
-      for (const n of heard) {
-        if (!n.mac) continue
-        if (
-          knownMacs.has(n.mac) ||
-          (n.address && oltIps.has(n.address)) ||
-          (n.identity && routerNames.has(n.identity.trim().toLowerCase()))
-        ) {
-          known += 1
-          continue
-        }
-        if (found.has(n.mac)) continue
-        const guess = classifyDevice({ platform: n.platform, board: n.board, description: n.description })
-        found.set(n.mac, {
-          name: n.identity ?? guess.model ?? n.mac,
-          kind: guess.kind,
-          brand: guess.brand,
-          model: guess.model,
-          ip: n.address && ipv4(n.address) ? n.address : null,
-          mac: n.mac,
-          version: n.version,
-          routerId: t.id,
-          routerName: t.name,
-          // "sfp-sfpplus2,bridge": the port, then the bridge it belongs to.
-          // The port is the useful part.
-          heardOn: n.heardOn ? n.heardOn.split(',')[0].trim() : null,
-        })
-      }
-    } catch (err) {
-      failed.push({ router: t.name, error: err instanceof Error ? err.message : String(err) })
-    }
+    const r = await routerLoginFor(companyId, t.id)
+    if (r) routers.push(r)
   }
+  const report = await discoverForCompany(companyId, routers)
+  await applyDeviceUpdates(companyId, report.updates)
+  if (report.updates.length) revalidatePath(PATH)
 
   return {
     ok: true,
-    found: [...found.values()].sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name)),
-    known,
-    routersAsked: asked,
-    failed,
+    found: report.found,
+    known: report.known,
+    routersAsked: report.routersAsked,
+    failed: report.failed,
     notReady: live.filter((t) => !logins.has(t.id)).map((t) => t.name),
   }
 }

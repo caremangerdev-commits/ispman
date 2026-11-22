@@ -174,6 +174,102 @@ function Fields() {
 
 /* -------------------------------- Discover -------------------------------- */
 
+const GROUPS: { id: FoundDevice['group']; title: string; note: string }[] = [
+  {
+    id: 'network',
+    title: 'Your network',
+    note: 'Radios, switches and routers that belong to no customer. Check the type of each before adding.',
+  },
+  {
+    id: 'customer',
+    title: "Wireless customers' radios",
+    note: "Each one carries the MAC address of the customer shown, so it is added linked to them.",
+  },
+  {
+    id: 'unmatched',
+    title: 'Radios not matched to a customer',
+    note:
+      'These got their address like a customer radio, but no customer has this MAC address. ' +
+      "The name is what the radio calls itself. Add them, then link each from the customer's page.",
+  },
+]
+
+function FoundTable({
+  items, picked, kinds, onPick, onKind,
+}: {
+  items: FoundDevice[]
+  picked: Record<string, boolean>
+  kinds: Record<string, string>
+  onPick: (mac: string, value: boolean) => void
+  onKind: (mac: string, kind: string) => void
+}) {
+  return (
+    <div className="overflow-x-auto rounded-lg border border-gray-800">
+      <table className="w-full">
+        <thead>
+          <tr>
+            <th className={th}></th>
+            <th className={th}>Device</th>
+            <th className={th}>Type</th>
+            <th className={th}>IP</th>
+            <th className={th}>MAC</th>
+            <th className={th}>Seen by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((f) => (
+            <tr key={f.mac} className="border-t border-gray-800">
+              <td className={td}>
+                <input
+                  type="checkbox"
+                  aria-label={'Select ' + f.name}
+                  checked={!!picked[f.mac]}
+                  onChange={(e) => onPick(f.mac, e.target.checked)}
+                />
+              </td>
+              <td className={td}>
+                <span className="flex items-center gap-2">
+                  <DeviceIcon kind={kinds[f.mac] ?? f.kind} className="h-7 w-7 shrink-0 text-gray-400" />
+                  <span>
+                    <span className="block font-medium text-white">{f.name}</span>
+                    <span className="block text-[11px] text-gray-500">
+                      {f.customer ? (
+                        <Link href={'/dashboard/customers/' + f.customer.id} className="text-blue-400 hover:underline">
+                          {f.customer.name}
+                        </Link>
+                      ) : (
+                        [f.brand, f.model, f.version].filter(Boolean).join(' · ') || 'Maker not known'
+                      )}
+                    </span>
+                  </span>
+                </span>
+              </td>
+              <td className={td}>
+                <select
+                  aria-label={'Type of ' + f.name}
+                  value={kinds[f.mac] ?? f.kind}
+                  onChange={(e) => onKind(f.mac, e.target.value)}
+                  className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
+                >
+                  {DEVICE_KINDS.filter((k) => k.kind !== 'olt').map((k) => (
+                    <option key={k.kind} value={k.kind}>{k.label}</option>
+                  ))}
+                </select>
+              </td>
+              <td className={td + ' font-mono'}>{f.ip ?? '—'}</td>
+              <td className={td + ' font-mono'}>{f.mac}</td>
+              <td className={td}>
+                {f.routerName}
+                {f.heardOn ? <span className="text-gray-500"> · {f.heardOn}</span> : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function Discover() {
   const [result, setResult] = useState<DiscoverResult | null>(null)
   const [busy, setBusy] = useState(false)
@@ -186,7 +282,11 @@ function Discover() {
     setSaved(null)
     const res = await discoverDevices()
     setResult(res)
-    setPicked({})
+    // The network's own gear and radios already tied to a customer are what
+    // people add; radios no customer matched are left for a look first.
+    setPicked(
+      res.ok ? Object.fromEntries(res.found.filter((f) => f.group !== 'unmatched').map((f) => [f.mac, true])) : {}
+    )
     setKinds({})
     setBusy(false)
   }
@@ -205,9 +305,10 @@ function Discover() {
   return (
     <div>
       <p className="text-xs leading-relaxed text-gray-400">
-        ISPMan asks each of your connected routers which devices it can hear on its links —
-        radios, switches, other routers — and lists the ones not already here. Nothing is scanned
-        or logged in to, so it is safe to run at any time.
+        ISPMan reads what each connected router already knows: the devices it has talked to and
+        the addresses it handed out. Radios, switches and routers are recognised by their maker.
+        Customers&apos; radios are matched to the customer by MAC address, and are also added
+        automatically every half hour. Nothing is logged in to, so it is safe to run at any time.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <button type="button" onClick={() => void scan()} disabled={busy} className={primary}>
@@ -215,10 +316,7 @@ function Discover() {
         </button>
         {found.length > 0 ? (
           <>
-            <button type="button" onClick={() => void add(found)} disabled={busy} className={small}>
-              Add all {found.length}
-            </button>
-            <button type="button" onClick={() => void add(chosen)} disabled={busy || chosen.length === 0} className={small}>
+            <button type="button" onClick={() => void add(chosen)} disabled={busy || chosen.length === 0} className={primary}>
               Add selected ({chosen.length})
             </button>
           </>
@@ -249,62 +347,40 @@ function Discover() {
           ))}
 
           {found.length > 0 ? (
-            <div className="overflow-x-auto rounded-lg border border-gray-800">
-              <table className="w-full">
-                <thead>
-                  <tr>
-                    <th className={th}></th>
-                    <th className={th}>Device</th>
-                    <th className={th}>Type</th>
-                    <th className={th}>IP</th>
-                    <th className={th}>MAC</th>
-                    <th className={th}>Heard by</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {found.map((f) => (
-                    <tr key={f.mac} className="border-t border-gray-800">
-                      <td className={td}>
-                        <input
-                          type="checkbox"
-                          aria-label={'Select ' + f.name}
-                          checked={!!picked[f.mac]}
-                          onChange={(e) => setPicked((p) => ({ ...p, [f.mac]: e.target.checked }))}
-                        />
-                      </td>
-                      <td className={td}>
-                        <span className="flex items-center gap-2">
-                          <DeviceIcon kind={kinds[f.mac] ?? f.kind} className="h-7 w-7 shrink-0 text-gray-400" />
-                          <span>
-                            <span className="block font-medium text-white">{f.name}</span>
-                            <span className="block text-[11px] text-gray-500">
-                              {[f.brand, f.model, f.version].filter(Boolean).join(' · ') || 'Did not say what it is'}
-                            </span>
-                          </span>
-                        </span>
-                      </td>
-                      <td className={td}>
-                        <select
-                          aria-label={'Type of ' + f.name}
-                          value={kinds[f.mac] ?? f.kind}
-                          onChange={(e) => setKinds((k) => ({ ...k, [f.mac]: e.target.value }))}
-                          className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
-                        >
-                          {DEVICE_KINDS.filter((k) => k.kind !== 'olt').map((k) => (
-                            <option key={k.kind} value={k.kind}>{k.label}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className={td + ' font-mono'}>{f.ip ?? '—'}</td>
-                      <td className={td + ' font-mono'}>{f.mac}</td>
-                      <td className={td}>
-                        {f.routerName}
-                        {f.heardOn ? <span className="text-gray-500"> · {f.heardOn}</span> : null}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-5">
+              {GROUPS.map((g) => {
+                const items = found.filter((f) => f.group === g.id)
+                if (items.length === 0) return null
+                const all = items.every((f) => picked[f.mac])
+                return (
+                  <div key={g.id}>
+                    <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+                      <div>
+                        <h3 className="text-xs font-semibold text-white">
+                          {g.title} <span className="font-normal text-gray-500">{items.length}</span>
+                        </h3>
+                        <p className="text-[11px] text-gray-500">{g.note}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPicked((p) => ({ ...p, ...Object.fromEntries(items.map((f) => [f.mac, !all])) }))
+                        }
+                        className={small}
+                      >
+                        {all ? 'Select none' : 'Select all'}
+                      </button>
+                    </div>
+                    <FoundTable
+                      items={items}
+                      picked={picked}
+                      kinds={kinds}
+                      onPick={(m, v) => setPicked((p) => ({ ...p, [m]: v }))}
+                      onKind={(m, k) => setKinds((x) => ({ ...x, [m]: k }))}
+                    />
+                  </div>
+                )
+              })}
             </div>
           ) : (
             <p className="text-sm text-gray-500">Nothing new was found.</p>
@@ -413,6 +489,10 @@ function DeviceRow({ row, canManage }: { row: InventoryRow; canManage: boolean }
   )
 }
 
+/** Equipment installed at a customer's home rather than in the network. */
+const CUSTOMER_KINDS = new Set(['onu', 'cpe'])
+const CHIP_LABEL: Record<string, string> = { onu: 'Fiber (ONU)', cpe: 'Wireless (radio)' }
+
 export function DeviceManager({
   rows, canManage, ready,
 }: {
@@ -421,23 +501,58 @@ export function DeviceManager({
   /** False when the devices table is not there yet: routers and OLTs still list. */
   ready: boolean
 }) {
+  const [side, setSide] = useState<'network' | 'customers'>('network')
   const [filter, setFilter] = useState('all')
   const [panel, setPanel] = useState<'none' | 'discover' | 'add'>('none')
 
+  // Two lists, because they answer two questions: what the network is built
+  // from, and what is installed at customers' homes. Ninety ONUs in the first
+  // would bury the ten devices that keep everyone online.
+  const network = rows.filter((r) => !CUSTOMER_KINDS.has(r.kind))
+  const customers = rows.filter((r) => CUSTOMER_KINDS.has(r.kind))
+  const list = side === 'network' ? network : customers
   const counts = new Map<string, number>()
-  for (const r of rows) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1)
-  const shown = filter === 'all' ? rows : rows.filter((r) => r.kind === filter)
+  for (const r of list) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1)
+  const shown = filter === 'all' ? list : list.filter((r) => r.kind === filter)
+  const chips = [{ kind: 'all', label: 'All' }, ...DEVICE_KINDS.filter((k) => counts.has(k.kind))]
 
   return (
     <div className="max-w-6xl space-y-5">
+      <div className="flex gap-1 border-b border-gray-800" role="tablist" aria-label="Which devices">
+        {(
+          [
+            { id: 'network', label: 'Your network', count: network.length },
+            { id: 'customers', label: 'At customers', count: customers.length },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={side === t.id}
+            onClick={() => {
+              setSide(t.id)
+              setFilter('all')
+            }}
+            className={
+              '-mb-px border-b-2 px-3 py-2 text-sm ' +
+              (side === t.id ? 'border-blue-500 font-semibold text-white' : 'border-transparent text-gray-400 hover:text-gray-200')
+            }
+          >
+            {t.label}
+            <span className="ml-1.5 text-xs text-gray-500">{t.count}</span>
+          </button>
+        ))}
+      </div>
       <p className="text-sm text-gray-500">
-        Everything on your network in one list: routers, OLTs, access points, customer radios,
-        backhaul links and switches.
+        {side === 'network'
+          ? 'Routers, OLTs, access points, backhaul links and switches: what your network is built from.'
+          : 'ONUs for fiber customers and radios for wireless customers, each with the customer it serves.'}
       </p>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filter by type">
-          {[{ kind: 'all', label: 'All' }, ...DEVICE_KINDS.filter((k) => counts.has(k.kind))].map((k) => (
+          {chips.map((k) => (
             <button
               key={k.kind}
               type="button"
@@ -449,7 +564,7 @@ export function DeviceManager({
                 (filter === k.kind ? 'bg-blue-600 font-semibold text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700')
               }
             >
-              {k.label} {k.kind === 'all' ? rows.length : counts.get(k.kind)}
+              {CHIP_LABEL[k.kind] ?? k.label} {k.kind === 'all' ? list.length : counts.get(k.kind)}
             </button>
           ))}
         </div>

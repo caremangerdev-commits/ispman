@@ -3,6 +3,8 @@ import { timingSafeEqual } from 'node:crypto'
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { getSchemaCapabilities } from '@/lib/schema'
+import { pollTargetsAllCompanies } from '@/lib/data/router-logins'
+import { autoDiscover } from '@/lib/network/discover'
 import { watchDevices } from '@/lib/network/watch'
 import { watchOlts } from '@/lib/olt/watch'
 import { pollUsage } from '@/lib/usage/poll'
@@ -90,7 +92,18 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       console.error('[device-watch] pass failed:', err instanceof Error ? err.message : String(err))
     }
-    return NextResponse.json({ ok: true, ...summary, olts, devices })
+    // Customer radios found and tied to their customers, every half hour:
+    // reading three tables per router is cheap, but there is no need to do it
+    // on every five-minute tick.
+    let discovered: Awaited<ReturnType<typeof autoDiscover>> | null = null
+    if (new Date().getMinutes() % 30 < 5) {
+      try {
+        discovered = await autoDiscover((await pollTargetsAllCompanies()).targets)
+      } catch (err) {
+        console.error('[discover] pass failed:', err instanceof Error ? err.message : String(err))
+      }
+    }
+    return NextResponse.json({ ok: true, ...summary, olts, devices, discovered })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error('[usage] pass failed:', message)

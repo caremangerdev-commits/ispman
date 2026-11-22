@@ -117,7 +117,7 @@ function chunks<T>(items: T[], size: number): T[][] {
 }
 
 /** Customers by MAC address. A MAC on more than one customer matches nobody. */
-async function customersByMac(companyId: number, macs: string[]): Promise<Map<string, CustomerRow>> {
+export async function customersByMac(companyId: number, macs: string[]): Promise<Map<string, CustomerRow>> {
   const out = new Map<string, CustomerRow>()
   const shared = new Set<string>()
   for (const part of chunks([...new Set(macs)], 200)) {
