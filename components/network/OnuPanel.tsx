@@ -63,24 +63,42 @@ function Browsing({ seen, onuOnline }: { seen?: { online: boolean; lastSeen: str
   )
 }
 
-/** How a PON port is shown: "1/3/1" rather than "gpon-olt_1/3/1". */
-const portLabel = (p: string) => p.replace(/^gpon-olt_/, '')
+/**
+ * How a PON port is named: "PON 8" rather than "gpon-olt_1/1/8" or "0/0/8".
+ *
+ * Every brand writes a port as numbers ending in the port itself: ZTE
+ * gpon-olt_1/1/8, C-Data 0/0/8, GCOM 0/8. The last number is the port. On an
+ * OLT with more than one PON card the same port number exists on each card,
+ * so there the card is shown too: "PON 2/8" for port 8 on card 2.
+ */
+function portNamer(ports: string[]): (p: string) => string {
+  const parts = (p: string) => p.split(/[^0-9]+/).filter(Boolean)
+  const cards = new Set(ports.map((p) => parts(p).slice(0, -1).join('/')))
+  return (p: string) => {
+    const n = parts(p)
+    if (n.length === 0) return p
+    const port = n[n.length - 1]
+    const card = n.length > 1 ? n[n.length - 2] : null
+    return cards.size > 1 && card ? 'PON ' + card + '/' + port : 'PON ' + port
+  }
+}
 
 /** Show one PON port's ONUs. Hidden when they are all on one port. */
 function PortFilter({ ports, value, onChange }: { ports: string[]; value: string; onChange: (p: string) => void }) {
   const list = [...new Set(ports.filter(Boolean))].sort((a, b) =>
     a.localeCompare(b, undefined, { numeric: true })
   )
+  const portLabel = portNamer(list)
   if (list.length < 2 && !value) return null
   return (
     <label className="flex items-center gap-2 text-xs text-gray-400">
-      PON port
+      Show
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
       >
-        <option value="">All</option>
+        <option value="">All PON ports ({ports.length})</option>
         {list.map((p) => (
           <option key={p} value={p}>
             {portLabel(p)} ({ports.filter((x) => x === p).length})
