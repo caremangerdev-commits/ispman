@@ -308,3 +308,82 @@ export async function setAutoAuthorise(companyId: number, id: number, on: boolea
     .select('id')
   return !error && Boolean(data && data.length)
 }
+
+/**
+ * The ONU list as the background check last saw it (olt_onus, refreshed
+ * every five minutes), for showing the OLT page at once while a live reading
+ * runs. Unauthorized ONUs are not saved, so they appear with the live reading.
+ * Null before migration 0058 or when the OLT has never been read.
+ */
+export async function savedOnuReading(
+  companyId: number,
+  oltId: number
+): Promise<{
+  onus: import('@/lib/olt/types').OltOnu[]
+  customers: Record<string, { customerId: number; name: string; linkedBy: 'auto' | 'manual' }>
+  updatedAt: string | null
+} | null> {
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('olt_onus')
+    .select('serial, onu_ref, port, phase, online, rx, tx, updated_at')
+    .eq('company_id', companyId)
+    .eq('olt_id', oltId)
+    .limit(5000)
+  if (error || !data || data.length === 0) return null
+  const rows = data as {
+    serial: string
+    onu_ref: string | null
+    port: string
+    phase: string | null
+    online: boolean
+    rx: number | string | null
+    tx: number | string | null
+    updated_at: string | null
+  }[]
+  const num = (v: unknown) => {
+    const n = typeof v === 'number' ? v : Number.parseFloat(String(v ?? ''))
+    return Number.isFinite(n) ? n : null
+  }
+  const onus = rows.map((r) => {
+    const ref = r.onu_ref ?? r.port + ':0'
+    const index = Number.parseInt(ref.split(/[:/]/).pop() ?? '0', 10) || 0
+    return {
+      id: ref,
+      port: r.port,
+      index,
+      type: null,
+      sn: r.serial,
+      phase: r.phase ?? (r.online ? 'working' : 'offline'),
+      online: r.online,
+      rx: num(r.rx),
+      tx: num(r.tx),
+    }
+  })
+  onus.sort((a, b) => a.port.localeCompare(b.port, undefined, { numeric: true }) || a.index - b.index)
+
+  const customers: Record<string, { customerId: number; name: string; linkedBy: 'auto' | 'manual' }> = {}
+  const { data: links } = await db
+    .from('network_devices')
+    .select('serial, customer_id, linked_by, customers(first_name, last_name)')
+    .eq('company_id', companyId)
+    .eq('olt_id', oltId)
+    .not('customer_id', 'is', null)
+    .limit(5000)
+  for (const l of (links ?? []) as unknown as {
+    serial: string | null
+    customer_id: number
+    linked_by: string | null
+    customers: { first_name: string | null; last_name: string | null } | null
+  }[]) {
+    if (!l.serial) continue
+    const name = [l.customers?.first_name, l.customers?.last_name].filter(Boolean).join(' ').trim() || 'Customer'
+    customers[l.serial.toUpperCase()] = {
+      customerId: l.customer_id,
+      name,
+      linkedBy: l.linked_by === 'manual' ? 'manual' : 'auto',
+    }
+  }
+  const updatedAt = rows.map((r) => r.updated_at).filter(Boolean).sort().pop() ?? null
+  return { onus, customers, updatedAt }
+}

@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useActionState, useState } from 'react'
+import { useActionState, useCallback, useEffect, useRef, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import { oltFeatures } from '@/lib/olt/features'
@@ -110,7 +110,7 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 export function OltDetail({
-  olt, routerName, checkedText, canManage, autoAuthorise = false,
+  olt, routerName, checkedText, canManage, autoAuthorise = false, saved = null,
 }: {
   olt: Olt
   routerName: string
@@ -118,6 +118,8 @@ export function OltDetail({
   checkedText: string | null
   canManage: boolean
   autoAuthorise?: boolean
+  /** The background check's last ONU list, with its age in words. */
+  saved?: { onus: OnuLists['onus']; customers: OnuLists['customers']; text: string | null } | null
 }) {
   const [auto, setAuto] = useState(autoAuthorise)
   const [autoNote, setAutoNote] = useState<string | null>(null)
@@ -129,31 +131,55 @@ export function OltDetail({
     else setAutoNote(res.error)
   }
   const [tab, setTab] = useState<Tab>('details')
-  const [lists, setLists] = useState<OnuLists | null>(null)
+  // SHOW WHAT IS KNOWN AT ONCE, THEN BRING IT UP TO DATE. The background
+  // check reads every OLT every five minutes and saves the list, so the page
+  // opens with that, and a live reading replaces it as soon as it arrives —
+  // nobody waits on a blank page or presses anything.
+  const [lists, setLists] = useState<OnuLists | null>(
+    saved ? { pending: [], onus: saved.onus, customers: saved.customers } : null
+  )
+  const [live, setLive] = useState(false)
   const [loading, setLoading] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
   const info = olt.info
+  const busyRef = useRef(false)
 
-  // READ FROM THE OLT WHEN A LIST IS OPENED, not when the page loads. Most
-  // visits to this page are to look at cards or ports, and a live reading is
-  // a login and a dozen commands over a tunnel.
-  const reload = async () => {
+  const reload = useCallback(async () => {
+    if (busyRef.current) return
+    busyRef.current = true
     setLoading(true)
     setListError(null)
     try {
       const res = await loadOnus(olt.id)
-      if (res.ok) setLists({ pending: res.pending, onus: res.onus, customers: res.customers, seen: res.seen })
-      else setListError(res.error)
+      if (res.ok) {
+        setLists({ pending: res.pending, onus: res.onus, customers: res.customers, seen: res.seen })
+        setLive(true)
+      } else setListError(res.error)
     } catch {
       setListError('Could not reach ISPMan.')
     } finally {
+      busyRef.current = false
       setLoading(false)
     }
-  }
-  const open = (t: Tab) => {
-    setTab(t)
-    if (ONU_TABS.includes(t) && !lists && !loading) void reload()
-  }
+  }, [olt.id])
+
+  // Live reading on opening the page, then every two minutes while an ONU
+  // list is on screen and the browser tab is in front.
+  const onList = ONU_TABS.includes(tab)
+  useEffect(() => {
+    // From a timer, not the effect body: the reading sets state as it starts.
+    const t = window.setTimeout(() => void reload(), 0)
+    return () => window.clearTimeout(t)
+  }, [reload])
+  useEffect(() => {
+    if (!onList) return
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void reload()
+    }, 120_000)
+    return () => window.clearInterval(timer)
+  }, [onList, reload])
+
+  const open = (t: Tab) => setTab(t)
   const cards = info?.cards ?? []
   const pon = info?.ponPorts ?? []
   const uplinks = info?.uplinks ?? []
@@ -219,8 +245,8 @@ export function OltDetail({
         {has.authorise ? (
         <Count
           label="Unauthorized"
-          value={lists ? lists.pending.length : info?.onus?.unauthorised}
-          tone={(lists ? lists.pending.length : info?.onus?.unauthorised) ? 'text-blue-400' : 'text-white'}
+          value={lists && live ? lists.pending.length : info?.onus?.unauthorised}
+          tone={(lists && live ? lists.pending.length : info?.onus?.unauthorised) ? 'text-blue-400' : 'text-white'}
           note="Plugged in, waiting to be authorized"
           active={tab === 'pending'}
           onOpen={() => open('pending')}
@@ -318,6 +344,7 @@ export function OltDetail({
             brand={olt.brand}
             view={tab}
             lists={lists}
+            freshness={live ? null : saved?.text ?? null}
             loading={loading}
             error={listError}
             canManage={canManage}

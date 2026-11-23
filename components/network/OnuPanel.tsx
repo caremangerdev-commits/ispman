@@ -589,7 +589,7 @@ function OnuRow({
 }
 
 export function OnuPanel({
-  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload,
+  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null,
 }: {
   oltId: number
   brand: string
@@ -602,6 +602,8 @@ export function OnuPanel({
   vlans: number[]
   defaultVlan: number | null
   onReload: () => void
+  /** Set while the list is the saved one, not yet a live reading: its age in words. */
+  freshness?: string | null
 }) {
   const [vlan, setVlan] = useState<number | null>(defaultVlan)
   const [busy, setBusy] = useState<string | null>(null)
@@ -654,12 +656,24 @@ export function OnuPanel({
   }
   if (!lists) return null
 
+  // Shown until the live reading lands: the list is real, just a few minutes old.
+  const banner =
+    freshness || (loading && lists) ? (
+      <p className="mb-2 flex items-center gap-2 text-[11px] text-gray-500">
+        <span className={'inline-block h-1.5 w-1.5 rounded-full ' + (loading ? 'animate-pulse bg-blue-400' : 'bg-gray-500')} />
+        {freshness
+          ? 'Showing the reading from ' + freshness + '. Updating from the OLT…'
+          : 'Updating from the OLT…'}
+      </p>
+    ) : null
+
   const failed = outcomes.filter((o) => !o.ok)
   const succeeded = outcomes.filter((o) => o.ok)
 
   if (view === 'pending') {
     return (
       <div className="py-2">
+        {banner}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
           <label className="flex items-center gap-2 text-xs text-gray-400">
             Put them on VLAN
@@ -762,6 +776,7 @@ export function OnuPanel({
   const shown = view === 'offline' ? onPort.filter((o) => !o.online) : onPort
   return (
     <div className="py-2">
+      {banner}
       <div className="flex flex-wrap items-center justify-between gap-2 pb-3">
         <div className="flex flex-wrap items-center gap-3">
           <PortFilter ports={lists.onus.map((o) => o.port)} value={port} onChange={setPort} />
