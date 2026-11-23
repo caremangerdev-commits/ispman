@@ -90,8 +90,10 @@ function AddForm({
   if (ready.length === 0) {
     return (
       <p className="text-sm text-gray-400">
-        None of your routers has had its setup command yet. Run it on the router this OLT sits
-        behind (Settings → Router Tunnels → Get setup command), then come back.
+        Your routers are connected, but none has given ISPMan its login yet, so ISPMan cannot
+        reach anything behind them. Run the current setup command on the router this OLT sits
+        behind (Settings → Router Tunnels → Get setup command). It is safe to run on a router
+        that is already connected; it only adds the login. Then come back here.
       </p>
     )
   }
@@ -116,7 +118,7 @@ function AddForm({
           <select id="olt-router" name="tunnel_id" className={input} defaultValue={ready[0]?.id}>
             {routers.map((r) => (
               <option key={r.id} value={r.id} disabled={!r.ready}>
-                {r.name}{r.ready ? '' : ' (needs its setup command)'}
+                {r.name}{r.ready ? '' : ' (needs the current setup command)'}
               </option>
             ))}
           </select>
