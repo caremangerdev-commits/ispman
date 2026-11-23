@@ -818,16 +818,41 @@ export function RouterTunnelsManager({
   const guideRef = useRef<HTMLElement>(null)
   const guided = guideId === null ? null : tunnels.find((t) => t.id === guideId) ?? null
   const live = tunnels.filter((t) => t.revokedText === null)
+  // The numbered steps are for a NEW router. Shown open to a company with none;
+  // folded behind a button once it has one, so nobody reads them as something
+  // still to do on a router that is already connected.
+  const [adding, setAdding] = useState(live.length === 0)
+  const showGuide = adding || guideId !== null
 
   return (
     <div className="space-y-5">
-      <section ref={guideRef} className="rounded-xl border border-gray-800 bg-gray-900 p-5">
+      {!showGuide ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-800 bg-gray-900 px-5 py-4">
+          <p className="text-xs text-gray-400">
+            To give ISPMan its login on a router that is already connected, press{' '}
+            <span className="text-gray-200">Get setup command</span> on that router below.
+          </p>
+          {canAdd ? (
+            <button type="button" onClick={() => setAdding(true)} className={smallButton}>
+              Add a router
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      <section ref={guideRef} className={'rounded-xl border border-gray-800 bg-gray-900 p-5' + (showGuide ? '' : ' hidden')}>
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-white">
             {guided ? 'Setting up ' + guided.name : 'Add a router'}
           </h2>
-          {guideId !== null ? (
-            <button type="button" onClick={() => setGuideId(null)} className={smallButton}>
+          {guideId !== null || (adding && live.length > 0) ? (
+            <button
+              type="button"
+              onClick={() => {
+                setGuideId(null)
+                setAdding(false)
+              }}
+              className={smallButton}
+            >
               <X className="h-3 w-3" aria-hidden />
               Close
             </button>
