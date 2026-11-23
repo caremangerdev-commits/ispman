@@ -55,6 +55,20 @@ export async function addOltForward(
   const comment = oltRuleComment(olt.id)
   const port = String(oltForwardPort(olt.id))
   await withRouter(target(router), async (session) => {
+    // THE ROUTER'S OWN ADDRESS IS NOT AN OLT. Typed by mistake — the gateway
+    // of the OLT's network is the address people know — it sends every login
+    // to the router itself, which answers nothing and leaves only "did not
+    // respond". Said plainly instead, before any rule is written.
+    const own = await session.command('/ip/address/print', '=.proplist=address,interface')
+    const mine = own.find((a) => (a.address ?? '').split('/')[0] === olt.mgmtIp)
+    if (mine) {
+      throw new Error(
+        olt.mgmtIp + ' is ' + router.name + "'s own address (on " + (mine.interface ?? 'one of its ports') +
+          "), not the OLT's. Enter the OLT's own management address: on a ZTE, show ip interface brief on " +
+          'its console lists it.'
+      )
+    }
+
     // ALREADY IN PLACE AND STILL RIGHT: leave them alone. Removing and
     // re-adding the rules on every check opens a moment in which the port
     // leads nowhere, and the login that follows straight away is refused.
