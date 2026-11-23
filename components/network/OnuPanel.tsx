@@ -352,6 +352,16 @@ function OnuRow({
       <tr className="border-t border-gray-800">
         <td className={td + ' font-mono'}>{onu.id}</td>
         <td className={td + ' font-mono'}>{onu.sn ?? '—'}</td>
+        <td className={td + ' font-mono text-[11px]'}>
+          {onu.macs && onu.macs.length ? (
+            <span title={onu.macs.join('\n')}>
+              {onu.macs[0]}
+              {onu.macs.length > 1 ? <span className="text-gray-500"> +{onu.macs.length - 1}</span> : null}
+            </span>
+          ) : (
+            <span className="text-gray-600">—</span>
+          )}
+        </td>
         <td className={td}>
           {owner ? (
             <Link href={'/dashboard/customers/' + owner.customerId} className="text-blue-400 hover:underline">
@@ -394,7 +404,7 @@ function OnuRow({
       </tr>
       {open ? (
         <tr>
-          <td colSpan={7} className="pb-4">
+          <td colSpan={8} className="pb-4">
             <div className="rounded-lg border border-gray-800 bg-gray-950/60 p-4">
               {busy === 'read' && !detail ? (
                 <p className="text-xs text-gray-500">Reading the ONU…</p>
@@ -819,6 +829,7 @@ export function OnuPanel({
               <tr>
                 <th className={th}>ONU</th>
                 <th className={th}>Serial number</th>
+                <th className={th}>MAC</th>
                 <th className={th}>Customer</th>
                 <th className={th}>Status</th>
                 <th className={th}>RX</th>

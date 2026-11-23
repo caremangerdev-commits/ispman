@@ -293,8 +293,9 @@ export async function loadOnus(oltId: number): Promise<OnuListResult> {
     } catch {
       customers = {}
     }
-    // The addresses were only needed for the matching above.
-    const onus = lists.onus.map((o) => ({ ...o, macs: undefined }))
+    // The addresses behind each ONU are shown in the list: the customer's
+    // router, usually one.
+    const onus = lists.onus
     const seen = await customersSeen(session.company.id, Object.values(customers).map((c) => c.customerId))
     return { ok: true, pending: lists.pending, onus, customers, seen }
   } catch (err) {
