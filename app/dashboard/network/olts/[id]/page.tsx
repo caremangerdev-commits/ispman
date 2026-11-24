@@ -11,13 +11,22 @@ import { ago } from '@/lib/tunnels/status'
 export const metadata: Metadata = { title: 'OLT · ISPMan' }
 export const dynamic = 'force-dynamic'
 
-export default async function OltPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function OltPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>
+  searchParams: Promise<{ port?: string; onu?: string }>
+}) {
   const { company, profile } = await getSession()
   if (!can(profile.role, 'view_network_infrastructure')) {
     redirect('/dashboard?denied=view_network_infrastructure')
   }
 
   const { id } = await params
+  const sp = await searchParams
+  // From the ONU search: open straight on that ONU.
+  const focus = sp.onu ? { port: String(sp.port ?? ''), serial: String(sp.onu).toUpperCase() } : null
   const olt = await getOlt(company.id, Number(id))
   if (!olt) notFound()
 
@@ -40,6 +49,7 @@ export default async function OltPage({ params }: { params: Promise<{ id: string
       checkedText={checkedText}
       autoAuthorise={autoAuthorise}
       saved={saved ? { onus: saved.onus, customers: saved.customers, text: savedText } : null}
+      focus={focus}
       canManage={can(profile.role, 'manage_router_tunnels')}
     />
   )

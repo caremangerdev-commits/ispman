@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
+import { OnuSearch } from '@/components/network/OnuSearch'
 
 import { Modal } from '@/components/settings/Modal'
 import { addOlt, checkOlt, removeOlt, type OltActionResult } from '@/app/actions/olts'
@@ -257,6 +258,8 @@ export function OltManager({
           </button>
         ) : null}
       </div>
+
+      {olts.length ? <OnuSearch /> : null}
 
       <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
         {olts.length === 0 ? (

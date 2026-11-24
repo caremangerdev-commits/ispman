@@ -75,3 +75,7 @@ end $$;
 alter table public.incidents add constraint incidents_scope_check
   check (scope in ('company', 'access_point', 'customers'));
 alter table public.incidents add column if not exists customer_ids BIGINT[];
+
+-- The addresses seen behind each ONU at the last check, so an ONU can be
+-- found by the MAC of the router behind it without reading every OLT.
+alter table public.olt_onus add column if not exists macs TEXT[];

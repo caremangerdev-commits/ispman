@@ -15,6 +15,7 @@ import type {
   OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
 } from '@/lib/olt/types'
 import { can } from '@/lib/permissions'
+import { searchClauses } from '@/lib/search'
 import { batchGetRadiusSeen, radiusConfigured } from '@/lib/radius-db'
 import { normaliseUsername } from '@/lib/radius/format'
 import { blastOutage } from '@/lib/data/incident-notify'
@@ -713,4 +714,99 @@ export async function notifyOutage(input: { outageId: number; message: string })
     }
   }
   return { ok: true, message: customerIds.length + ' customers will be texted now, and again when the port is back.' }
+}
+
+/* ------------------------------ ONU search ------------------------------ */
+
+export type OnuHit = {
+  oltId: number
+  oltName: string
+  port: string
+  onuRef: string | null
+  serial: string
+  online: boolean
+  rx: number | null
+  macs: string[]
+  customer: { id: number; name: string; phone: string | null } | null
+  /** What matched: shown so a hit on a MAC or phone is not a mystery. */
+  matched: 'serial' | 'mac' | 'customer'
+  updatedAt: string | null
+}
+
+/**
+ * Find an ONU on any OLT by its serial, the MAC behind it, or the customer's
+ * name, phone or account. Reads what the background check saved (every five
+ * minutes), so it is instant and touches no OLT.
+ */
+export async function searchOnus(query: string): Promise<{ ok: true; hits: OnuHit[] } | { ok: false; error: string }> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'view_network_infrastructure')) {
+    return { ok: false, error: 'You do not have permission to see this.' }
+  }
+  const q = String(query ?? '').trim()
+  if (q.length < 3) return { ok: true, hits: [] }
+  const companyId = session.company.id
+  const db = tenantClient()
+
+  const [{ data: onuRows }, { data: oltRows }, { data: links }] = await Promise.all([
+    db.from('olt_onus').select('olt_id, serial, onu_ref, port, online, rx, macs, updated_at').eq('company_id', companyId).limit(20000),
+    db.from('olts').select('id, name').eq('company_id', companyId),
+    db.from('network_devices').select('serial, olt_id, customer_id').eq('company_id', companyId).not('customer_id', 'is', null).not('serial', 'is', null).limit(20000),
+  ])
+  const onus = (onuRows ?? []) as {
+    olt_id: number; serial: string; onu_ref: string | null; port: string; online: boolean
+    rx: number | string | null; macs: string[] | null; updated_at: string | null
+  }[]
+  const oltName = new Map(((oltRows ?? []) as { id: number; name: string }[]).map((o) => [o.id, o.name]))
+  const ownerOf = new Map<string, number>()
+  for (const l of (links ?? []) as { serial: string; olt_id: number | null; customer_id: number }[]) {
+    ownerOf.set(l.serial.toUpperCase(), l.customer_id)
+  }
+
+  // Customers whose name, phone, address, MAC or account matches, by the same
+  // rule as the customer search box.
+  let q2 = db.from('customers').select('id').eq('company_id', companyId)
+  for (const clause of searchClauses(q)) q2 = q2.or(clause)
+  const { data: custRows } = await q2.limit(200)
+  const matchedCustomers = new Set(((custRows ?? []) as { id: number }[]).map((c) => c.id))
+
+  const upper = q.toUpperCase()
+  const hex = upper.replace(/[^0-9A-F]/g, '')
+  const hits: (OnuHit & { _cid: number | null })[] = []
+  for (const o of onus) {
+    const serial = o.serial.toUpperCase()
+    const cid = ownerOf.get(serial) ?? null
+    const macs = o.macs ?? []
+    let matched: OnuHit['matched'] | null = null
+    if (serial.includes(upper)) matched = 'serial'
+    else if (hex.length >= 4 && macs.some((m) => m.replace(/[^0-9A-F]/g, '').includes(hex))) matched = 'mac'
+    else if (cid && matchedCustomers.has(cid)) matched = 'customer'
+    if (!matched) continue
+    const rx = Number.parseFloat(String(o.rx ?? ''))
+    hits.push({
+      oltId: o.olt_id,
+      oltName: oltName.get(o.olt_id) ?? 'OLT',
+      port: o.port,
+      onuRef: o.onu_ref,
+      serial,
+      online: o.online,
+      rx: Number.isFinite(rx) ? rx : null,
+      macs,
+      customer: null,
+      matched,
+      updatedAt: o.updated_at,
+      _cid: cid,
+    })
+    if (hits.length >= 50) break
+  }
+  const ids = [...new Set(hits.map((h) => h._cid).filter((x): x is number => x !== null))]
+  if (ids.length) {
+    const { data: cs } = await db.from('customers').select('id, first_name, last_name, phone').eq('company_id', companyId).in('id', ids)
+    const byId = new Map(((cs ?? []) as { id: number; first_name: string | null; last_name: string | null; phone: string | null }[]).map((c) => [c.id, c]))
+    for (const h of hits) {
+      const c = h._cid !== null ? byId.get(h._cid) : undefined
+      if (c) h.customer = { id: c.id, name: [c.first_name, c.last_name].filter(Boolean).join(' ') || 'Customer #' + c.id, phone: c.phone }
+    }
+  }
+  return { ok: true, hits: hits.map(({ _cid, ...h }) => { void _cid; return h }) }
 }

@@ -111,7 +111,7 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 export function OltDetail({
-  olt, routerName, checkedText, canManage, autoAuthorise = false, saved = null,
+  olt, routerName, checkedText, canManage, autoAuthorise = false, saved = null, focus = null,
 }: {
   olt: Olt
   routerName: string
@@ -121,6 +121,8 @@ export function OltDetail({
   autoAuthorise?: boolean
   /** The background check's last ONU list, with its age in words. */
   saved?: { onus: OnuLists['onus']; customers: OnuLists['customers']; text: string | null } | null
+  /** Open on this ONU: from the ONU search. */
+  focus?: { port: string; serial: string } | null
 }) {
   const [auto, setAuto] = useState(autoAuthorise)
   const [autoNote, setAutoNote] = useState<string | null>(null)
@@ -131,7 +133,7 @@ export function OltDetail({
     if (res.ok) setAuto(next)
     else setAutoNote(res.error)
   }
-  const [tab, setTab] = useState<Tab>('details')
+  const [tab, setTab] = useState<Tab>(focus ? 'authorised' : 'details')
   // SHOW WHAT IS KNOWN AT ONCE, THEN BRING IT UP TO DATE. The background
   // check reads every OLT every five minutes and saves the list, so the page
   // opens with that, and a live reading replaces it as soon as it arrives —
@@ -355,6 +357,7 @@ export function OltDetail({
               olt.serviceVlan ?? (vlans.filter((v) => v.id !== 1).length === 1 ? vlans.filter((v) => v.id !== 1)[0].id : null)
             }
             onReload={() => void reload()}
+            focus={focus}
           />
         ) : null}
 

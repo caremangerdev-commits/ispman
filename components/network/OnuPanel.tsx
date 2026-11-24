@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { authoriseOnus, linkOnu, loadOnuDetail, onuCommand, type OnuDrop, type OnuSignalDay } from '@/app/actions/olts'
 import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
@@ -375,7 +375,7 @@ function Fact({ label, value, tone }: { label: string; value: string; tone?: str
  * ONU is being moved and a bad thing to do by a slip of the mouse.
  */
 function OnuRow({
-  oltId, brand, onu, customer, seen, canManage, onChanged,
+  oltId, brand, onu, customer, seen, canManage, onChanged, focused = false,
 }: {
   oltId: number
   brand: string
@@ -384,8 +384,11 @@ function OnuRow({
   seen?: { online: boolean; lastSeen: string | null }
   canManage: boolean
   onChanged: () => void
+  /** The ONU the search led here: opened, read, and scrolled to. */
+  focused?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(focused)
+  const rowRef = useRef<HTMLTableRowElement>(null)
   const [detail, setDetail] = useState<OltOnuDetail | null>(null)
   const [history, setHistory] = useState<OnuSignalDay[]>([])
   const [drops, setDrops] = useState<OnuDrop[]>([])
@@ -431,6 +434,17 @@ function OnuRow({
       setNote({ ok: false, text: res.error })
     }
   }
+  useEffect(() => {
+    if (!focused) return
+    const t = window.setTimeout(() => {
+      rowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      void read()
+    }, 0)
+    return () => window.clearTimeout(t)
+    // Once, when the row first appears for the ONU searched for.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focused])
+
   const toggle = () => {
     const next = !open
     setOpen(next)
@@ -459,7 +473,7 @@ function OnuRow({
 
   return (
     <>
-      <tr className="border-t border-gray-800">
+      <tr ref={rowRef} className={'border-t border-gray-800' + (focused ? ' bg-blue-950/40' : '')}>
         <td className={td + ' font-mono'}>{onu.id}</td>
         <td className={td + ' font-mono'}>{onu.sn ?? '—'}</td>
         <td className={td + ' font-mono text-[11px]'}>
@@ -731,7 +745,7 @@ function OnuRow({
 }
 
 export function OnuPanel({
-  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null,
+  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null, focus = null,
 }: {
   oltId: number
   brand: string
@@ -746,11 +760,13 @@ export function OnuPanel({
   onReload: () => void
   /** Set while the list is the saved one, not yet a live reading: its age in words. */
   freshness?: string | null
+  /** Open on this ONU (from the ONU search): its port filtered, its row open. */
+  focus?: { port: string; serial: string } | null
 }) {
   const [vlan, setVlan] = useState<number | null>(defaultVlan)
   const [busy, setBusy] = useState<string | null>(null)
   // One PON port at a time, or all of them.
-  const [port, setPort] = useState<string>('')
+  const [port, setPort] = useState<string>(focus?.port ?? '')
   const [progress, setProgress] = useState<string | null>(null)
   const [outcomes, setOutcomes] = useState<OltAuthoriseResult[]>([])
   const [problem, setProblem] = useState<string | null>(null)
@@ -982,6 +998,7 @@ export function OnuPanel({
                   })()}
                   canManage={canManage}
                   onChanged={onReload}
+                  focused={Boolean(focus && o.sn && o.sn.toUpperCase() === focus.serial)}
                 />
               ))}
             </tbody>

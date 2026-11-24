@@ -251,6 +251,7 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
       online: o.online,
       rx,
       tx: o.tx ?? null,
+      macs: (o.macs ?? []).map((m) => m.toUpperCase()),
       weak_alerted: weakAlerted,
       last_online_at: o.online ? now : was?.last_online_at ?? null,
       offline_since: o.online ? null : was?.offline_since ?? now,
