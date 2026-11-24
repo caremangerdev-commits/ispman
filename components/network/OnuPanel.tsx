@@ -651,20 +651,28 @@ export function OnuPanel({
     setOutcomes([])
     const all: OltAuthoriseResult[] = []
     try {
-      // Keep asking while there is work left and the last round achieved
-      // something. If a round authorises nothing, stop: repeating it would
-      // only fail the same way again.
-      for (let round = 0; round < 40; round += 1) {
-        const res = await authoriseOnus({ oltId, vlan, items })
+      // ONE BAD ONU DOES NOT STOP THE REST. Each round is handed the serials
+      // that already failed, so it moves on to ONUs not yet tried; the run
+      // ends when every waiting ONU has been tried once, with the failures
+      // listed and their reasons. It stops early only if the OLT itself stops
+      // answering.
+      const failedSn: string[] = []
+      for (let round = 0; round < 80; round += 1) {
+        const res = await authoriseOnus({ oltId, vlan, items, skip: failedSn })
         if (!res.ok) {
-          setProblem(res.error)
+          setProblem(
+            res.error + (all.length ? ' Stopped after ' + all.filter((r) => r.ok).length + ' authorized.' : '')
+          )
           break
         }
         all.push(...res.results)
+        failedSn.push(...res.results.filter((r) => !r.ok).map((r) => r.sn))
         setOutcomes([...all])
-        const worked = res.results.filter((r) => r.ok).length
-        if (items !== 'all' || res.remaining === 0 || worked === 0) break
-        setProgress(res.remaining + ' still to do…')
+        if (items !== 'all' || res.results.length === 0 || res.remaining === 0) break
+        setProgress(
+          all.filter((r) => r.ok).length + ' done' + (failedSn.length ? ', ' + failedSn.length + ' failed' : '') +
+            ', ' + res.remaining + ' to go…'
+        )
       }
     } finally {
       setBusy(null)
@@ -746,11 +754,20 @@ export function OnuPanel({
             {succeeded.length} authorized: {succeeded.map((o) => o.sn).join(', ')}
           </p>
         ) : null}
-        {failed.map((o) => (
-          <p key={o.sn} className="mb-2 rounded-lg bg-red-950/30 px-3 py-2 text-xs text-red-300">
-            {o.sn}: {o.error}
-          </p>
-        ))}
+        {failed.length ? (
+          <div className="mb-3 rounded-lg bg-red-950/30 px-3 py-2 text-xs text-red-300">
+            <p className="font-semibold">
+              {failed.length} could not be authorized. The rest carried on without them.
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {failed.map((o) => (
+                <li key={o.sn}>
+                  <span className="font-mono">{o.sn}</span>: {o.error}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
         {lists.pending.length === 0 ? (
           <p className="px-1 py-6 text-sm text-gray-500">

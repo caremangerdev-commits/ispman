@@ -326,6 +326,12 @@ export async function authoriseOnus(input: {
   oltId: number
   vlan: number
   items: { port: string; sn: string }[] | 'all'
+  /**
+   * Serial numbers that already failed in this run. Left out of 'all', so a
+   * run moves past an ONU the OLT will not take instead of retrying it and
+   * stopping there.
+   */
+  skip?: string[]
 }): Promise<AuthoriseResult> {
   const session = await manager()
   if (!session) return { ok: false, error: 'You do not have permission to authorise ONUs.' }
@@ -342,9 +348,11 @@ export async function authoriseOnus(input: {
     let items: { port: string; sn: string }[]
     let waiting = 0
     if (input.items === 'all') {
+      const skip = new Set((Array.isArray(input.skip) ? input.skip : []).map((s) => String(s).toUpperCase()))
       const lists = await r.driver.listOnus(r.target, r.login)
-      waiting = lists.pending.length
-      items = lists.pending.slice(0, BATCH).map((p) => ({ port: p.port, sn: p.sn }))
+      const todo = lists.pending.filter((p) => !skip.has(p.sn.toUpperCase()))
+      waiting = todo.length
+      items = todo.slice(0, BATCH).map((p) => ({ port: p.port, sn: p.sn }))
     } else {
       items = input.items.slice(0, BATCH)
       waiting = input.items.length
@@ -365,7 +373,10 @@ export async function authoriseOnus(input: {
       })
     }
     revalidatePath(PATH + '/' + r.olt.id)
-    return { ok: true, results, remaining: Math.max(0, waiting - done.length) }
+    // For 'all': what is left untried. The ones that failed here are skipped
+    // from the next round, so they no longer count as waiting.
+    const left = input.items === 'all' ? waiting - results.length : waiting - done.length
+    return { ok: true, results, remaining: Math.max(0, left) }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
