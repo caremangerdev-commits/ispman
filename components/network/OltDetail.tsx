@@ -5,6 +5,7 @@ import { useActionState, useCallback, useEffect, useRef, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import { OutagePanel } from '@/components/network/OutagePanel'
+import { OltFrontPanel } from '@/components/network/OltFrontPanel'
 import { oltFeatures } from '@/lib/olt/features'
 import { checkOlt, loadOnus, setOltAutoAuthorise, type OltActionResult } from '@/app/actions/olts'
 import { DeviceIcon } from '@/components/network/DeviceIcon'
@@ -134,6 +135,17 @@ export function OltDetail({
     else setAutoNote(res.error)
   }
   const [tab, setTab] = useState<Tab>(focus ? 'authorised' : 'details')
+  // The port picked on the front panel, as the ONU list names it, and a count
+  // that remounts the list so a new pick takes effect even on the same tab.
+  const [pickedPort, setPickedPort] = useState<string>(focus?.port ?? '')
+  const [pickN, setPickN] = useState(0)
+  const listRef = useRef<HTMLDivElement>(null)
+  const pickPort = (filter: string) => {
+    setPickedPort(filter)
+    setPickN((n) => n + 1)
+    if (!ONU_TABS.includes(tab) || tab === 'pending') setTab('authorised')
+    window.setTimeout(() => listRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
   // SHOW WHAT IS KNOWN AT ONCE, THEN BRING IT UP TO DATE. The background
   // check reads every OLT every five minutes and saves the list, so the page
   // opens with that, and a live reading replaces it as soon as it arrives —
@@ -233,6 +245,17 @@ export function OltDetail({
         <p className="rounded-lg bg-red-950/30 px-3 py-2 text-xs text-red-300">{olt.error}</p>
       ) : null}
 
+      <OltFrontPanel
+        model={info?.model ?? null}
+        brand={olt.brand}
+        reachable={olt.ok ?? null}
+        info={info ?? null}
+        onus={lists?.onus ?? null}
+        selected={ONU_TABS.includes(tab) && tab !== 'pending' ? pickedPort || null : null}
+        onPickPort={pickPort}
+        onUplinks={has.uplinks ? () => setTab('uplinks') : undefined}
+      />
+
       {/*
         The three numbers someone opens an OLT to see. Each opens its own
         list, read from the OLT at that moment.
@@ -266,7 +289,7 @@ export function OltDetail({
         />
       </div>
 
-      <div className="flex flex-wrap gap-1 border-b border-gray-800" role="tablist">
+      <div ref={listRef} className="flex scroll-mt-4 flex-wrap gap-1 border-b border-gray-800" role="tablist">
         {tabs.map((t) => (
           <button
             key={t.id}
@@ -343,7 +366,7 @@ export function OltDetail({
 
         {tab === 'authorised' || tab === 'pending' || tab === 'offline' ? (
           <OnuPanel
-            key={tab}
+            key={tab + ':' + pickN}
             oltId={olt.id}
             brand={olt.brand}
             view={tab}
@@ -357,7 +380,8 @@ export function OltDetail({
               olt.serviceVlan ?? (vlans.filter((v) => v.id !== 1).length === 1 ? vlans.filter((v) => v.id !== 1)[0].id : null)
             }
             onReload={() => void reload()}
-            focus={focus}
+            focus={tab === 'pending' ? null : pickN > 0 || !focus ? { port: pickedPort, serial: '' } : focus}
+            onPortChange={tab === 'pending' ? undefined : setPickedPort}
           />
         ) : null}
 

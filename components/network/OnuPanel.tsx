@@ -756,7 +756,7 @@ function OnuRow({
 }
 
 export function OnuPanel({
-  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null, focus = null,
+  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null, focus = null, onPortChange,
 }: {
   oltId: number
   brand: string
@@ -773,11 +773,17 @@ export function OnuPanel({
   freshness?: string | null
   /** Open on this ONU (from the ONU search): its port filtered, its row open. */
   focus?: { port: string; serial: string } | null
+  /** Told when the port filter changes here, so the front panel can light the same port. */
+  onPortChange?: (port: string) => void
 }) {
   const [vlan, setVlan] = useState<number | null>(defaultVlan)
   const [busy, setBusy] = useState<string | null>(null)
   // One PON port at a time, or all of them.
-  const [port, setPort] = useState<string>(focus?.port ?? '')
+  const [port, setPortState] = useState<string>(focus?.port ?? '')
+  const setPort = (p: string) => {
+    setPortState(p)
+    onPortChange?.(p)
+  }
   const [progress, setProgress] = useState<string | null>(null)
   const [outcomes, setOutcomes] = useState<OltAuthoriseResult[]>([])
   const [problem, setProblem] = useState<string | null>(null)
