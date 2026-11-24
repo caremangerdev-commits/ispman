@@ -140,23 +140,30 @@ function UplinkCage({ up, onPick }: { up: OltUplink; onPick?: () => void }) {
   const ten = /^x/i.test(up.name)
   const said = (ten ? '10G uplink ' : 'Uplink ') + p.port + ': ' + (!up.enabled ? 'switched off' : up.up ? 'link up' : 'no link') +
     (up.description ? ' (' + up.description + ')' : '')
-  const body = (
-    <>
-      <Led light={light} />
-      <span
-        aria-hidden="true"
-        className={
-          'flex h-[18px] items-center justify-center rounded-[3px] p-[2px] ' +
-          (up.medium === 'copper'
-            ? 'w-6 bg-[#1a1d21] ring-1 ring-[#5d636c]'
-            : 'w-7 bg-gradient-to-b from-[#c9a646] to-[#8a6d22] shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]')
-        }
-      >
-        <span className="h-full w-full rounded-[2px] bg-[#0b0d10] shadow-[inset_0_2px_3px_rgba(0,0,0,0.9)]" />
-      </span>
-      <span className="text-[10px] font-semibold leading-none text-[#d6dae0]">{(ten ? 'X' : 'G') + p.port}</span>
-    </>
-  )
+  // Copper is an RJ45 jack with its link and activity lights in the top
+  // corners; fibre is an SFP cage with its light above, like the PON ports.
+  const body =
+    up.medium === 'copper' ? (
+      <>
+        <span aria-hidden="true" className="relative flex h-[22px] w-7 items-end justify-center rounded-[2px] bg-[#0b0d10] ring-1 ring-[#6b727c]">
+          <span className={'absolute left-[2px] top-[2px] block h-[4px] w-[6px] rounded-[1px] ' + (light === 'on' ? 'bg-[#34d058] shadow-[0_0_4px_rgba(52,208,88,0.8)]' : light === 'down' ? 'bg-[#f04438]' : 'bg-[#3a3f46]')} />
+          <span className={'absolute right-[2px] top-[2px] block h-[4px] w-[6px] rounded-[1px] ' + (light === 'on' ? 'bg-[#f5b83d]' : 'bg-[#3a3f46]')} />
+          <span className="mb-[3px] block h-[7px] w-3.5 rounded-[1px] bg-[#1e2227] shadow-[inset_0_1px_1px_rgba(0,0,0,0.9)]" />
+        </span>
+        <span className="text-[9px] font-semibold leading-none text-[#d6dae0]">{(ten ? '10GE' : 'GE') + p.port}</span>
+      </>
+    ) : (
+      <>
+        <Led light={light} />
+        <span
+          aria-hidden="true"
+          className="flex h-[18px] w-7 items-center justify-center rounded-[3px] bg-gradient-to-b from-[#c9ced5] to-[#7f868f] p-[2px] shadow-[inset_0_1px_0_rgba(255,255,255,0.5)]"
+        >
+          <span className="h-full w-full rounded-[2px] bg-[#0b0d10] shadow-[inset_0_2px_3px_rgba(0,0,0,0.9)]" />
+        </span>
+        <span className="text-[9px] font-semibold leading-none text-[#d6dae0]">{(ten ? '10GE' : 'GE') + p.port}</span>
+      </>
+    )
   return onPick ? (
     <button
       type="button"
@@ -215,15 +222,44 @@ function Ejector({ side }: { side: 'left' | 'right' }) {
 }
 
 /** A management or console socket: there on the real card, not something ISPMan reads. */
-function Rj45({ label }: { label: string }) {
+function Rj45({ label, what }: { label: string; what: string }) {
   return (
-    <span aria-hidden="true" className="flex w-8 flex-col items-center gap-1 pt-1.5">
-      <span className="block h-1.5 w-1.5 rounded-full bg-[#4a5059]" />
-      <span className="flex h-[18px] w-6 items-end justify-center rounded-[2px] bg-[#0f1114] ring-1 ring-[#5d636c]">
-        <span className="mb-[3px] block h-[5px] w-3 rounded-[1px] bg-[#1e2227]" />
+    <span title={label + ': ' + what} className="flex w-10 flex-col items-center gap-1 pt-1.5">
+      <span aria-hidden="true" className="flex h-[22px] w-7 items-end justify-center rounded-[2px] bg-[#0b0d10] ring-1 ring-[#5d636c]">
+        <span className="mb-[3px] block h-[7px] w-3.5 rounded-[1px] bg-[#1e2227] shadow-[inset_0_1px_1px_rgba(0,0,0,0.9)]" />
       </span>
       <span className="text-[8px] font-semibold leading-none tracking-wide text-[#8a919b]">{label}</span>
     </span>
+  )
+}
+
+/** Silkscreen over a group of ports, with a bracket line: "UPLINK", "LOCAL". */
+function Group({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span className="flex flex-col items-stretch">
+      <span aria-hidden="true" className="flex items-center gap-1 px-1 text-[7px] font-bold tracking-[0.14em] text-[#9aa1ab]">
+        <span className="h-px flex-1 bg-[#6b727c]" />
+        {label}
+        <span className="h-px flex-1 bg-[#6b727c]" />
+      </span>
+      <span className="flex items-end">{children}</span>
+    </span>
+  )
+}
+
+/**
+ * The sockets on a control card that are not uplinks. ZTE's SMXA has an
+ * out-of-band management port, a console port and an environment-monitoring
+ * port beside its uplinks; ISPMan does not read these, so they are drawn
+ * unlit.
+ */
+function LocalPorts() {
+  return (
+    <Group label="LOCAL">
+      <Rj45 label="CONSOLE" what="serial console, for setting up by cable" />
+      <Rj45 label="MGMT" what="out-of-band management network" />
+      <Rj45 label="ALARM" what="environment monitoring (door, temperature sensors)" />
+    </Group>
   )
 }
 
@@ -281,6 +317,7 @@ function CardFace({
   className?: string
 }) {
   const said = (slot != null ? 'Slot ' + slot + ', ' : '') + name + (status ? ', ' + status.toLowerCase() : '')
+  const active = status === 'Working'
   return (
     <div
       title={said}
@@ -294,6 +331,11 @@ function CardFace({
             <>
               <span className="flex items-center gap-0.5"><Led light={light} />RUN</span>
               <span className="flex items-center gap-0.5"><Led light={light === 'down' ? 'down' : 'idle'} className="animate-none" />ALM</span>
+              {jacks ? (
+                <span className="flex items-center gap-0.5" title={active ? 'Active: this card is running the OLT' : 'Standby: takes over if the active card fails'}>
+                  <Led light={active ? 'on' : 'idle'} />ACT
+                </span>
+              ) : null}
             </>
           ) : null}
         </span>
@@ -303,16 +345,26 @@ function CardFace({
         {pons.map((p) => (
           <PonCage key={p.name} pon={p} selected={selected === p.filter} onPick={onPick} />
         ))}
-        {pons.length && uplinks.length ? <span aria-hidden="true" className="mx-1.5 h-10 w-px bg-black/40" /> : null}
-        {uplinks.map((u) => (
-          <UplinkCage key={u.name} up={u} onPick={onUplinks} />
-        ))}
         {jacks ? (
-          <span className="ml-auto flex">
-            <Rj45 label="MGMT" />
-            <Rj45 label="CON" />
-          </span>
-        ) : null}
+          <>
+            <LocalPorts />
+            <span aria-hidden="true" className="mx-1.5 h-10 w-px self-center bg-black/40" />
+            {uplinks.length ? (
+              <Group label="UPLINK">
+                {uplinks.map((u) => (
+                  <UplinkCage key={u.name} up={u} onPick={onUplinks} />
+                ))}
+              </Group>
+            ) : null}
+          </>
+        ) : (
+          <>
+            {pons.length && uplinks.length ? <span aria-hidden="true" className="mx-1.5 h-10 w-px bg-black/40" /> : null}
+            {uplinks.map((u) => (
+              <UplinkCage key={u.name} up={u} onPick={onUplinks} />
+            ))}
+          </>
+        )}
         {!pons.length && !uplinks.length && !jacks ? (
           <span className="px-1 text-[10px] text-[#7d848e]">{empty ?? ''}</span>
         ) : null}
@@ -480,8 +532,8 @@ export function OltFrontPanel({
           ))}
           {!pons.length && !uplinks.length ? <span className="px-1 text-[10px] text-[#7d848e]">No ports read yet</span> : null}
           <span className="ml-auto flex">
-            <Rj45 label="MGMT" />
-            <Rj45 label="CON" />
+            <Rj45 label="MGMT" what="out-of-band management network" />
+            <Rj45 label="CONSOLE" what="serial console, for setting up by cable" />
           </span>
         </div>
       </div>
