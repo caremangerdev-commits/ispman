@@ -53,7 +53,7 @@ export default async function IncidentsPage() {
                   <div className="min-w-0">
                     <p className="font-medium text-gray-100">{i.title}</p>
                     <p className="text-xs text-gray-500">
-                      {i.scope === 'company' ? 'Company-wide' : 'Access point: ' + (i.scopeValue ?? '?')}
+                      {i.scope === 'company' ? 'Company-wide' : i.scope === 'customers' ? (i.scopeValue ?? 'Named customers') + ' · ' + i.customerIds.length + ' customers' : 'Access point: ' + (i.scopeValue ?? '?')}
                       {' · opened ' + fmt(i.openedAt)}
                       {i.status === 'open' && i.nextUpdateAt ? ' · next update by ' + fmt(i.nextUpdateAt) : ''}
                       {i.status === 'restored' ? ' · restored ' + fmt(i.restoredAt) : ''}

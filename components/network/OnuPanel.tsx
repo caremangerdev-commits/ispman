@@ -3,10 +3,11 @@
 import Link from 'next/link'
 import { useState } from 'react'
 
-import { authoriseOnus, linkOnu, loadOnuDetail, onuCommand, type OnuSignalDay } from '@/app/actions/olts'
+import { authoriseOnus, linkOnu, loadOnuDetail, onuCommand, type OnuDrop, type OnuSignalDay } from '@/app/actions/olts'
 import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
 import { SignalBars } from '@/components/network/SignalBars'
 import type { OnuCustomer } from '@/lib/data/customer-devices'
+import type { UsageDay } from '@/lib/data/usage'
 import type {
   OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
 } from '@/lib/olt/types'
@@ -238,6 +239,107 @@ function SignalHistory({ days }: { days: OnuSignalDay[] }) {
   )
 }
 
+/** "3 h 12 min", "4 min", "2 days". */
+function lasted(fromIso: string, toIso: string | null, nowMs: number): string {
+  const mins = Math.max(0, Math.round(((toIso ? new Date(toIso).getTime() : nowMs) - new Date(fromIso).getTime()) / 60000))
+  if (mins < 60) return mins + ' min'
+  if (mins < 48 * 60) return Math.floor(mins / 60) + ' h ' + (mins % 60) + ' min'
+  return Math.round(mins / 1440) + ' days'
+}
+
+const when = (iso: string) =>
+  new Date(iso).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+
+/**
+ * Every time this ONU went down, as ISPMan's background check saw it: when,
+ * why, for how long, and whether it went down alone.
+ *
+ * ALONE OR WITH OTHERS IS THE QUESTION THAT MATTERS. Down alone with "lost
+ * power" is the customer's plug; down alone with "lost fibre" is their drop
+ * cable or connector; down with ten others on the same port is the fibre to
+ * the street, and nothing at the house will fix it.
+ */
+function DropHistory({ drops, nowMs }: { drops: OnuDrop[]; nowMs: number }) {
+  if (drops.length === 0) {
+    return (
+      <p className="mt-4 text-[11px] text-gray-500">
+        No drops recorded. ISPMan records each drop from now on, checked every five minutes.
+      </p>
+    )
+  }
+  const week = drops.filter((d) => nowMs - new Date(d.downAt).getTime() < 7 * 86400000).length
+  return (
+    <div className="mt-4">
+      <p className="mb-1 text-[10px] uppercase tracking-wider text-gray-500">
+        Drops · {week} in the last 7 days{drops.length >= 50 ? ' · last 50 shown' : ''}
+      </p>
+      <ul className="divide-y divide-gray-800/70 rounded-md border border-gray-800 text-[11px]">
+        {drops.slice(0, 12).map((d) => (
+          <li key={d.downAt} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 px-3 py-1.5">
+            <span className="w-32 shrink-0 text-gray-300">{when(d.downAt)}</span>
+            <span className={/power/i.test(d.cause ?? '') ? 'text-amber-300' : 'text-red-300'}>{d.cause ?? 'Went offline'}</span>
+            <span className="text-gray-400">
+              {d.upAt ? 'down ' + lasted(d.downAt, d.upAt, nowMs) : 'still down, ' + lasted(d.downAt, null, nowMs)}
+            </span>
+            <span className={d.together >= 2 ? 'text-red-300' : 'text-gray-500'}>
+              {d.together === 0 ? 'alone' : 'with ' + d.together + ' other' + (d.together === 1 ? '' : 's') + ' on this port'}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+/**
+ * What the customer on this ONU downloaded and uploaded each day: from the
+ * router's queue for that customer, the same figures as their account page.
+ */
+function UsageHistory({ days }: { days: UsageDay[] | null }) {
+  if (!days) {
+    return (
+      <p className="mt-4 text-[11px] text-gray-500">
+        Data history shows here once this ONU is linked to a customer whose router queue ISPMan reads.
+      </p>
+    )
+  }
+  const W = 560
+  const H = 90
+  const max = Math.max(1, ...days.map((d) => d.rx + d.tx))
+  const bar = W / days.length
+  const total = days.reduce((a, d) => a + d.rx, 0)
+  const totalUp = days.reduce((a, d) => a + d.tx, 0)
+  const busiest = days.reduce((a, d) => (d.rx > a.rx ? d : a), days[0])
+  return (
+    <div className="mt-4">
+      <p className="mb-1 text-[10px] uppercase tracking-wider text-gray-500">Data used, last {days.length} days</p>
+      <svg
+        viewBox={'0 0 ' + W + ' ' + H}
+        className="h-24 w-full max-w-xl"
+        role="img"
+        aria-label={'Downloaded ' + amount(total) + ' and uploaded ' + amount(totalUp) + ' over ' + days.length + ' days'}
+        preserveAspectRatio="none"
+      >
+        {days.map((d, i) => {
+          const down = (d.rx / max) * H
+          const up = (d.tx / max) * H
+          return (
+            <g key={d.day}>
+              <title>{d.day + ': ' + amount(d.rx) + ' down, ' + amount(d.tx) + ' up'}</title>
+              <rect x={i * bar + 0.5} y={H - down - up} width={Math.max(1, bar - 1)} height={down} className="fill-blue-400/80" />
+              <rect x={i * bar + 0.5} y={H - up} width={Math.max(1, bar - 1)} height={up} className="fill-emerald-400/80" />
+            </g>
+          )
+        })}
+      </svg>
+      <p className="text-[11px] text-gray-500">
+        <span className="text-blue-400">■</span> Download {amount(total)} ·{' '}
+        <span className="text-emerald-400">■</span> Upload {amount(totalUp)} · busiest day {busiest.day} ({amount(busiest.rx)} down)
+      </p>
+    </div>
+  )
+}
+
 const speed = (bps: number | null): string => {
   if (bps === null) return '—'
   if (bps >= 1e6) return (bps / 1e6).toFixed(1) + ' Mbps'
@@ -286,6 +388,11 @@ function OnuRow({
   const [open, setOpen] = useState(false)
   const [detail, setDetail] = useState<OltOnuDetail | null>(null)
   const [history, setHistory] = useState<OnuSignalDay[]>([])
+  const [drops, setDrops] = useState<OnuDrop[]>([])
+  const [usage, setUsage] = useState<UsageDay[] | null>(null)
+  // The moment of the last reading, so "still down for 2 h" is measured from
+  // something fixed rather than the clock at each render.
+  const [readAt, setReadAt] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
   const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link' | 'disable' | 'vsol'>('view')
@@ -315,6 +422,9 @@ function OnuRow({
     if (res.ok) {
       setDetail(res.detail)
       setHistory(res.signal)
+      setDrops(res.drops)
+      setUsage(res.usage)
+      setReadAt(Date.now())
       setName(res.detail.name ?? '')
       setDescription(res.detail.description ?? '')
     } else {
@@ -436,12 +546,16 @@ function OnuRow({
                     </dl>
                   ) : null}
 
-                  <SignalHistory days={history} />
+                  <div className="grid gap-x-8 lg:grid-cols-2">
+                    <SignalHistory days={history} />
+                    <UsageHistory days={usage} />
+                  </div>
+                  <DropHistory drops={drops} nowMs={readAt} />
 
                   {detail.history.length ? (
                     <div className="mt-4">
                       <p className="mb-1 text-[10px] uppercase tracking-wider text-gray-500">
-                        Recent ups and downs
+                        The OLT&apos;s own record
                       </p>
                       <ul className="space-y-0.5 text-[11px] text-gray-400">
                         {detail.history.slice(0, 5).map((h) => (

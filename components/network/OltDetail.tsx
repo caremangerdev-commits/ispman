@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useActionState, useCallback, useEffect, useRef, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
+import { OutagePanel } from '@/components/network/OutagePanel'
 import { oltFeatures } from '@/lib/olt/features'
 import { checkOlt, loadOnus, setOltAutoAuthorise, type OltActionResult } from '@/app/actions/olts'
 import { DeviceIcon } from '@/components/network/DeviceIcon'
@@ -20,7 +21,7 @@ import type { Olt } from '@/lib/data/olts'
  * shown as of then.
  */
 
-type Tab = 'details' | 'authorised' | 'pending' | 'offline' | 'cards' | 'pon' | 'uplinks' | 'vlans'
+type Tab = 'details' | 'authorised' | 'pending' | 'offline' | 'cards' | 'pon' | 'uplinks' | 'vlans' | 'outages'
 
 const ONU_TABS: Tab[] = ['authorised', 'pending', 'offline']
 
@@ -194,6 +195,7 @@ export function OltDetail({
     has.authorise ? { id: 'pending', label: 'Unauthorized' } : null,
     has.cards ? { id: 'cards', label: 'Cards', count: cards.length } : null,
     { id: 'pon', label: 'PON ports', count: pon.length },
+    { id: 'outages', label: 'Outages' },
     has.uplinks ? { id: 'uplinks', label: 'Uplinks', count: uplinks.length } : null,
     has.vlans ? { id: 'vlans', label: 'VLANs', count: vlans.length } : null,
   ] as ({ id: Tab; label: string; count?: number } | null)[]).filter(
@@ -402,6 +404,7 @@ export function OltDetail({
           )
         ) : null}
 
+        {tab === 'outages' ? <OutagePanel oltId={olt.id} canManage={canManage} /> : null}
         {tab === 'pon' ? (
           pon.length === 0 ? (
             <Empty>No PON ports read yet. They appear once a PON card is set up on the OLT.</Empty>

@@ -17,7 +17,10 @@ import type {
 import { can } from '@/lib/permissions'
 import { batchGetRadiusSeen, radiusConfigured } from '@/lib/radius-db'
 import { normaliseUsername } from '@/lib/radius/format'
-import { getSession } from '@/lib/session'
+import { blastOutage } from '@/lib/data/incident-notify'
+import { createIncident } from '@/lib/data/incidents'
+import { customerUsage, type UsageDay } from '@/lib/data/usage'
+import { displayName, getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 /**
@@ -383,9 +386,61 @@ export async function authoriseOnus(input: {
 }
 
 export type OnuSignalDay = { day: string; min: number | null; max: number | null; last: number | null }
+export type OnuDrop = {
+  downAt: string
+  upAt: string | null
+  cause: string | null
+  /** Other ONUs on the same PON port that went down in the same check. */
+  together: number
+}
 export type OnuDetailResult =
-  | { ok: true; detail: OltOnuDetail; signal: OnuSignalDay[] }
+  | {
+      ok: true
+      detail: OltOnuDetail
+      signal: OnuSignalDay[]
+      drops: OnuDrop[]
+      /** The linked customer's daily download and upload, oldest first. Null without usage data. */
+      usage: UsageDay[] | null
+    }
   | { ok: false; error: string }
+
+/** The last 50 drops ISPMan recorded for an ONU, newest first. Empty before migration 0065. */
+async function dropHistory(companyId: number, oltId: number, serial: string | null): Promise<OnuDrop[]> {
+  if (!serial) return []
+  const { data, error } = await tenantClient()
+    .from('onu_drops')
+    .select('down_at, up_at, cause, together')
+    .eq('company_id', companyId)
+    .eq('olt_id', oltId)
+    .eq('serial', serial.toUpperCase())
+    .order('down_at', { ascending: false })
+    .limit(50)
+  if (error) return []
+  return ((data ?? []) as { down_at: string; up_at: string | null; cause: string | null; together: number }[]).map(
+    (r) => ({ downAt: r.down_at, upAt: r.up_at, cause: r.cause, together: r.together ?? 0 })
+  )
+}
+
+/** The data the customer on this ONU used each day, for the last 60 days. */
+async function onuUsage(companyId: number, oltId: number, serial: string | null): Promise<UsageDay[] | null> {
+  if (!serial) return null
+  const { data } = await tenantClient()
+    .from('network_devices')
+    .select('customer_id')
+    .eq('company_id', companyId)
+    .eq('olt_id', oltId)
+    .eq('serial', serial.toUpperCase())
+    .not('customer_id', 'is', null)
+    .maybeSingle()
+  const customerId = (data as { customer_id: number } | null)?.customer_id
+  if (!customerId) return null
+  try {
+    const usage = await customerUsage(companyId, customerId, 60)
+    return usage && !usage.empty ? usage.series : null
+  } catch {
+    return null
+  }
+}
 
 /** The last 60 days of an ONU's signal, oldest first. Empty before migration 0058. */
 async function signalHistory(companyId: number, oltId: number, serial: string | null): Promise<OnuSignalDay[]> {
@@ -418,7 +473,12 @@ export async function loadOnuDetail(oltId: number, onuId: string): Promise<OnuDe
   if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
   try {
     const detail = await r.driver.onuDetail(r.target, r.login, String(onuId))
-    return { ok: true, detail, signal: await signalHistory(session.company.id, r.olt.id, detail.sn) }
+    const [signal, drops, usage] = await Promise.all([
+      signalHistory(session.company.id, r.olt.id, detail.sn),
+      dropHistory(session.company.id, r.olt.id, detail.sn),
+      onuUsage(session.company.id, r.olt.id, detail.sn),
+    ])
+    return { ok: true, detail, signal, drops, usage }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
@@ -530,4 +590,127 @@ export async function setOltAutoAuthorise(oltId: number, on: boolean): Promise<O
   })
   revalidatePath(PATH + '/' + found.olt.id)
   return { ok: true, message: on ? 'On.' : 'Off.' }
+}
+
+/* ------------------------------ PON outages ------------------------------ */
+
+export type PonOutage = {
+  id: number
+  port: string
+  startedAt: string
+  endedAt: string | null
+  onus: number
+  customers: { id: number; name: string; phone: string | null }[]
+  incidentId: number | null
+}
+
+/** The last 30 outages on one OLT, newest first. Empty before migration 0065. */
+export async function loadOutages(oltId: number): Promise<{ ok: true; outages: PonOutage[] } | { ok: false; error: string }> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'view_network_infrastructure')) {
+    return { ok: false, error: 'You do not have permission to see this.' }
+  }
+  const db = tenantClient()
+  const { data, error } = await db
+    .from('pon_outages')
+    .select('id, port, started_at, ended_at, serials, customer_ids, incident_id')
+    .eq('company_id', session.company.id)
+    .eq('olt_id', Number(oltId))
+    .order('started_at', { ascending: false })
+    .limit(30)
+  if (error) return { ok: true, outages: [] }
+  const rows = (data ?? []) as {
+    id: number; port: string; started_at: string; ended_at: string | null
+    serials: string[]; customer_ids: (number | string)[]; incident_id: number | null
+  }[]
+  const ids = [...new Set(rows.flatMap((r) => (r.customer_ids ?? []).map(Number)))]
+  const people = new Map<number, { id: number; name: string; phone: string | null }>()
+  if (ids.length) {
+    const { data: cs } = await db
+      .from('customers')
+      .select('id, first_name, last_name, phone')
+      .eq('company_id', session.company.id)
+      .in('id', ids.slice(0, 1000))
+    for (const c of (cs ?? []) as { id: number; first_name: string | null; last_name: string | null; phone: string | null }[]) {
+      people.set(c.id, { id: c.id, name: [c.first_name, c.last_name].filter(Boolean).join(' ') || 'Customer #' + c.id, phone: c.phone })
+    }
+  }
+  return {
+    ok: true,
+    outages: rows.map((r) => ({
+      id: r.id,
+      port: r.port,
+      startedAt: r.started_at,
+      endedAt: r.ended_at,
+      onus: (r.serials ?? []).length,
+      customers: (r.customer_ids ?? []).map(Number).map((id) => people.get(id)).filter((x): x is { id: number; name: string; phone: string | null } => Boolean(x)),
+      incidentId: r.incident_id,
+    })),
+  }
+}
+
+/**
+ * Tell the customers on a PON port that went down. Opens an incident for
+ * exactly those customers, which texts them now (if the company has outage
+ * messages on), shows the outage on their portal page, and texts them again
+ * when the background check sees the port come back and closes it.
+ */
+export async function notifyOutage(input: { outageId: number; message: string }): Promise<OltActionResult> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'manage_company_settings')) {
+    return { ok: false, error: 'Only someone who can manage incidents can send this.' }
+  }
+  const companyId = session.company.id
+  const message = String(input.message ?? '').trim().slice(0, 300)
+  if (message.length < 10) return { ok: false, error: 'Write the message the customers will get.' }
+
+  const db = tenantClient()
+  const { data } = await db
+    .from('pon_outages')
+    .select('id, olt_id, port, customer_ids, incident_id, olts(name)')
+    .eq('company_id', companyId)
+    .eq('id', Number(input.outageId))
+    .maybeSingle()
+  const out = data as unknown as {
+    id: number; olt_id: number; port: string; customer_ids: (number | string)[]; incident_id: number | null
+    olts: { name: string } | null
+  } | null
+  if (!out) return { ok: false, error: 'That outage was not found.' }
+  if (out.incident_id) return { ok: false, error: 'These customers were already told.' }
+  const customerIds = (out.customer_ids ?? []).map(Number).filter(Number.isFinite)
+  if (customerIds.length === 0) return { ok: false, error: 'None of the ONUs on this outage is linked to a customer.' }
+
+  const portName = 'PON ' + (out.port.split(/[^0-9]+/).filter(Boolean).pop() ?? out.port)
+  const where = portName + ' on ' + (out.olts?.name ?? 'the OLT')
+  try {
+    const id = await createIncident(
+      companyId,
+      { title: 'Fibre outage: ' + where, message, scope: 'customers', scopeValue: where, nextUpdateAt: null, customerIds },
+      { id: session.profile.id, name: displayName(session.profile) }
+    )
+    await db.from('pon_outages').update({ incident_id: id }).eq('id', out.id)
+    const incident = {
+      id, title: 'Fibre outage: ' + where, message, scope: 'customers' as const, scopeValue: where,
+      customerIds, status: 'open' as const, openedAt: new Date().toISOString(), restoredAt: null,
+      nextUpdateAt: null, updatedAt: new Date().toISOString(),
+    }
+    await blastOutage(companyId, session.company.name, incident, 'open')
+    await logEvent({
+      type: 'outage_notified', tag: '[olt]',
+      details: customerIds.length + ' customers told about the outage on ' + where + ' | by=' + session.profile.email,
+    })
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+  revalidatePath(PATH + '/' + out.olt_id)
+  const { data: st } = await db.from('settings').select('notify_outage_enabled').eq('company_id', companyId).maybeSingle()
+  if (!(st as { notify_outage_enabled: boolean | null } | null)?.notify_outage_enabled) {
+    return {
+      ok: true,
+      message:
+        'Outage opened for ' + customerIds.length + ' customers and shown on their portal page. No texts went out: ' +
+        'outage messages are switched off in Settings, Messaging.',
+    }
+  }
+  return { ok: true, message: customerIds.length + ' customers will be texted now, and again when the port is back.' }
 }

@@ -1,6 +1,8 @@
 import 'server-only'
 
 import { linkOnusToCustomers, type OnuCustomer } from '@/lib/data/customer-devices'
+import { blastOutage } from '@/lib/data/incident-notify'
+import { closeIncident, getIncident } from '@/lib/data/incidents'
 import { oltWatchTargets, type OltWatchTarget } from '@/lib/data/olts'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { oltForwardPort } from '@/lib/olt/forward'
@@ -78,6 +80,16 @@ export async function raiseNetworkAlert(companyId: number, customerId: number | 
     status: 'pending',
   })
   if (error) console.error('[olt-watch] could not raise the bell:', error.message)
+}
+
+/** The OLT's word for why an ONU went down, in plain words. */
+export function dropCause(phase: string | null | undefined): string {
+  const p = (phase ?? '').toLowerCase()
+  if (/dying|power ?off|dgi/.test(p)) return 'Lost power'
+  if (/losi|lofi|los\b|^los|sf|lob|fibre|fiber/.test(p)) return 'Lost fibre signal'
+  if (/deactiv|disable/.test(p)) return 'Turned off on the OLT'
+  if (/reboot|reset/.test(p)) return 'Restarted'
+  return p ? 'Went offline (' + phase + ')' : 'Went offline'
 }
 
 const who = (sn: string, owners: Record<string, OnuCustomer>) =>
@@ -163,14 +175,37 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
   if (!first) {
     for (const [port, gone] of byPort) {
       const wasWorking = [...last.values()].filter((s) => s.port === port && s.online).length
+      // Every drop on record, with how many went with it: the number that
+      // tells one customer's problem from the fibre to the whole street.
+      await db.from('onu_drops').insert(
+        gone.map((o) => ({
+          company_id: companyId,
+          olt_id: olt.id,
+          serial: o.sn.toUpperCase(),
+          port,
+          customer_id: owners[o.sn.toUpperCase()]?.customerId ?? null,
+          down_at: now,
+          cause: dropCause(o.phase),
+          together: gone.length - 1,
+        }))
+      )
       if (wasWorking >= PORT_MIN && gone.length >= Math.ceil(wasWorking * 0.8)) {
         const names = gone.map((o) => who(o.sn.toUpperCase(), owners))
+        await db.from('pon_outages').insert({
+          company_id: companyId,
+          olt_id: olt.id,
+          port,
+          started_at: now,
+          serials: gone.map((o) => o.sn.toUpperCase()),
+          customer_ids: [...new Set(gone.map((o) => owners[o.sn.toUpperCase()]?.customerId).filter((x): x is number => Boolean(x)))],
+        })
         await raiseNetworkAlert(
           companyId,
           null,
           'PON port ' + port.replace('gpon-olt_', '') + ' on ' + olt.name + ' is down. ' + gone.length +
             ' customers lost service at the same time: ' + names.slice(0, 12).join(', ') +
-            (names.length > 12 ? ' and ' + (names.length - 12) + ' more' : '') + '. Check the fibre from that port.'
+            (names.length > 12 ? ' and ' + (names.length - 12) + ' more' : '') + '. Check the fibre from that port.' +
+            ' To text them, open the OLT page, Outages.'
         )
         result.alerts += 1
       } else {
@@ -229,6 +264,53 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
       return result
     }
   }
+  // Back again: close the drop that was open for each ONU now working.
+  const returned = onus.filter((o) => o.online && last.get(o.sn.toUpperCase())?.online === false)
+  if (returned.length) {
+    await db
+      .from('onu_drops')
+      .update({ up_at: now })
+      .eq('olt_id', olt.id)
+      .is('up_at', null)
+      .in('serial', returned.map((o) => o.sn.toUpperCase()))
+  }
+
+  // A PON outage is over once at least half of the ONUs it took down are
+  // working again: the fibre is fixed, and the rest are customers' own
+  // problems. The incident opened for it, if any, closes too, and its
+  // customers are told the service is back.
+  const { data: openOutages } = await db
+    .from('pon_outages')
+    .select('id, port, serials, incident_id')
+    .eq('olt_id', olt.id)
+    .is('ended_at', null)
+  const onlineNow = new Set(onus.filter((o) => o.online).map((o) => o.sn.toUpperCase()))
+  for (const out of (openOutages ?? []) as { id: number; port: string; serials: string[]; incident_id: number | null }[]) {
+    const back = out.serials.filter((sn) => onlineNow.has(sn)).length
+    if (out.serials.length === 0 || back < Math.ceil(out.serials.length / 2)) continue
+    await db.from('pon_outages').update({ ended_at: now }).eq('id', out.id)
+    await raiseNetworkAlert(
+      companyId,
+      null,
+      'PON port ' + out.port.replace('gpon-olt_', '') + ' on ' + olt.name + ' is back: ' + back + ' of ' +
+        out.serials.length + ' ONUs are working again.'
+    )
+    result.alerts += 1
+    if (out.incident_id) {
+      try {
+        const incident = await getIncident(companyId, out.incident_id)
+        if (incident && incident.status === 'open') {
+          await closeIncident(companyId, incident.id)
+          const company = await db.from('companies').select('name').eq('id', companyId).maybeSingle()
+          const name = (company.data as { name: string } | null)?.name ?? ''
+          await blastOutage(companyId, name, { ...incident, status: 'restored' }, 'restored')
+        }
+      } catch (err) {
+        console.error('[olt-watch] could not close the outage incident:', err instanceof Error ? err.message : String(err))
+      }
+    }
+  }
+
   // An ONU removed from the OLT is no longer watched.
   const present = new Set(rows.map((r) => r.serial))
   const removed = [...last.keys()].filter((sn) => !present.has(sn))

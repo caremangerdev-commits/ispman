@@ -5,15 +5,16 @@ import { tenantClient } from '@/lib/supabase/tenant'
 /**
  * Outage / maintenance incidents (migration 0037). Staff open and close them;
  * the portal shows a banner to customers inside the scope; SMS goes out on open
- * and restore. Scope is company-wide or one access point (customers.access_point),
- * the only location the schema stores — scoping is the whole point of the feature.
+ * and restore. Scope is company-wide, one access point (customers.access_point),
+ * or a list of named customers (0065) — the customers on a PON port that went
+ * down, which only the OLT knows. Scoping is the whole point of the feature.
  */
 
 const MISSING = new Set(['PGRST205', '42P01', '42703'])
 const COLS =
-  'id, title, message, scope, scope_value, status, opened_at, restored_at, next_update_at, updated_at'
+  'id, title, message, scope, scope_value, status, opened_at, restored_at, next_update_at, updated_at, customer_ids'
 
-export type IncidentScope = 'company' | 'access_point'
+export type IncidentScope = 'company' | 'access_point' | 'customers'
 
 export type Incident = {
   id: number
@@ -21,6 +22,8 @@ export type Incident = {
   message: string | null
   scope: IncidentScope
   scopeValue: string | null
+  /** For scope 'customers': who it covers. */
+  customerIds: number[]
   status: 'open' | 'restored'
   openedAt: string
   restoredAt: string | null
@@ -39,6 +42,7 @@ type Row = {
   restored_at: string | null
   next_update_at: string | null
   updated_at: string
+  customer_ids?: (number | string)[] | null
 }
 
 function toIncident(r: Row): Incident {
@@ -46,8 +50,9 @@ function toIncident(r: Row): Incident {
     id: r.id,
     title: r.title,
     message: r.message,
-    scope: r.scope === 'access_point' ? 'access_point' : 'company',
+    scope: r.scope === 'access_point' ? 'access_point' : r.scope === 'customers' ? 'customers' : 'company',
     scopeValue: r.scope_value,
+    customerIds: (r.customer_ids ?? []).map(Number).filter(Number.isFinite),
     status: r.status === 'restored' ? 'restored' : 'open',
     openedAt: r.opened_at,
     restoredAt: r.restored_at,
@@ -88,6 +93,7 @@ export async function createIncident(
     scope: IncidentScope
     scopeValue: string | null
     nextUpdateAt: string | null
+    customerIds?: number[]
   },
   by: { id: number; name: string }
 ): Promise<number> {
@@ -98,7 +104,8 @@ export async function createIncident(
       title: input.title,
       message: input.message,
       scope: input.scope,
-      scope_value: input.scope === 'access_point' ? input.scopeValue : null,
+      scope_value: input.scope === 'access_point' || input.scope === 'customers' ? input.scopeValue : null,
+      ...(input.scope === 'customers' ? { customer_ids: input.customerIds ?? [] } : {}),
       next_update_at: input.nextUpdateAt,
       created_by: by.id,
       created_by_name: by.name,
@@ -139,7 +146,8 @@ export async function closeIncident(companyId: number, id: number): Promise<void
  */
 export async function activeIncidentForCustomer(
   companyId: number,
-  accessPoint: string | null
+  accessPoint: string | null,
+  customerId?: number
 ): Promise<Incident | null> {
   const db = tenantClient()
   const { data, error } = await db
@@ -156,7 +164,10 @@ export async function activeIncidentForCustomer(
   const rows = ((data ?? []) as unknown as Row[]).map(toIncident)
   return (
     rows.find(
-      (i) => i.scope === 'company' || (i.scope === 'access_point' && i.scopeValue === accessPoint)
+      (i) =>
+        i.scope === 'company' ||
+        (i.scope === 'access_point' && i.scopeValue === accessPoint) ||
+        (i.scope === 'customers' && customerId !== undefined && i.customerIds.includes(customerId))
     ) ?? null
   )
 }
@@ -179,6 +190,10 @@ export async function affectedCustomers(companyId: number, incident: Incident): 
   if (incident.scope === 'access_point') {
     if (!incident.scopeValue) return []
     q = q.eq('access_point', incident.scopeValue)
+  }
+  if (incident.scope === 'customers') {
+    if (incident.customerIds.length === 0) return []
+    q = q.in('id', incident.customerIds)
   }
   const { data, error } = await q
   if (error) {

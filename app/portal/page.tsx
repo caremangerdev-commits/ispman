@@ -37,7 +37,7 @@ export default async function PortalHome(props: {
   const [payments, gateway, incident, caps, bill, cardFee, sp] = await Promise.all([
     getCustomerPayments(company.id, session.customerId),
     getEnabledGateway(company.id),
-    activeIncidentForCustomer(company.id, account.accessPoint),
+    activeIncidentForCustomer(company.id, account.accessPoint, session.customerId),
     getSchemaCapabilities(),
     getBillSettings(company.id),
     portalCardFee(company.id),
