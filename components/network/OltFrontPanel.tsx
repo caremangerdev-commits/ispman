@@ -326,7 +326,7 @@ function CardFace({
       <Ejector side="left" />
       <div className="flex w-[88px] shrink-0 flex-col justify-center gap-1 px-2">
         <span className="truncate text-[11px] font-bold tracking-wide text-[#eef0f2]">{name}</span>
-        <span className="flex items-center gap-2 text-[8px] font-semibold tracking-wider text-[#8a919b]">
+        <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[8px] font-semibold tracking-wide text-[#8a919b]">
           {light ? (
             <>
               <span className="flex items-center gap-0.5"><Led light={light} />RUN</span>
