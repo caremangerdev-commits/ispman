@@ -1,5 +1,7 @@
 'use client'
 
+import type { ReactNode } from 'react'
+
 import type { OltCard, OltInfo, OltOnu, OltPonPort, OltUplink } from '@/lib/olt/types'
 
 /**
@@ -172,50 +174,11 @@ function UplinkCage({ up, onPick }: { up: OltUplink; onPick?: () => void }) {
   )
 }
 
+
 function cardLight(c: OltCard): Light {
   const s = c.status.toUpperCase()
-  if (s === 'INSERVICE' || s === 'NORMAL' || s === 'ACTIVE' || s === 'ACTIVE_NORMAL') return 'on'
-  if (s === 'STANDBY') return 'on'
+  if (s === 'INSERVICE' || s === 'NORMAL' || s === 'ACTIVE' || s === 'ACTIVE_NORMAL' || s === 'STANDBY') return 'on'
   return 'down'
-}
-
-/** One card's faceplate: its name and state at the left, its ports along it. */
-function Faceplate({
-  label, sub, light, pons, uplinks, selected, onPick, onUplinks, empty,
-}: {
-  label: string
-  sub: string | null
-  light: Light | null
-  pons: PanelPon[]
-  uplinks: OltUplink[]
-  selected: string | null
-  onPick: (p: PanelPon) => void
-  onUplinks?: () => void
-  empty?: string
-}) {
-  return (
-    <div className="flex min-h-[64px] items-stretch rounded-[5px] border border-black/50 bg-gradient-to-b from-[#2a2f36] to-[#22262c] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
-      <div className="flex w-28 shrink-0 flex-col justify-center gap-1 border-r border-black/40 px-3">
-        <span className="flex items-center gap-1.5">
-          {light ? <Led light={light} /> : null}
-          <span className="truncate text-[11px] font-semibold tracking-wide text-[#e4e7eb]">{label}</span>
-        </span>
-        {sub ? <span className="truncate text-[10px] text-[#8a919b]">{sub}</span> : null}
-      </div>
-      <div className="flex flex-1 flex-wrap items-center gap-x-0.5 gap-y-1 px-2 py-1">
-        {pons.map((p) => (
-          <PonCage key={p.name} pon={p} selected={selected === p.filter} onPick={onPick} />
-        ))}
-        {pons.length && uplinks.length ? <span aria-hidden="true" className="mx-2 h-10 w-px bg-black/40" /> : null}
-        {uplinks.map((u) => (
-          <UplinkCage key={u.name} up={u} onPick={onUplinks} />
-        ))}
-        {!pons.length && !uplinks.length ? (
-          <span className="px-1 text-[10px] text-[#6b727c]">{empty ?? ''}</span>
-        ) : null}
-      </div>
-    </div>
-  )
 }
 
 const STATUS_WORD: Record<string, string> = {
@@ -225,6 +188,183 @@ const STATUS_WORD: Record<string, string> = {
   HWONLINE: 'Starting',
 }
 const statusWord = (s: string) => STATUS_WORD[s.toUpperCase()] ?? s.charAt(0) + s.slice(1).toLowerCase()
+
+/* ---------------------------------------------------------------------------
+   The metalwork. Plain shapes, shaded to read as a real box in a rack: a
+   brushed-steel chassis, dark card faceplates with an ejector lever at each
+   end, a vented fan tray, an RJ45 jack where a real card has its console.
+   --------------------------------------------------------------------------- */
+
+const STEEL = 'bg-[linear-gradient(180deg,#d9dde2_0%,#c3c8ce_45%,#aeb4bb_100%)]'
+const PLATE = 'bg-[linear-gradient(180deg,#3a4048_0%,#2b3037_55%,#24282e_100%)]'
+
+/** The lever at each end of a card that locks it into its slot. */
+function Ejector({ side }: { side: 'left' | 'right' }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={
+        'flex w-3.5 shrink-0 flex-col items-center justify-center gap-1 bg-[linear-gradient(90deg,#1d2126,#30353c,#1d2126)] ' +
+        (side === 'left' ? 'rounded-l-[3px] border-r border-black/50' : 'rounded-r-[3px] border-l border-black/50')
+      }
+    >
+      <span className="block h-1.5 w-1.5 rounded-full bg-[radial-gradient(circle_at_35%_35%,#b8bec6,#5a6068)]" />
+      <span className="block h-4 w-[3px] rounded-full bg-[#14171a]" />
+    </span>
+  )
+}
+
+/** A management or console socket: there on the real card, not something ISPMan reads. */
+function Rj45({ label }: { label: string }) {
+  return (
+    <span aria-hidden="true" className="flex w-8 flex-col items-center gap-1 pt-1.5">
+      <span className="block h-1.5 w-1.5 rounded-full bg-[#4a5059]" />
+      <span className="flex h-[18px] w-6 items-end justify-center rounded-[2px] bg-[#0f1114] ring-1 ring-[#5d636c]">
+        <span className="mb-[3px] block h-[5px] w-3 rounded-[1px] bg-[#1e2227]" />
+      </span>
+      <span className="text-[8px] font-semibold leading-none tracking-wide text-[#8a919b]">{label}</span>
+    </span>
+  )
+}
+
+function FanTray({ light }: { light: Light }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={'flex w-12 shrink-0 flex-col items-center justify-between rounded-[4px] border border-black/40 py-2 ' + PLATE}
+    >
+      <span className="text-[8px] font-bold tracking-wider text-[#a7adb5]">FAN</span>
+      <span className="block w-8 flex-1 my-2 rounded-[2px] bg-[repeating-linear-gradient(180deg,#0d0f12_0px,#0d0f12_3px,#3a4048_3px,#3a4048_6px)] shadow-[inset_0_0_4px_rgba(0,0,0,0.8)]" />
+      <Led light={light} />
+    </div>
+  )
+}
+
+function PowerModule({ light }: { light: Light }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={'flex w-12 shrink-0 flex-col items-center justify-between rounded-[4px] border border-black/40 py-2 ' + PLATE}
+    >
+      <span className="text-[8px] font-bold tracking-wider text-[#a7adb5]">PWR</span>
+      <span className="flex flex-col items-center gap-1.5">
+        <span className="flex h-6 w-7 items-center justify-center rounded-[3px] bg-[#0f1114] ring-1 ring-[#5d636c]">
+          <span className="flex gap-[3px]">
+            <span className="block h-2 w-[3px] rounded-sm bg-[#8d949e]" />
+            <span className="block h-2 w-[3px] rounded-sm bg-[#8d949e]" />
+            <span className="block h-2 w-[3px] rounded-sm bg-[#8d949e]" />
+          </span>
+        </span>
+        <span className="block h-1.5 w-1.5 rounded-full bg-[radial-gradient(circle_at_35%_35%,#b8bec6,#5a6068)]" />
+      </span>
+      <Led light={light} />
+    </div>
+  )
+}
+
+/** One card in its slot: ejectors at both ends, its name silkscreened at the left, its ports along it. */
+function CardFace({
+  name, slot, status, light, pons, uplinks, jacks = false, selected, onPick, onUplinks, empty, className = '',
+}: {
+  name: string
+  slot: number | null
+  status: string | null
+  light: Light | null
+  pons: PanelPon[]
+  uplinks: OltUplink[]
+  /** Draw the console and management sockets a control card has. */
+  jacks?: boolean
+  selected: string | null
+  onPick: (p: PanelPon) => void
+  onUplinks?: () => void
+  empty?: string
+  className?: string
+}) {
+  const said = (slot != null ? 'Slot ' + slot + ', ' : '') + name + (status ? ', ' + status.toLowerCase() : '')
+  return (
+    <div
+      title={said}
+      className={'flex min-h-[70px] items-stretch rounded-[4px] border border-black/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_0_rgba(255,255,255,0.4)] ' + PLATE + ' ' + className}
+    >
+      <Ejector side="left" />
+      <div className="flex w-[74px] shrink-0 flex-col justify-center gap-1 px-2">
+        <span className="truncate text-[11px] font-bold tracking-wide text-[#eef0f2]">{name}</span>
+        <span className="flex items-center gap-2 text-[8px] font-semibold tracking-wider text-[#8a919b]">
+          {light ? (
+            <>
+              <span className="flex items-center gap-0.5"><Led light={light} />RUN</span>
+              <span className="flex items-center gap-0.5"><Led light={light === 'down' ? 'down' : 'idle'} className="animate-none" />ALM</span>
+            </>
+          ) : null}
+        </span>
+        {status ? <span className="truncate text-[9px] text-[#9aa1ab]">{(slot != null ? slot + ' · ' : '') + status}</span> : null}
+      </div>
+      <div className="flex flex-1 flex-wrap items-center gap-x-0.5 gap-y-1 border-l border-black/40 px-1.5 py-1">
+        {pons.map((p) => (
+          <PonCage key={p.name} pon={p} selected={selected === p.filter} onPick={onPick} />
+        ))}
+        {pons.length && uplinks.length ? <span aria-hidden="true" className="mx-1.5 h-10 w-px bg-black/40" /> : null}
+        {uplinks.map((u) => (
+          <UplinkCage key={u.name} up={u} onPick={onUplinks} />
+        ))}
+        {jacks ? (
+          <span className="ml-auto flex">
+            <Rj45 label="MGMT" />
+            <Rj45 label="CON" />
+          </span>
+        ) : null}
+        {!pons.length && !uplinks.length && !jacks ? (
+          <span className="px-1 text-[10px] text-[#7d848e]">{empty ?? ''}</span>
+        ) : null}
+      </div>
+      <Ejector side="right" />
+    </div>
+  )
+}
+
+/** A slot with no card in it: a plain blanking plate. */
+function Blank({ slot, className = '' }: { slot: number; className?: string }) {
+  return (
+    <div
+      title={'Slot ' + slot + ': empty'}
+      className={'flex min-h-[70px] items-center justify-between rounded-[4px] border border-black/30 bg-[linear-gradient(180deg,#b9bec5,#a3a9b0)] px-3 ' + className}
+    >
+      <Screw />
+      <span className="text-[10px] font-semibold text-[#5b616a]">Slot {slot} · empty</span>
+      <Screw />
+    </div>
+  )
+}
+
+/** A rack ear, with the oval slots the rack screws go through. */
+function Ear({ side }: { side: 'left' | 'right' }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={
+        'flex w-7 shrink-0 flex-col items-center justify-around py-3 ' + STEEL + ' ' +
+        (side === 'left' ? 'rounded-l-[6px] border-r border-black/20' : 'rounded-r-[6px] border-l border-black/20')
+      }
+    >
+      <span className="block h-3 w-2 rounded-full bg-[#2a2e34] shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]" />
+      <span className="block h-3 w-2 rounded-full bg-[#2a2e34] shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]" />
+    </div>
+  )
+}
+
+/**
+ * Where each slot sits on the front of a chassis ISPMan knows the shape of.
+ * Anything else is drawn one card per row, which is how most carded OLTs
+ * look from the front anyway. Need not be exact; it has to be recognisable.
+ */
+type Layout = { rows: number[][]; fan: boolean; power: boolean }
+function layoutFor(brand: string, model: string | null): Layout | null {
+  const m = (model ?? '').toUpperCase()
+  // ZTE C320, 2U: the fan tray down the left, the two service cards across
+  // the top, the two SMXA control cards side by side beneath them.
+  if (brand === 'zte' && m.includes('C320')) return { rows: [[1], [2], [3, 4]], fan: true, power: true }
+  return null
+}
 
 export function OltFrontPanel({
   model, brand, reachable, info, onus, selected, onPickPort, onUplinks,
@@ -245,91 +385,139 @@ export function OltFrontPanel({
   const uplinks = info?.uplinks ?? []
   const cards = [...(info?.cards ?? [])].sort((a, b) => a.slot - b.slot)
   const pick = (p: PanelPon) => onPickPort(selected === p.filter ? '' : p.filter)
+  const sys: Light = reachable === true ? 'on' : reachable === false ? 'down' : 'idle'
+  const pwr: Light = reachable === null ? 'idle' : 'on'
 
-  // Every port lands on a card when the OLT lists cards; anything left over
-  // (a port on a slot that did not report) gets a plate of its own.
-  const rows: { key: string; label: string; sub: string | null; light: Light | null; pons: PanelPon[]; ups: OltUplink[]; empty?: string }[] = []
-  if (cards.length) {
-    const used = new Set<number>()
-    for (const c of cards) {
-      used.add(c.slot)
-      rows.push({
-        key: 'c' + c.slot,
-        label: c.slot + ' · ' + (c.actual ?? c.configured),
-        sub: statusWord(c.status),
-        light: cardLight(c),
-        pons: pons.filter((p) => p.slot === c.slot),
-        ups: uplinks.filter((u) => place(u.name).slot === c.slot),
-        empty: c.status.toUpperCase() === 'OFFLINE' ? 'Card not running' : 'Control and power',
-      })
-    }
+  const face = (c: OltCard, className = '') => {
+    const ups = uplinks.filter((u) => place(u.name).slot === c.slot)
+    const ps = pons.filter((p) => p.slot === c.slot)
+    const control = /^(SMX|SCX|SCU|MCU|H90|H80|SCUN|MPW)/i.test(c.actual ?? c.configured) || (!ps.length && ups.length > 0)
+    return (
+      <CardFace
+        key={'c' + c.slot}
+        name={c.actual ?? c.configured}
+        slot={c.slot}
+        status={statusWord(c.status)}
+        light={cardLight(c)}
+        pons={ps}
+        uplinks={ups}
+        jacks={control}
+        selected={selected}
+        onPick={pick}
+        onUplinks={onUplinks}
+        empty={c.status.toUpperCase() === 'OFFLINE' ? 'Card not running' : undefined}
+        className={className}
+      />
+    )
+  }
+
+  const layout = cards.length ? layoutFor(brand, model) : null
+  let body: ReactNode
+  if (layout) {
+    const bySlot = new Map(cards.map((c) => [c.slot, c]))
+    const placed = new Set(layout.rows.flat())
+    const extra = cards.filter((c) => !placed.has(c.slot))
+    body = (
+      <div className="flex flex-1 gap-1.5">
+        {layout.fan ? <FanTray light={sys === 'down' ? 'idle' : pwr} /> : null}
+        <div className="flex flex-1 flex-col gap-1.5">
+          {layout.rows.map((row) => (
+            <div key={row.join('-')} className="flex gap-1.5">
+              {row.map((s) => {
+                const c = bySlot.get(s)
+                return c ? face(c, 'min-w-0 flex-1') : <Blank key={'b' + s} slot={s} className="min-w-0 flex-1" />
+              })}
+            </div>
+          ))}
+          {extra.map((c) => face(c))}
+        </div>
+        {layout.power ? <PowerModule light={pwr} /> : null}
+      </div>
+    )
+  } else if (cards.length) {
+    const used = new Set(cards.map((c) => c.slot))
     const strays = [...new Set([...pons.map((p) => p.slot), ...uplinks.map((u) => place(u.name).slot)])].filter(
       (s) => s == null || !used.has(s)
     )
-    for (const s of strays) {
-      rows.push({
-        key: 's' + s,
-        label: s == null ? 'Ports' : 'Slot ' + s,
-        sub: null,
-        light: null,
-        pons: pons.filter((p) => p.slot === s),
-        ups: uplinks.filter((u) => place(u.name).slot === s),
-      })
-    }
+    body = (
+      <div className="flex flex-1 flex-col gap-1.5">
+        {cards.map((c) => face(c))}
+        {strays.map((s) => (
+          <CardFace
+            key={'s' + s}
+            name={s == null ? 'Ports' : 'Slot ' + s}
+            slot={null}
+            status={null}
+            light={null}
+            pons={pons.filter((p) => p.slot === s)}
+            uplinks={uplinks.filter((u) => place(u.name).slot === s)}
+            selected={selected}
+            onPick={pick}
+            onUplinks={onUplinks}
+          />
+        ))}
+      </div>
+    )
   } else {
-    rows.push({ key: 'one', label: 'PON', sub: pons.length + ' ports', light: null, pons, ups: uplinks, empty: 'No ports read yet' })
+    // A pizza-box OLT (GCOM, C-Data, V-SOL): one fixed front with its PON
+    // ports, its uplinks, and the console and management sockets.
+    body = (
+      <div className={'flex flex-1 items-stretch rounded-[4px] border border-black/60 ' + PLATE}>
+        <div className="flex w-[74px] shrink-0 flex-col justify-center gap-1.5 border-r border-black/40 px-2.5">
+          <span className="flex items-center gap-2 text-[8px] font-semibold tracking-wider text-[#8a919b]">
+            <span className="flex items-center gap-0.5"><Led light={pwr} />PWR</span>
+            <span className="flex items-center gap-0.5"><Led light={sys} />SYS</span>
+          </span>
+          <span className="text-[9px] text-[#9aa1ab]">{pons.length} PON ports</span>
+        </div>
+        <div className="flex flex-1 flex-wrap items-center gap-x-0.5 gap-y-1 px-1.5 py-1">
+          {pons.map((p) => (
+            <PonCage key={p.name} pon={p} selected={selected === p.filter} onPick={pick} />
+          ))}
+          {pons.length && uplinks.length ? <span aria-hidden="true" className="mx-1.5 h-10 w-px bg-black/40" /> : null}
+          {uplinks.map((u) => (
+            <UplinkCage key={u.name} up={u} onPick={onUplinks} />
+          ))}
+          {!pons.length && !uplinks.length ? <span className="px-1 text-[10px] text-[#7d848e]">No ports read yet</span> : null}
+          <span className="ml-auto flex">
+            <Rj45 label="MGMT" />
+            <Rj45 label="CON" />
+          </span>
+        </div>
+      </div>
+    )
   }
 
   const slots = new Set(pons.map((p) => p.slot))
   const portLabel = (p: PanelPon) => (slots.size > 1 && p.slot != null ? p.slot + '/' + p.port : String(p.port))
   const live = pons.filter((p) => p.light === 'on').length
   const down = pons.filter((p) => p.light === 'down')
-  const sys: Light = reachable === true ? 'on' : reachable === false ? 'down' : 'idle'
 
   return (
     <section aria-label="Front panel" className="space-y-2">
       <div className="overflow-x-auto pb-1">
-        <div className="flex min-w-[520px] items-stretch rounded-[10px] bg-gradient-to-b from-[#454b54] via-[#363b42] to-[#2c3036] p-1.5 shadow-[0_8px_20px_-8px_rgba(15,23,42,0.45),inset_0_1px_0_rgba(255,255,255,0.18)]">
-          {/* Rack ear */}
-          <div aria-hidden="true" className="flex w-6 shrink-0 flex-col items-center justify-between rounded-l-[6px] bg-[#2a2e34] py-3">
-            <Screw />
-            <Screw />
-          </div>
-
-          <div className="flex-1 space-y-1.5 px-2 py-1.5">
+        <div className="flex min-w-[640px] items-stretch rounded-[8px] shadow-[0_10px_24px_-10px_rgba(15,23,42,0.55)]">
+          <Ear side="left" />
+          <div className={'flex-1 space-y-1.5 border-y border-black/20 px-2 pb-2 pt-1.5 ' + STEEL}>
             <div className="flex items-center justify-between px-1">
-              <span className="text-[11px] font-bold tracking-[0.08em] text-[#c3c8cf]">
+              <span className="text-[11px] font-bold tracking-[0.12em] text-[#3b4048]">
                 {(model ?? brand).toUpperCase()}
               </span>
-              <span className="flex items-center gap-3 text-[9px] font-semibold tracking-wider text-[#8a919b]">
-                <span className="flex items-center gap-1">
-                  <Led light={reachable === null ? 'idle' : 'on'} /> PWR
+              {layout ? (
+                <span className="flex items-center gap-3 text-[8px] font-bold tracking-wider text-[#4d535b]">
+                  <span className="flex items-center gap-1"><Led light={pwr} /> PWR</span>
+                  <span
+                    className="flex items-center gap-1"
+                    title={reachable === false ? 'ISPMan could not reach it at the last check' : undefined}
+                  >
+                    <Led light={sys} /> SYS
+                  </span>
                 </span>
-                <span className="flex items-center gap-1" title={reachable === false ? 'ISPMan could not reach it at the last check' : undefined}>
-                  <Led light={sys} /> SYS
-                </span>
-              </span>
+              ) : null}
             </div>
-            {rows.map((r) => (
-              <Faceplate
-                key={r.key}
-                label={r.label}
-                sub={r.sub}
-                light={r.light}
-                pons={r.pons}
-                uplinks={r.ups}
-                selected={selected}
-                onPick={pick}
-                onUplinks={onUplinks}
-                empty={r.empty}
-              />
-            ))}
+            {body}
           </div>
-
-          <div aria-hidden="true" className="flex w-6 shrink-0 flex-col items-center justify-between rounded-r-[6px] bg-[#2a2e34] py-3">
-            <Screw />
-            <Screw />
-          </div>
+          <Ear side="right" />
         </div>
       </div>
 
