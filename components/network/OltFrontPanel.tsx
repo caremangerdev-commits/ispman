@@ -287,7 +287,7 @@ function CardFace({
       className={'flex min-h-[70px] items-stretch rounded-[4px] border border-black/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_1px_0_rgba(255,255,255,0.4)] ' + PLATE + ' ' + className}
     >
       <Ejector side="left" />
-      <div className="flex w-[74px] shrink-0 flex-col justify-center gap-1 px-2">
+      <div className="flex w-[88px] shrink-0 flex-col justify-center gap-1 px-2">
         <span className="truncate text-[11px] font-bold tracking-wide text-[#eef0f2]">{name}</span>
         <span className="flex items-center gap-2 text-[8px] font-semibold tracking-wider text-[#8a919b]">
           {light ? (
@@ -463,7 +463,7 @@ export function OltFrontPanel({
     // ports, its uplinks, and the console and management sockets.
     body = (
       <div className={'flex flex-1 items-stretch rounded-[4px] border border-black/60 ' + PLATE}>
-        <div className="flex w-[74px] shrink-0 flex-col justify-center gap-1.5 border-r border-black/40 px-2.5">
+        <div className="flex w-[88px] shrink-0 flex-col justify-center gap-1.5 border-r border-black/40 px-2.5">
           <span className="flex items-center gap-2 text-[8px] font-semibold tracking-wider text-[#8a919b]">
             <span className="flex items-center gap-0.5"><Led light={pwr} />PWR</span>
             <span className="flex items-center gap-0.5"><Led light={sys} />SYS</span>
