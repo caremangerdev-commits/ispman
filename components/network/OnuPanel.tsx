@@ -8,6 +8,7 @@ import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
 import { SignalBars } from '@/components/network/SignalBars'
 import type { OnuCustomer } from '@/lib/data/customer-devices'
 import type { UsageDay } from '@/lib/data/usage'
+import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import type {
   OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
 } from '@/lib/olt/types'
@@ -387,6 +388,7 @@ function OnuRow({
   /** The ONU the search led here: opened, read, and scrolled to. */
   focused?: boolean
 }) {
+  const writes = oltFeatures(brand).writes
   const [open, setOpen] = useState(focused)
   const rowRef = useRef<HTMLTableRowElement>(null)
   const [detail, setDetail] = useState<OltOnuDetail | null>(null)
@@ -590,6 +592,8 @@ function OnuRow({
                   <button type="button" onClick={() => void read()} disabled={!!busy} className={small}>
                     {busy === 'read' ? 'Reading…' : 'Read again'}
                   </button>
+                  {writes ? (
+                  <>
                   <button type="button" onClick={() => void act({ kind: 'reboot' })} disabled={!!busy} className={small}>
                     {busy === 'reboot' ? 'Rebooting…' : 'Reboot'}
                   </button>
@@ -610,7 +614,9 @@ function OnuRow({
                   <button type="button" onClick={() => setMode('rename')} disabled={!!busy} className={small}>
                     Rename
                   </button>
-                  {brand === 'gcom' && isVsol(detail?.vendor) ? (
+                  </>
+                  ) : null}
+                  {writes && brand === 'gcom' && isVsol(detail?.vendor) ? (
                     <button type="button" onClick={() => setMode('vsol')} disabled={!!busy} className={small}>
                       Set up for V-SOL
                     </button>
@@ -620,6 +626,7 @@ function OnuRow({
                       {owner ? 'Change customer' : 'Link to a customer'}
                     </button>
                   ) : null}
+                  {writes ? (
                   <button
                     type="button"
                     onClick={() => setMode('remove')}
@@ -628,7 +635,11 @@ function OnuRow({
                   >
                     Remove
                   </button>
+                  ) : null}
                 </div>
+              ) : null}
+              {canManage && !writes && mode === 'view' ? (
+                <p className="mt-2 text-[11px] text-gray-500">{READ_ONLY_NOTE}</p>
               ) : null}
 
               {mode === 'vsol' ? (
@@ -836,11 +847,13 @@ export function OnuPanel({
   const failed = outcomes.filter((o) => !o.ok)
   const succeeded = outcomes.filter((o) => o.ok)
 
+  const writes = oltFeatures(brand).writes
   if (view === 'pending') {
     return (
       <div className="py-2">
         {banner}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
+          {writes ? (
           <label className="flex items-center gap-2 text-xs text-gray-400">
             Put them on VLAN
             {vlans.length ? (
@@ -865,12 +878,15 @@ export function OnuPanel({
               />
             )}
           </label>
+          ) : (
+            <p className="max-w-md text-[11px] text-gray-500">{READ_ONLY_NOTE}</p>
+          )}
           <div className="flex items-center gap-2">
             <PortFilter ports={lists.pending.map((p) => p.port)} value={port} onChange={setPort} />
             <button type="button" onClick={onReload} disabled={loading || !!busy} className={button + ' bg-gray-700 hover:bg-gray-600'}>
               {loading ? 'Reading…' : 'Look again'}
             </button>
-            {canManage && lists.pending.length > 0 ? (
+            {canManage && writes && lists.pending.length > 0 ? (
               <button type="button" onClick={() => run('all', 'all')} disabled={!!busy} className={button}>
                 {busy === 'all' ? progress ?? 'Authorizing…' : 'Authorize all (' + lists.pending.length + ')'}
               </button>
@@ -922,7 +938,7 @@ export function OnuPanel({
                     <td className={td + ' font-mono'}>{p.sn}</td>
                     <td className={td}>{p.model ?? '—'}</td>
                     <td className={td + ' text-right'}>
-                      {canManage ? (
+                      {canManage && writes ? (
                         <button
                           type="button"
                           onClick={() => run([{ port: p.port, sn: p.sn }], p.sn)}

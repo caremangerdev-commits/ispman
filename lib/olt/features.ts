@@ -17,16 +17,30 @@ export type OltFeatures = {
    * Unauthorized list and nothing to switch on automatically.
    */
   authorise: boolean
+  /**
+   * ISPMan may change things on it: authorize, reboot, disable, delete.
+   *
+   * False for a brand whose driver was written from the maker's command guide
+   * and not yet watched working on a real unit. Reading is harmless if a
+   * command is slightly wrong — the list comes back short. Writing is not,
+   * and these OLTs are in production. A brand turns true once its read side
+   * has been seen right on one of ours.
+   */
+  writes: boolean
 }
 
 const FEATURES: Record<string, OltFeatures> = {
-  zte: { cards: true, uplinks: true, vlans: true, authorise: true },
-  huawei: { cards: true, uplinks: false, vlans: false, authorise: true },
-  vsol: { cards: false, uplinks: false, vlans: false, authorise: true },
-  cdata: { cards: false, uplinks: false, vlans: false, authorise: true },
-  gcom: { cards: false, uplinks: false, vlans: false, authorise: false },
+  zte: { cards: true, uplinks: true, vlans: true, authorise: true, writes: true },
+  huawei: { cards: true, uplinks: false, vlans: false, authorise: true, writes: false },
+  vsol: { cards: false, uplinks: false, vlans: false, authorise: true, writes: false },
+  cdata: { cards: false, uplinks: false, vlans: false, authorise: true, writes: true },
+  gcom: { cards: false, uplinks: false, vlans: false, authorise: false, writes: true },
 }
 
+/** Said wherever a change is refused or hidden for a read-only brand. */
+export const READ_ONLY_NOTE =
+  'ISPMan only reads this make of OLT for now. Authorizing, rebooting and other changes switch on once it has been tested on a real unit.'
+
 export function oltFeatures(brand: string): OltFeatures {
-  return FEATURES[brand] ?? { cards: true, uplinks: true, vlans: true, authorise: true }
+  return FEATURES[brand] ?? { cards: true, uplinks: true, vlans: true, authorise: true, writes: false }
 }

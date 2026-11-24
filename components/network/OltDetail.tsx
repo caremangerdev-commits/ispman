@@ -312,7 +312,7 @@ export function OltDetail({
                   {autoNote ? <span className="block text-red-300">{autoNote}</span> : null}
                 </dd>
               </div>
-              {canManage ? (
+              {canManage && has.writes ? (
                 <button
                   type="button"
                   role="switch"

@@ -10,6 +10,7 @@ import {
 import { linkOnuToCustomer, linkOnusToCustomers, type OnuCustomer } from '@/lib/data/customer-devices'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forward'
+import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import { oltDriver } from '@/lib/olt'
 import type {
   OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
@@ -347,6 +348,7 @@ export async function authoriseOnus(input: {
 
   const r = await reach(session.company.id, Number(input.oltId))
   if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
+  if (!oltFeatures(r.olt.brand).writes) return { ok: false, error: READ_ONLY_NOTE }
 
   try {
     let items: { port: string; sn: string }[]
@@ -502,6 +504,7 @@ export async function onuCommand(input: {
   if (!session) return { ok: false, error: 'You do not have permission to do that.' }
   const r = await reach(session.company.id, Number(input.oltId))
   if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
+  if (!oltFeatures(r.olt.brand).writes) return { ok: false, error: READ_ONLY_NOTE }
 
   const kind = input.action?.kind
   if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename' && kind !== 'disable' && kind !== 'enable' && kind !== 'vsol-fix') {
@@ -578,6 +581,7 @@ export async function setOltAutoAuthorise(oltId: number, on: boolean): Promise<O
   if (!session) return { ok: false, error: 'You do not have permission to do that.' }
   const found = await oltWithLogin(session.company.id, Number(oltId))
   if (!found) return { ok: false, error: 'That OLT was not found.' }
+  if (on && !oltFeatures(found.olt.brand).writes) return { ok: false, error: READ_ONLY_NOTE }
   if (on && !found.olt.serviceVlan) {
     return { ok: false, error: 'Authorize one ONU by hand first, so ISPMan knows which VLAN to use.' }
   }

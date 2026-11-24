@@ -6,6 +6,7 @@ import { closeIncident, getIncident } from '@/lib/data/incidents'
 import { oltWatchTargets, type OltWatchTarget } from '@/lib/data/olts'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { oltForwardPort } from '@/lib/olt/forward'
+import { oltFeatures } from '@/lib/olt/features'
 import { oltDriver } from '@/lib/olt'
 import type { OltOnu } from '@/lib/olt/types'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -111,7 +112,7 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
 
   // 1. Let new ONUs on. Only with a VLAN already chosen — the first one is
   // authorised by a person, which is what picks it.
-  if (target.autoAuthorise && olt.serviceVlan && lists.pending.length) {
+  if (target.autoAuthorise && olt.serviceVlan && oltFeatures(olt.brand).writes && lists.pending.length) {
     const items = lists.pending.slice(0, AUTHORISE_BATCH).map((p) => ({ port: p.port, sn: p.sn }))
     const done = (await driver.authorise(cli, login, items, olt.serviceVlan)).filter((r) => r.ok)
     result.authorised = done.length
