@@ -119,8 +119,10 @@ export class TelnetSession {
    * Waits until the buffered text matches, then returns everything up to and
    * including the match and removes it from the buffer.
    */
-  async until(pattern: RegExp, what: string): Promise<string> {
-    const deadline = Date.now() + this.timeoutMs
+  async until(pattern: RegExp, what: string, waitMs?: number): Promise<string> {
+    // A longer wait for the few commands that search the whole
+    // configuration, which a full OLT takes well over the usual to answer.
+    const deadline = Date.now() + (waitMs ?? this.timeoutMs)
     for (;;) {
       const m = pattern.exec(this.text)
       if (m) {

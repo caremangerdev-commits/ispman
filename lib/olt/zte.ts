@@ -63,9 +63,9 @@ async function login(session: TelnetSession, creds: OltLogin): Promise<void> {
 }
 
 /** Runs one command and returns what it printed, without the echo or prompt. */
-async function run(session: TelnetSession, command: string): Promise<string> {
+async function run(session: TelnetSession, command: string, waitMs?: number): Promise<string> {
   session.send(command)
-  const raw = await session.until(PROMPT, 'running "' + command + '"')
+  const raw = await session.until(PROMPT, 'running "' + command + '"', waitMs)
   const lines = raw.replace(/\r/g, '').split('\n')
   // First line is the echoed command, last is the prompt.
   return lines.slice(1, -1).join('\n')
@@ -652,38 +652,56 @@ async function learnOnPort(session: TelnetSession, port: string): Promise<(Learn
  *     switchport default vlan 100
  */
 
+const PROFILE_NAME = /^[A-Za-z0-9_.-]{1,32}$/
+
 /**
- * The speed profiles defined in the gpon section, as a real C320 holds them:
- *
- *   profile tcont T-UP-4M type 4 maximum 4096        upload
- *   profile tcont 5M type 1 fixed 5120               upload
- *   profile traffic P-10M sir 11264 pir 11264        download
- *
- * Read from `show running-config | include profile t`, which also brings
- * every ONU's "tcont 1 profile …" line; only lines that start with "profile"
- * are definitions.
+ * Searching the whole configuration (`show running-config | include …`)
+ * takes a full C320 well past the usual 12 seconds. Only the checks before a
+ * removal do it, and they get this long.
  */
-function parseSpeedProfiles(text: string): OltSpeedProfile[] {
+const SEARCH_WAIT = 90_000
+
+/**
+ * The speed profiles, from the two quick listings rather than a search of
+ * the whole configuration, which on a full C320 outlasted the reading and
+ * failed it. As a real C320 (V2.1.0) prints them:
+ *
+ *   Profile name :T-UP-4M
+ *    Type           FBW(kbps)   ABW(kbps)   MBW(kbps)   PRIORITY   WEIGHT
+ *    4              0           0           4096        N/A         N/A
+ *
+ *   Profile name  :P-10M
+ *     SIR(kbps)           PIR(kbps)           CBS(kbytes)         PBS(kbytes)
+ *    11264               11264               default             default
+ *
+ * Each is turned back into the words that define it, for undo.
+ */
+async function readSpeedProfiles(session: TelnetSession): Promise<OltSpeedProfile[]> {
   const out: OltSpeedProfile[] = []
-  if (refused(text)) return out
-  for (const raw of text.split('\n')) {
-    const line = raw.trim()
-    const up = /^profile tcont (\S+) (type .+)$/.exec(line)
-    if (up) {
-      const k = /(?:maximum|fixed|assured)\s+(\d+)\s*$/.exec(up[2]) ?? /(\d+)\s*$/.exec(up[2])
-      out.push({ name: up[1], direction: 'up', kbps: k ? Number(k[1]) : null, raw: up[2] })
-      continue
-    }
-    const down = /^profile traffic (\S+) (.+)$/.exec(line)
-    if (down) {
-      const k = /pir\s+(\d+)/.exec(down[2]) ?? /sir\s+(\d+)/.exec(down[2])
-      out.push({ name: down[1], direction: 'down', kbps: k ? Number(k[1]) : null, raw: down[2] })
-    }
+  const blocks = (text: string) => (refused(text) ? [] : text.split(/Profile name\s*:/i).slice(1))
+
+  for (const block of blocks(await run(session, 'show gpon profile tcont'))) {
+    const name = /^\s*(\S+)/.exec(block)?.[1]
+    const row = /^\s*(\d)\s+(\d+)\s+(\d+)\s+(\d+)\s/m.exec(block.split('\n').slice(2).join('\n'))
+    if (!name || !row) continue
+    const [type, fbw, abw, mbw] = [row[1], Number(row[2]), Number(row[3]), Number(row[4])]
+    const raw =
+      type === '1' ? 'type 1 fixed ' + fbw
+        : type === '2' ? 'type 2 assured ' + abw
+          : type === '3' ? 'type 3 assured ' + abw + ' maximum ' + mbw
+            : type === '4' ? 'type 4 maximum ' + mbw
+              : 'type 5 fixed ' + fbw + ' assured ' + abw + ' maximum ' + mbw
+    out.push({ name, direction: 'up', kbps: mbw || fbw || abw || null, raw })
+  }
+
+  for (const block of blocks(await run(session, 'show gpon profile traffic'))) {
+    const name = /^\s*(\S+)/.exec(block)?.[1]
+    const row = /^\s*(\d+)\s+(\d+)\s/m.exec(block.split('\n').slice(2).join('\n'))
+    if (!name || !row || name === 'default') continue
+    out.push({ name, direction: 'down', kbps: Number(row[2]), raw: 'sir ' + row[1] + ' pir ' + row[2] })
   }
   return out
 }
-
-const PROFILE_NAME = /^[A-Za-z0-9_.-]{1,32}$/
 
 const UPLINK = /^x?gei_\d+\/\d+\/\d+$/
 const PON = /^gpon-olt_\d+\/\d+\/\d+$/
@@ -747,7 +765,7 @@ async function planOne(session: TelnetSession, change: OltConfigChange): Promise
       )
     }
     // Still carrying customers or uplinks: say so rather than strand them.
-    const uses = (await run(session, 'show running-config | include vlan ' + v))
+    const uses = (await run(session, 'show running-config | include vlan ' + v, SEARCH_WAIT))
       .split('\n')
       .map((l) => l.trim())
     const onus = uses.filter((l) => new RegExp('^service-port\\s.*\\svlan\\s' + v + '\\b').test(l)).length
@@ -895,7 +913,7 @@ async function planOne(session: TelnetSession, change: OltConfigChange): Promise
     if (!PROFILE_NAME.test(name)) say('Use letters, numbers, dots, dashes or underscores for the name, up to 32.')
     const up = change.direction === 'up'
     const word = up ? 'tcont' : 'traffic'
-    const all = parseSpeedProfiles(await run(session, 'show running-config | include profile t'))
+    const all = await readSpeedProfiles(session)
     const found = all.find((p) => p.name === name && p.direction === change.direction)
 
     if (change.kind === 'speed-add') {
@@ -915,7 +933,7 @@ async function planOne(session: TelnetSession, change: OltConfigChange): Promise
 
     if (!found) say('There is no ' + (up ? 'upload' : 'download') + ' profile called ' + name + '.')
     if (up && name === UP_PROFILE) say(name + ' is the profile ISPMan gives ONUs with no upload limit. It cannot be removed from here.')
-    const uses = (await run(session, 'show running-config | include ' + name))
+    const uses = (await run(session, 'show running-config | include ' + name, SEARCH_WAIT))
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => (up ? new RegExp('^tcont\\s+\\d+\\s+(?:name\\s+\\S+\\s+)?profile\\s+' + name.replace(/[.]/g, '\\.') + '$') : new RegExp('traffic-limit.*\\s' + name.replace(/[.]/g, '\\.') + '(\\s|$)')).test(l)).length
@@ -1154,7 +1172,9 @@ export const zte: OltDriver = {
       const version = /Version\s+(V[\d.]+)/i.exec(description ?? '')?.[1] ?? null
       const model = /^(\S+)\s+Version/i.exec(description ?? '')?.[1] ?? null
 
-      const speedProfiles = parseSpeedProfiles(await run(session, 'show running-config | include profile t'))
+      // Never allowed to fail the reading: an OLT that answers everything else
+      // is reachable, whatever this does.
+      const speedProfiles = await readSpeedProfiles(session).catch(() => undefined)
       return { name, model, version, uptime, cards, uplinks, ponPorts, vlans, onus, speedProfiles }
     } finally {
       session.close()
