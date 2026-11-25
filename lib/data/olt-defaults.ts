@@ -83,3 +83,50 @@ export async function setSettingsUnlocked(companyId: number, oltId: number, on: 
     .eq('id', oltId)
   return !error
 }
+
+/**
+ * What new ONUs get on this OLT (migration 0070): "learn" copies the working
+ * ONUs on the same port, a number is a saved setup's id. Ports may differ.
+ */
+export type OnuAuto = { use: 'learn' | number; ports?: Record<string, 'learn' | number> }
+
+export function cleanOnuAuto(raw: unknown): OnuAuto | null {
+  const r = raw as OnuAuto | null
+  const ok = (v: unknown): v is 'learn' | number => v === 'learn' || (Number.isInteger(v) && (v as number) > 0)
+  if (!r || !ok(r.use)) return null
+  const ports: Record<string, 'learn' | number> = {}
+  for (const [p, v] of Object.entries(r.ports ?? {})) if (/^[\w/:-]{1,40}$/.test(p) && ok(v)) ports[p] = v
+  return { use: r.use, ...(Object.keys(ports).length ? { ports } : {}) }
+}
+
+export async function getOnuAuto(companyId: number, oltId: number): Promise<OnuAuto | null> {
+  const { data, error } = await tenantClient()
+    .from('olts')
+    .select('onu_auto')
+    .eq('company_id', companyId)
+    .eq('id', oltId)
+    .maybeSingle()
+  if (error || !data) return null
+  return cleanOnuAuto((data as { onu_auto: unknown }).onu_auto)
+}
+
+export async function setOnuAuto(companyId: number, oltId: number, auto: OnuAuto): Promise<boolean> {
+  const { error } = await tenantClient().from('olts').update({ onu_auto: auto }).eq('company_id', companyId).eq('id', oltId)
+  return !error
+}
+
+/** The setup a new ONU on this port gets: copy, or a saved setup's contents. */
+export async function setupForPort(
+  companyId: number, auto: OnuAuto | null, port: string
+): Promise<'learn' | { onuVlan: number | null; vlan: number; upProfile?: string | null; downProfile?: string | null }> {
+  const pick = auto ? auto.ports?.[port] ?? auto.use : 'learn'
+  if (pick === 'learn') return 'learn'
+  const { data } = await tenantClient()
+    .from('onu_setups')
+    .select('setup')
+    .eq('company_id', companyId)
+    .eq('id', pick)
+    .maybeSingle()
+  const s = (data as { setup: { onuVlan: number | null; vlan: number; upProfile?: string | null; downProfile?: string | null } } | null)?.setup
+  return s && Number.isInteger(s.vlan) ? s : 'learn'
+}

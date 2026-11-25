@@ -4,10 +4,11 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 
 import {
-  deleteOnuSetup, listOnuSetups, saveOnuSetup, saveSignalLevels, type SavedSetup,
+  deleteOnuSetup, listOnuSetups, saveOnuAuto, saveOnuSetup, saveSignalLevels, type SavedSetup,
 } from '@/app/actions/olts'
 import { SpeedPicker, setupWords } from '@/components/network/AuthoriseSetup'
 import { Section, safe } from '@/components/network/OltSettings'
+import type { OnuAuto } from '@/lib/data/olt-defaults'
 import { DEFAULT_LEVELS, type SignalLevels } from '@/lib/olt/signal-levels'
 import type { OltSpeedProfile } from '@/lib/olt/types'
 
@@ -224,6 +225,115 @@ export function SavedSetups({ profiles, vlans }: { profiles: OltSpeedProfile[]; 
         <p className="text-[11px] text-gray-500">
           Speed profiles are named per OLT. A setup naming one that another OLT lacks is refused there, with the OLT&apos;s reason.
         </p>
+      </div>
+      <Note note={note} />
+    </Section>
+  )
+}
+
+/**
+ * What new ONUs on this OLT get, chosen once: the same setup as the working
+ * ONUs on their port, or one of the company's saved setups — for the whole
+ * OLT, and differently on any port that needs it. Automatic authorizing uses
+ * it, and the Authorize screen starts from it. Like SmartOLT's authorization
+ * presets, matched by OLT and PON port.
+ */
+export function NewOnusPanel({
+  oltId, auto, ports, autoSwitch,
+}: {
+  oltId: number
+  auto: OnuAuto | null
+  ports: string[]
+  /** The "Authorize new ONUs automatically" switch, from the page. */
+  autoSwitch: React.ReactNode
+}) {
+  const router = useRouter()
+  const [setups, setSetups] = useState<SavedSetup[]>([])
+  const [use, setUse] = useState<string>(String(auto?.use ?? 'learn'))
+  const [perPort, setPerPort] = useState<Record<string, string>>(
+    Object.fromEntries(Object.entries(auto?.ports ?? {}).map(([p, v]) => [p, String(v)]))
+  )
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
+
+  useEffect(() => {
+    let live = true
+    const t = window.setTimeout(async () => {
+      const list = await safe(async () => ({ ok: true as const, list: await listOnuSetups() }))
+      if (live && list.ok) setSetups(list.list)
+    }, 0)
+    return () => {
+      live = false
+      window.clearTimeout(t)
+    }
+  }, [])
+
+  const asValue = (v: string): 'learn' | number => (v === 'learn' ? 'learn' : Number(v))
+  const save = async () => {
+    setBusy(true)
+    setNote(null)
+    const res = await safe(() =>
+      saveOnuAuto(oltId, {
+        use: asValue(use),
+        ports: Object.fromEntries(Object.entries(perPort).filter(([, v]) => v !== '').map(([p, v]) => [p, asValue(v)])),
+      })
+    )
+    setBusy(false)
+    setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
+    if (res.ok) router.refresh()
+  }
+
+  const options = (
+    <>
+      <option value="learn">Same as the working ONUs on their port</option>
+      {setups.map((s) => (
+        <option key={s.id} value={s.id}>{s.name} · {setupWords(s.setup)}</option>
+      ))}
+    </>
+  )
+  const select = 'rounded-lg border border-gray-700 bg-gray-950 px-3 py-1.5 text-sm text-gray-100'
+
+  return (
+    <Section
+      title="New ONUs"
+      note="How ONUs plugged into this OLT are let on and set up. Both automatic authorizing and the Authorize screen follow this."
+    >
+      <div className="space-y-5">
+        {autoSwitch}
+        <div>
+          <label className="block text-sm font-medium text-gray-200" htmlFor={'onu-auto-' + oltId}>
+            New ONUs get
+          </label>
+          <select id={'onu-auto-' + oltId} value={use} onChange={(e) => setUse(e.target.value)} className={select + ' mt-1.5 max-w-full'}>
+            {options}
+          </select>
+          {setups.length === 0 ? (
+            <p className="mt-1.5 text-xs text-gray-500">
+              Save your usual setups (VLAN, tagged or not, speed) under Saved ONU setups to choose one here.
+            </p>
+          ) : null}
+        </div>
+        {ports.length > 1 ? (
+          <details>
+            <summary className="cursor-pointer select-none text-sm text-gray-400 hover:text-gray-200">
+              Different on some PON ports ({Object.values(perPort).filter((v) => v !== '').length})
+            </summary>
+            <ul className="mt-3 space-y-2">
+              {ports.map((p) => (
+                <li key={p} className="flex flex-wrap items-center gap-3 text-sm">
+                  <span className="w-24 font-medium text-gray-200">{p.replace(/^gpon-olt_\d+\//, 'PON ').replace(/^\d+\/\d+\//, 'PON ')}</span>
+                  <select value={perPort[p] ?? ''} onChange={(e) => setPerPort({ ...perPort, [p]: e.target.value })} className={select}>
+                    <option value="">Same as the OLT</option>
+                    {options}
+                  </select>
+                </li>
+              ))}
+            </ul>
+          </details>
+        ) : null}
+        <button type="button" onClick={() => void save()} disabled={busy} className={primary}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
       </div>
       <Note note={note} />
     </Section>

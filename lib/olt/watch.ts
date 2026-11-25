@@ -6,7 +6,7 @@ import { closeIncident, getIncident } from '@/lib/data/incidents'
 import { oltWatchTargets, type OltWatchTarget } from '@/lib/data/olts'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { oltForwardPort } from '@/lib/olt/forward'
-import { getSignalLevels } from '@/lib/data/olt-defaults'
+import { getOnuAuto, getSignalLevels, setupForPort } from '@/lib/data/olt-defaults'
 import { oltFeatures } from '@/lib/olt/features'
 import { levelsFor } from '@/lib/olt/signal-levels'
 import { oltDriver } from '@/lib/olt'
@@ -118,9 +118,13 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
   if (target.autoAuthorise && olt.serviceVlan && oltFeatures(olt.brand).writes && lists.pending.length) {
     // Each new ONU is set up like the ones already working on its port
     // (tagged or not, which VLAN), so a company that tags gets tagged ONUs.
-    const items = lists.pending
-      .slice(0, AUTHORISE_BATCH)
-      .map((p) => ({ port: p.port, sn: p.sn, setup: 'learn' as const }))
+    // What this company chose for new ONUs on this OLT and port; copying the
+    // working ONUs on the port where it chose nothing.
+    const auto = await getOnuAuto(companyId, olt.id)
+    const items = []
+    for (const p of lists.pending.slice(0, AUTHORISE_BATCH)) {
+      items.push({ port: p.port, sn: p.sn, setup: await setupForPort(companyId, auto, p.port) })
+    }
     const done = (await driver.authorise(cli, login, items, olt.serviceVlan)).filter((r) => r.ok)
     result.authorised = done.length
     if (done.length) {

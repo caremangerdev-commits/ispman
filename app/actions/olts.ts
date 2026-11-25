@@ -10,7 +10,9 @@ import {
 import { linkOnuToCustomer, linkOnusToCustomers, type OnuCustomer } from '@/lib/data/customer-devices'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forward'
-import { getSettingsUnlocked, setOnuDefaults, setSettingsUnlocked, setSignalLevels } from '@/lib/data/olt-defaults'
+import {
+  cleanOnuAuto, getSettingsUnlocked, setOnuAuto, setOnuDefaults, setSettingsUnlocked, setSignalLevels, type OnuAuto,
+} from '@/lib/data/olt-defaults'
 import { cleanLevels, type SignalLevels } from '@/lib/olt/signal-levels'
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import { oltDriver } from '@/lib/olt'
@@ -1247,4 +1249,22 @@ export async function applySetupToOnus(oltId: number, onuIds: string[], setup: O
     })
   }
   return { ok: true, results }
+}
+
+/** Choose what new ONUs get on this OLT, and on any port that differs. */
+export async function saveOnuAuto(oltId: number, auto: OnuAuto): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to change this.' }
+  const clean = cleanOnuAuto(auto)
+  if (!clean) return { ok: false, error: 'Choose what new ONUs get.' }
+  if (!(await setOnuAuto(session.company.id, Number(oltId), clean))) {
+    return { ok: false, error: 'Could not save that. Migration 0070 may not be applied.' }
+  }
+  await logEvent({
+    type: 'olt_onu_auto',
+    tag: '[olt]',
+    details: 'New ONU setup on OLT #' + oltId + ': ' + JSON.stringify(clean) + ' | by=' + session.profile.email,
+  })
+  revalidatePath(PATH + '/' + Number(oltId))
+  return { ok: true, message: 'Saved. New ONUs on this OLT get this from now on.' }
 }

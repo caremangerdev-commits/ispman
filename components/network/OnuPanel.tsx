@@ -9,7 +9,7 @@ import { SignalBars } from '@/components/network/SignalBars'
 import type { OnuCustomer } from '@/lib/data/customer-devices'
 import type { UsageDay } from '@/lib/data/usage'
 import { BulkApply, DataCheck, SetupChooser, SpeedPicker, setupWords, type SetupMode } from '@/components/network/AuthoriseSetup'
-import type { OnuDefaults } from '@/lib/data/olt-defaults'
+import type { OnuAuto, OnuDefaults } from '@/lib/data/olt-defaults'
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import { levelsFor, type SignalLevels } from '@/lib/olt/signal-levels'
 import type {
@@ -877,6 +877,7 @@ function OnuRow({
 
 export function OnuPanel({
   oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null, focus = null, onPortChange, onuDefaults = null, speedProfiles = [], signalLevels = null,
+  onuAuto = null,
 }: {
   oltId: number
   brand: string
@@ -901,11 +902,20 @@ export function OnuPanel({
   speedProfiles?: OltSpeedProfile[]
   /** This company's weak / too-low signal levels on this OLT. */
   signalLevels?: SignalLevels | null
+  /** What this OLT's new ONUs get, chosen under Settings → New ONUs. */
+  onuAuto?: OnuAuto | null
 }) {
   const [vlan, setVlan] = useState<number | null>(onuDefaults?.vlan ?? defaultVlan)
   const canLearn = oltFeatures(brand).copySetup
+  // The OLT's own choice first (Settings → New ONUs), then what was used last.
   const [mode, setMode] = useState<SetupMode>(
-    onuDefaults?.mode && (canLearn || onuDefaults.mode !== 'learn') ? onuDefaults.mode : canLearn ? 'learn' : 'untagged'
+    onuAuto?.use === 'learn' && canLearn
+      ? 'learn'
+      : onuDefaults?.mode && (canLearn || onuDefaults.mode !== 'learn')
+        ? onuDefaults.mode
+        : canLearn
+          ? 'learn'
+          : 'untagged'
   )
   const [onuVlan, setOnuVlan] = useState<number | null>(onuDefaults?.onuVlan ?? null)
   const [upProfile, setUpProfile] = useState(onuDefaults?.upProfile ?? '')
@@ -1039,6 +1049,7 @@ export function OnuPanel({
             onUpProfile={setUpProfile}
             downProfile={downProfile}
             onDownProfile={setDownProfile}
+            initialSetupId={typeof onuAuto?.use === 'number' ? onuAuto.use : null}
           />
         ) : null}
         {justDone.length ? (

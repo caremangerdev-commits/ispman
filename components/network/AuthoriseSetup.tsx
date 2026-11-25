@@ -107,7 +107,7 @@ function PortSetups({ oltId, ports, vlan }: { oltId: number; ports: string[]; vl
 
 export function SetupChooser({
   oltId, canLearn, ports, mode, onMode, vlan, onVlan, vlans,
-  onuVlan, onOnuVlan, profiles, upProfile, onUpProfile, downProfile, onDownProfile,
+  onuVlan, onOnuVlan, profiles, upProfile, onUpProfile, downProfile, onDownProfile, initialSetupId = null,
 }: {
   oltId: number
   /** The OLT's driver can read existing ONUs' setup (ZTE). */
@@ -128,6 +128,8 @@ export function SetupChooser({
   onUpProfile: (p: string) => void
   downProfile: string
   onDownProfile: (p: string) => void
+  /** The saved setup this OLT gives new ONUs, picked as soon as it is loaded. */
+  initialSetupId?: number | null
 }) {
   const options: { id: SetupMode; label: string; note: string }[] = [
     ...(canLearn
@@ -172,6 +174,7 @@ export function SetupChooser({
     <fieldset className="mb-3 rounded-lg border border-gray-800 p-3">
       <legend className="px-1 text-xs font-semibold text-gray-200">How new ONUs are set up</legend>
       <SavedPick
+        initialId={initialSetupId}
         onPick={(x) => {
           onMode(x.onuVlan == null ? 'untagged' : 'tagged')
           onVlan(x.vlan)
@@ -239,26 +242,42 @@ export function SetupChooser({
 }
 
 /** Start from one of the company's saved setups, which fills in the choices below. */
-function SavedPick({ onPick }: { onPick: (s: OnuServiceSetup) => void }) {
+function SavedPick({ onPick, initialId = null }: { onPick: (s: OnuServiceSetup) => void; initialId?: number | null }) {
   const [setups, setSetups] = useState<SavedSetup[]>([])
+  const [chosen, setChosen] = useState('')
   useEffect(() => {
     let live = true
     const t = window.setTimeout(async () => {
-      const list = await listOnuSetups()
-      if (live) setSetups(list)
+      let list: SavedSetup[] = []
+      try {
+        list = await listOnuSetups()
+      } catch {
+        list = []
+      }
+      if (!live) return
+      setSetups(list)
+      // The OLT's chosen setup for new ONUs, filled in straight away.
+      const start = initialId != null ? list.find((x) => x.id === initialId) : undefined
+      if (start) {
+        setChosen(String(start.id))
+        onPick(start.setup)
+      }
     }, 0)
     return () => {
       live = false
       window.clearTimeout(t)
     }
-  }, [])
+    // Once, when the screen opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialId])
   if (!setups.length) return null
   return (
     <label className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-400">
       Start from a saved setup
       <select
-        defaultValue=""
+        value={chosen}
         onChange={(e) => {
+          setChosen(e.target.value)
           const found = setups.find((x) => String(x.id) === e.target.value)
           if (found) onPick(found.setup)
         }}

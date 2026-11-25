@@ -7,7 +7,8 @@ import { useFormStatus } from 'react-dom'
 import { OutagePanel } from '@/components/network/OutagePanel'
 import { OltFrontPanel } from '@/components/network/OltFrontPanel'
 import { OltSettings } from '@/components/network/OltSettings'
-import type { OnuDefaults } from '@/lib/data/olt-defaults'
+import { NewOnusPanel } from '@/components/network/OltSettingsExtra'
+import type { OnuAuto, OnuDefaults } from '@/lib/data/olt-defaults'
 import { oltFeatures } from '@/lib/olt/features'
 import type { SignalLevels } from '@/lib/olt/signal-levels'
 import { checkOlt, loadOnus, setOltAutoAuthorise, type OltActionResult } from '@/app/actions/olts'
@@ -25,25 +26,11 @@ import type { Olt } from '@/lib/data/olts'
  * shown as of then.
  */
 
-type Tab = 'details' | 'authorised' | 'pending' | 'offline' | 'cards' | 'pon' | 'uplinks' | 'vlans' | 'outages' | 'settings'
+type Tab = 'details' | 'authorised' | 'pending' | 'offline' | 'cards' | 'pon' | 'uplinks' | 'vlans' | 'outages' | 'settings' | 'speeds'
 
 const ONU_TABS: Tab[] = ['authorised', 'pending', 'offline']
 
 const cardFine = (status: string) => status === 'INSERVICE' || status === 'STANDBY'
-
-function rate(bps: number | null | undefined): string {
-  if (bps === null || bps === undefined) return '—'
-  if (bps >= 1e9) return (bps / 1e9).toFixed(2) + ' Gbps'
-  if (bps >= 1e6) return (bps / 1e6).toFixed(1) + ' Mbps'
-  if (bps >= 1e3) return (bps / 1e3).toFixed(0) + ' kbps'
-  return bps + ' bps'
-}
-
-/** Two words for the two questions a port answers: is it on, is it linked. */
-function PortState({ enabled, up }: { enabled: boolean; up: boolean }) {
-  if (!enabled) return <span className="text-gray-500">Switched off</span>
-  return up ? <span className="text-green-400">Up</span> : <span className="text-amber-300">No link</span>
-}
 
 function Refresh({ id }: { id: number }) {
   const [state, action] = useActionState<OltActionResult | null, FormData>(checkOlt, null)
@@ -116,7 +103,7 @@ function Field({ label, value }: { label: string; value: string }) {
 
 export function OltDetail({
   olt, routerName, checkedText, canManage, autoAuthorise = false, saved = null, focus = null, onuDefaults = null,
-  signalLevels = null, settingsUnlocked = false,
+  signalLevels = null, settingsUnlocked = false, onuAuto = null,
 }: {
   olt: Olt
   routerName: string
@@ -132,6 +119,7 @@ export function OltDetail({
   onuDefaults?: OnuDefaults | null
   signalLevels?: SignalLevels | null
   settingsUnlocked?: boolean
+  onuAuto?: OnuAuto | null
 }) {
   const [auto, setAuto] = useState(autoAuthorise)
   const [autoNote, setAutoNote] = useState<string | null>(null)
@@ -207,6 +195,7 @@ export function OltDetail({
   const pon = info?.ponPorts ?? []
   const uplinks = info?.uplinks ?? []
   const vlans = info?.vlans ?? []
+  const speeds = info?.speedProfiles ?? []
 
   // Only what this make of OLT can show. A ZTE that has simply not been read
   // yet still gets its tabs; a GCOM never gets a Cards tab.
@@ -217,12 +206,53 @@ export function OltDetail({
     has.authorise ? { id: 'pending', label: 'Unauthorized' } : null,
     has.cards ? { id: 'cards', label: 'Cards', count: cards.length } : null,
     { id: 'pon', label: 'PON ports', count: pon.length },
+    has.uplinks || uplinks.length ? { id: 'uplinks', label: 'Uplinks', count: uplinks.length } : null,
+    has.vlans || vlans.length ? { id: 'vlans', label: 'VLANs', count: vlans.length } : null,
+    speeds.length || has.settings.kinds.includes('speed-add') ? { id: 'speeds', label: 'Speeds', count: speeds.length } : null,
     { id: 'outages', label: 'Outages' },
-    has.uplinks ? { id: 'uplinks', label: 'Uplinks', count: uplinks.length } : null,
-    has.vlans ? { id: 'vlans', label: 'VLANs', count: vlans.length } : null,
-    has.settings.kinds.length > 0 && canManage ? { id: 'settings', label: 'Settings' } : null,
+    canManage ? { id: 'settings', label: 'Settings' } : null,
   ] as ({ id: Tab; label: string; count?: number } | null)[]).filter(
     (t): t is { id: Tab; label: string; count?: number } => t !== null
+  )
+
+  // Automatic authorizing, shown under Settings → New ONUs.
+  const autoSwitch = has.authorise ? (
+            <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-800 p-4">
+              <div className="min-w-0">
+                <dt className="text-xs font-medium text-gray-200">Authorize new ONUs automatically</dt>
+                <dd className="mt-0.5 max-w-xl text-[11px] leading-relaxed text-gray-500">
+                  {olt.serviceVlan
+                    ? 'A new ONU plugged into this OLT is let on within about five minutes, on VLAN ' +
+                      olt.serviceVlan + ', and you get a notification. Leave this off if anyone else can reach your fibre.'
+                    : 'Authorize one ONU by hand first. That sets the VLAN new ONUs go on, and this can then be switched on.'}
+                  {autoNote ? <span className="block text-red-300">{autoNote}</span> : null}
+                </dd>
+              </div>
+              {canManage && has.writes ? (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={auto}
+                  aria-label="Authorize new ONUs automatically"
+                  disabled={!olt.serviceVlan && !auto}
+                  onClick={() => void toggleAuto()}
+                  className={
+                    'relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition disabled:opacity-40 ' +
+                    (auto ? 'bg-blue-600' : 'bg-gray-700')
+                  }
+                >
+                  <span
+                    className={
+                      'absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ' + (auto ? 'left-[18px]' : 'left-0.5')
+                    }
+                  />
+                </button>
+              ) : (
+                <span className="text-xs text-gray-400">{auto ? 'On' : 'Off'}</span>
+              )}
+            </div>
+  ) : (
+    <p className="text-sm text-gray-500">This OLT adds new ONUs by itself when they are plugged in.</p>
   )
 
   const dot = olt.ok === true ? 'bg-green-400' : olt.ok === false ? 'bg-red-500' : 'bg-gray-500'
@@ -332,44 +362,10 @@ export function OltDetail({
             <Field label="PON ports" value={pon.length ? String(pon.length) : '—'} />
             <Field label="ONUs registered" value={pon.length ? String(registered) : '—'} />
             <Field label="Login used" value={olt.cliUser} />
-            {has.authorise ? (
-            <div className="flex items-start justify-between gap-4 border-t border-gray-800 py-3">
-              <div className="min-w-0">
-                <dt className="text-xs font-medium text-gray-200">Authorize new ONUs automatically</dt>
-                <dd className="mt-0.5 max-w-xl text-[11px] leading-relaxed text-gray-500">
-                  {olt.serviceVlan
-                    ? 'A new ONU plugged into this OLT is let on within about five minutes, on VLAN ' +
-                      olt.serviceVlan + ', and you get a notification. Leave this off if anyone else can reach your fibre.'
-                    : 'Authorize one ONU by hand first. That sets the VLAN new ONUs go on, and this can then be switched on.'}
-                  {autoNote ? <span className="block text-red-300">{autoNote}</span> : null}
-                </dd>
-              </div>
-              {canManage && has.writes ? (
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={auto}
-                  aria-label="Authorize new ONUs automatically"
-                  disabled={!olt.serviceVlan && !auto}
-                  onClick={() => void toggleAuto()}
-                  className={
-                    'relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition disabled:opacity-40 ' +
-                    (auto ? 'bg-blue-600' : 'bg-gray-700')
-                  }
-                >
-                  <span
-                    className={
-                      'absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ' + (auto ? 'left-[18px]' : 'left-0.5')
-                    }
-                  />
-                </button>
-              ) : (
-                <span className="text-xs text-gray-400">{auto ? 'On' : 'Off'}</span>
-              )}
-            </div>
-            ) : (
-              <Field label="New ONUs" value="Added by the OLT itself when plugged in" />
-            )}
+            <Field
+              label="New ONUs"
+              value={!has.authorise ? 'Added by the OLT itself when plugged in' : auto ? 'Authorized automatically' : 'Authorized by hand'}
+            />
           </dl>
         ) : null}
 
@@ -392,6 +388,7 @@ export function OltDetail({
             focus={tab === 'pending' ? null : pickN > 0 || !focus ? { port: pickedPort, serial: '' } : focus}
             onPortChange={tab === 'pending' ? undefined : setPickedPort}
             onuDefaults={onuDefaults}
+            onuAuto={onuAuto}
             speedProfiles={info?.speedProfiles ?? []}
             signalLevels={signalLevels}
           />
@@ -444,108 +441,28 @@ export function OltDetail({
         ) : null}
 
         {tab === 'outages' ? <OutagePanel oltId={olt.id} canManage={canManage} /> : null}
-        {tab === 'settings' ? <OltSettings oltId={olt.id} brand={olt.brand} info={info ?? null} signalLevels={signalLevels} unlocked={settingsUnlocked} /> : null}
-        {tab === 'pon' ? (
-          pon.length === 0 ? (
-            <Empty>No PON ports read yet. They appear once a PON card is set up on the OLT.</Empty>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr>
-                    <th className={th}>Port</th>
-                    <th className={th}>State</th>
-                    <th className={th}>ONUs</th>
-                    <th className={th}>Download</th>
-                    <th className={th}>Upload</th>
-                    <th className={th}>Description</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pon.map((p) => (
-                    <tr key={p.name} className="border-t border-gray-800">
-                      <td className={td + ' font-mono'}>{p.name}</td>
-                      <td className={td}><PortState enabled={p.enabled} up={p.up} /></td>
-                      <td className={td + ' tabular-nums'}>
-                        {p.registered ?? '—'}
-                        {p.capacity ? <span className="text-gray-600"> / {p.capacity}</span> : null}
-                      </td>
-                      <td className={td + ' tabular-nums'}>{rate(p.outBps)}</td>
-                      <td className={td + ' tabular-nums'}>{rate(p.inBps)}</td>
-                      <td className={td}>{p.description ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="py-2 text-[11px] text-gray-500">
-                A PON port shows No link until at least one ONU is online on it.
-              </p>
-            </div>
-          )
+        {tab === 'settings' ? (
+          <OltSettings
+            oltId={olt.id}
+            brand={olt.brand}
+            info={info ?? null}
+            part="settings"
+            canManage={canManage}
+            signalLevels={signalLevels}
+            unlocked={settingsUnlocked}
+            newOnus={<NewOnusPanel oltId={olt.id} auto={onuAuto} ports={pon.map((p) => p.name)} autoSwitch={autoSwitch} />}
+          />
         ) : null}
-
-        {tab === 'uplinks' ? (
-          uplinks.length === 0 ? (
-            <Empty>No uplink ports read yet. Press Refresh from OLT.</Empty>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr>
-                    <th className={th}>Port</th>
-                    <th className={th}>Type</th>
-                    <th className={th}>State</th>
-                    <th className={th}>In</th>
-                    <th className={th}>Out</th>
-                    <th className={th}>Description</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {uplinks.map((u) => (
-                    <tr key={u.name} className="border-t border-gray-800">
-                      <td className={td + ' font-mono'}>{u.name}</td>
-                      <td className={td}>{u.medium === 'fibre' ? 'Fibre (SFP)' : 'Copper'}</td>
-                      <td className={td}>{u.linkKnown === false ? <span className="text-gray-500">Not read</span> : <PortState enabled={u.enabled} up={u.up} />}</td>
-                      <td className={td + ' tabular-nums'}>{rate(u.inBps)}</td>
-                      <td className={td + ' tabular-nums'}>{rate(u.outBps)}</td>
-                      <td className={td}>{u.description ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )
-        ) : null}
-
-        {tab === 'vlans' ? (
-          vlans.length === 0 ? (
-            <Empty>No VLANs read yet. Press Refresh from OLT.</Empty>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr>
-                    <th className={th}>VLAN</th>
-                    <th className={th}>Name</th>
-                    <th className={th}>Untagged ports</th>
-                    <th className={th}>Tagged ports</th>
-                    <th className={th}>Description</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {vlans.map((v) => (
-                    <tr key={v.id} className="border-t border-gray-800">
-                      <td className={td + ' tabular-nums'}>{v.id}</td>
-                      <td className={td}>{v.name ?? '—'}</td>
-                      <td className={td + ' font-mono'}>{v.untagged ?? '—'}</td>
-                      <td className={td + ' font-mono'}>{v.tagged ?? '—'}</td>
-                      <td className={td}>{v.description ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )
+        {tab === 'pon' || tab === 'uplinks' || tab === 'vlans' || tab === 'speeds' ? (
+          <OltSettings
+            oltId={olt.id}
+            brand={olt.brand}
+            info={info ?? null}
+            part={tab === 'speeds' ? 'speed' : tab}
+            canManage={canManage}
+            signalLevels={signalLevels}
+            unlocked={settingsUnlocked}
+          />
         ) : null}
       </div>
     </div>

@@ -28,7 +28,10 @@ import type { OltChangePlan, OltConfigChange, OltInfo, OltUplink } from '@/lib/o
  * off a live uplink — the server refuses, whatever is pressed here.
  */
 
-type Tab = 'network' | 'pon' | 'speed' | 'signal' | 'setups' | 'history'
+type Tab = 'auto' | 'signal' | 'setups' | 'history'
+
+/** Which part of the OLT this shows: one of its own tabs, or the Settings tab. */
+export type OltSettingsPart = 'vlans' | 'uplinks' | 'pon' | 'speed' | 'settings'
 
 const portShort = (p: string) =>
   p
@@ -52,6 +55,10 @@ function listsPort(list: string | null, port: string): boolean {
   }
   return false
 }
+
+/** Bits per second in words: 4.2 Mbps. */
+const rate = (bps: number | null | undefined) =>
+  bps == null ? '—' : bps >= 1e9 ? (bps / 1e9).toFixed(1) + ' Gbps' : bps >= 1e6 ? (bps / 1e6).toFixed(1) + ' Mbps' : Math.round(bps / 1e3) + ' kbps'
 
 const mbpsWords = (kbps: number | null, raw: string) =>
   kbps ? (kbps >= 1024 ? Math.round(kbps / 102.4) / 10 + ' Mbps' : kbps + ' kbps') : raw
@@ -110,18 +117,24 @@ function Chip({ children, onRemove, removeLabel, busy }: { children: React.React
 }
 
 export function OltSettings({
-  oltId, brand, info, signalLevels = null, unlocked = false,
+  oltId, brand, info, signalLevels = null, unlocked = false, part, canManage, newOnus = null,
 }: {
   oltId: number
   brand: string
   info: OltInfo | null
+  /** The OLT tab this is: its list shown and, where allowed, changed in place. */
+  part: OltSettingsPart
+  canManage: boolean
+  /** The Settings tab's "New ONUs" section, built by the page. */
+  newOnus?: React.ReactNode
   signalLevels?: SignalLevels | null
   /** The owner has switched on running untested commands on this OLT. */
   unlocked?: boolean
 }) {
   const router = useRouter()
   const caps = oltFeatures(brand).settings
-  const can = (k: SettingKind) => caps.kinds.includes(k)
+  // Only someone who may manage the OLT sees the buttons that change it.
+  const can = (k: SettingKind) => canManage && caps.kinds.includes(k)
   const [unlockedNow, setUnlockedNow] = useState(unlocked)
   const runnable = caps.tested || unlockedNow
 
@@ -130,15 +143,13 @@ export function OltSettings({
   const pons = info?.ponPorts ?? []
   const speeds = info?.speedProfiles ?? []
 
-  const tabs = ([
-    { id: 'network', label: 'VLANs & uplinks', show: can('vlan-add') || can('uplink-vlan-add') },
-    { id: 'pon', label: 'PON ports', show: pons.length > 0 && (can('pon-disable') || can('port-description')) },
-    { id: 'speed', label: 'Speeds', show: can('speed-add') },
-    { id: 'signal', label: 'Signal alerts', show: true },
-    { id: 'setups', label: 'ONU setups', show: true },
-    { id: 'history', label: 'History', show: true },
-  ] as { id: Tab; label: string; show: boolean }[]).filter((t) => t.show)
-  const [tab, setTab] = useState<Tab>(tabs[0]?.id ?? 'signal')
+  const tabs: { id: Tab; label: string }[] = [
+    { id: 'auto', label: 'New ONUs' },
+    { id: 'signal', label: 'Signal alerts' },
+    { id: 'setups', label: 'Saved ONU setups' },
+    { id: 'history', label: 'History' },
+  ]
+  const [tab, setTab] = useState<Tab>('auto')
 
   const [review, setReview] = useState<{ change: OltConfigChange; plan: OltChangePlan } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -277,10 +288,8 @@ export function OltSettings({
 
   /* ---------------------------------------------------------------------- */
 
-  const network = (
-    <div className="space-y-4">
-      {can('vlan-add') ? (
-        <Section title="VLANs on this OLT" note="Create the VLANs your network uses here, then add them to the uplinks that carry them to your router.">
+  const vlansTab = (
+        <Section title="VLANs" note="The VLANs on this OLT. Create the ones your network uses here, then add them to the uplinks that carry them to your router (Uplinks tab).">
           <div className="flex flex-wrap gap-2">
             {vlans.map((v) => {
               const on = uplinks.filter((u) => listsPort(v.tagged, u.name) || listsPort(v.untagged, u.name)).map((u) => portShort(u.name))
@@ -301,7 +310,7 @@ export function OltSettings({
             })}
             {vlans.length === 0 ? <p className="text-sm text-gray-500">None read yet. Press Refresh from OLT.</p> : null}
           </div>
-          {open === 'vlan' ? (
+          {!can('vlan-add') ? null : open === 'vlan' ? (
             <div className="mt-4 flex flex-wrap items-end gap-3">
               <label className="text-xs text-gray-400">
                 VLAN number
@@ -325,16 +334,16 @@ export function OltSettings({
             <button type="button" onClick={() => toggle('vlan')} className={ghost + ' mt-4'}>+ New VLAN</button>
           )}
         </Section>
-      ) : null}
+  )
 
-      {uplinks.length && can('uplink-vlan-add') ? (
-        <Section title="Uplinks" note="The ports that connect this OLT to your router, and the VLANs each one carries. Tagged is the usual choice: the VLAN number travels with the traffic.">
-          <ul className="space-y-3">
-            {uplinks.map((u) => uplinkCard(u))}
-          </ul>
-        </Section>
-      ) : null}
-    </div>
+  const uplinksTab = (
+    <Section title="Uplinks" note="The ports that connect this OLT to your router, and the VLANs each one carries. Tagged is the usual choice: the VLAN number travels with the traffic.">
+      {uplinks.length ? (
+        <ul className="space-y-3">{uplinks.map((u) => uplinkCard(u))}</ul>
+      ) : (
+        <p className="text-sm text-gray-500">No uplink ports read yet. Press Refresh from OLT.</p>
+      )}
+    </Section>
   )
 
   // A plain function, not a component: a component defined in here would be
@@ -357,6 +366,9 @@ export function OltSettings({
             <p className="mt-0.5 text-xs text-gray-500">
               {status ? <span className={status[1]}>{status[0]}</span> : null}
               {status ? ' · ' : ''}
+              {u.medium === 'fibre' ? 'Fibre' : 'Copper'}
+              {u.inBps != null || u.outBps != null ? ' · in ' + rate(u.inBps) + ', out ' + rate(u.outBps) : ''}
+              {' · '}
               <span className="font-mono">{u.name}</span>
             </p>
           </div>
@@ -382,7 +394,7 @@ export function OltSettings({
             </Chip>
           ))}
           {carried.length === 0 ? <span className="text-xs text-gray-500">no VLANs</span> : null}
-          {addable.length && open !== 'add:' + u.name ? (
+          {can('uplink-vlan-add') && addable.length && open !== 'add:' + u.name ? (
             <button type="button" onClick={() => toggle('add:' + u.name, () => { setAddVlan(''); setAddTagged(true) })} className={link}>
               + Add a VLAN
             </button>
@@ -474,6 +486,7 @@ export function OltSettings({
 
   const ponTab = (
     <Section title="PON ports" note="Give each port a label so you know where its fibre goes. Turning a port off cuts every customer on it until it is turned back on.">
+      {pons.length === 0 ? <p className="text-sm text-gray-500">No PON ports read yet. Press Refresh from OLT.</p> : null}
       <ul className="divide-y divide-gray-800">
         {pons.map((p) => (
           <li key={p.name} className="py-3">
@@ -489,7 +502,9 @@ export function OltSettings({
                     {p.description ? <span className="ml-2 font-normal text-gray-300">{p.description}</span> : null}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {!p.enabled ? 'Turned off' : p.up ? 'On' : 'On, but no light'} · {p.registered ?? 0} ONUs
+                    {!p.enabled ? 'Turned off' : p.up ? 'On' : 'On, but no light'} · {p.registered ?? 0}
+                    {p.capacity ? ' of ' + p.capacity : ''} ONUs
+                    {p.outBps != null || p.inBps != null ? ' · down ' + rate(p.outBps) + ', up ' + rate(p.inBps) : ''}
                   </p>
                 </div>
               </div>
@@ -564,7 +579,7 @@ export function OltSettings({
             )
           })}
       </div>
-      {open === 'speed' ? (
+      {!can('speed-add') ? null : open === 'speed' ? (
         <div className="mt-4 flex flex-wrap items-end gap-3">
           {caps.downSpeed ? (
             <div className="text-xs text-gray-400">
@@ -664,30 +679,48 @@ export function OltSettings({
     </Section>
   )
 
+  const untested =
+    canManage && caps.kinds.length > 0 && !caps.tested && part !== 'settings' ? (
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-900/60 bg-amber-950/20 px-4 py-3">
+        <p className="max-w-xl text-xs leading-relaxed text-amber-200">
+          ISPMan&apos;s commands for this make of OLT come from its manual and haven&apos;t been tried on one yet.
+          You can look at any change; nothing is sent unless you switch it on for this OLT.
+        </p>
+        <label className="flex items-center gap-2 text-xs font-medium text-amber-100">
+          <input
+            type="checkbox"
+            checked={unlockedNow}
+            onChange={async (e) => {
+              const on = e.target.checked
+              const res = await safe(() => setOltSettingsUnlocked(oltId, on))
+              if (res.ok) setUnlockedNow(on)
+              else setNote({ ok: false, text: res.error })
+            }}
+          />
+          Allow changes on this OLT
+        </label>
+      </div>
+    ) : null
+
+  const noteBox = note ? (
+    <p role="status" className={'rounded-lg px-4 py-2.5 text-sm ' + (note.ok ? 'bg-emerald-950/40 text-emerald-300' : 'bg-red-950/40 text-red-300')}>
+      {note.text}
+    </p>
+  ) : null
+
+  if (part !== 'settings') {
+    return (
+      <div className="space-y-4 py-2">
+        {untested}
+        {noteBox}
+        {part === 'vlans' ? vlansTab : part === 'uplinks' ? uplinksTab : part === 'pon' ? ponTab : speedTab}
+        {reviewBox}
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4 py-2">
-      {!caps.tested ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-900/60 bg-amber-950/20 px-4 py-3">
-          <p className="max-w-xl text-xs leading-relaxed text-amber-200">
-            ISPMan&apos;s commands for this make of OLT come from its manual and haven&apos;t been tried on one yet.
-            You can look at any change; nothing is sent unless you switch it on for this OLT.
-          </p>
-          <label className="flex items-center gap-2 text-xs font-medium text-amber-100">
-            <input
-              type="checkbox"
-              checked={unlockedNow}
-              onChange={async (e) => {
-                const on = e.target.checked
-                const res = await safe(() => setOltSettingsUnlocked(oltId, on))
-                if (res.ok) setUnlockedNow(on)
-                else setNote({ ok: false, text: res.error })
-              }}
-            />
-            Allow changes on this OLT
-          </label>
-        </div>
-      ) : null}
-
       <nav className="flex flex-wrap gap-1.5" aria-label="Settings sections">
         {tabs.map((t) => (
           <button
@@ -700,7 +733,7 @@ export function OltSettings({
             }}
             aria-current={tab === t.id ? 'page' : undefined}
             className={
-              'rounded-full px-4 py-1.5 text-sm font-medium transition ' +
+              'rounded-full px-4 py-1.5 text-sm font-medium ' +
               (tab === t.id ? 'bg-blue-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700')
             }
           >
@@ -709,20 +742,11 @@ export function OltSettings({
           </button>
         ))}
       </nav>
-
-      {note ? (
-        <p role="status" className={'rounded-lg px-4 py-2.5 text-sm ' + (note.ok ? 'bg-emerald-950/40 text-emerald-300' : 'bg-red-950/40 text-red-300')}>
-          {note.text}
-        </p>
-      ) : null}
-
-      {tab === 'network' ? network : null}
-      {tab === 'pon' ? ponTab : null}
-      {tab === 'speed' ? speedTab : null}
+      {noteBox}
+      {tab === 'auto' ? newOnus : null}
       {tab === 'signal' ? <SignalLevelsSection oltId={oltId} ports={pons.map((p) => p.name)} levels={signalLevels} /> : null}
       {tab === 'setups' ? <SavedSetups profiles={speeds} vlans={vlans.map((v) => v.id).filter((v) => v !== 1)} /> : null}
       {tab === 'history' ? historyTab : null}
-
       {reviewBox}
     </div>
   )
