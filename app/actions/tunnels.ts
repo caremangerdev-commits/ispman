@@ -20,7 +20,7 @@ import {
 import {
   MAX_ADDRESSES_PER_COMPANY, MAX_LIVE_ROUTERS_PER_COMPANY, ROUTER_REMOVE,
   nasDescription, nasShortname, nextTunnelIp, parseServices, parseWireGuardKey,
-  routerConnect, routerNameProblem, routerSetupLine, serverAddPeer, serverRemovePeer,
+  routerConnect, routerNameProblem, routerOneLine, routerSetupLine, serverAddPeer, serverRemovePeer,
   serverReplacePeer,
   TUNNEL_NETWORK,
   type ConfigBlock, type RouterCommand, type TunnelLabel,
@@ -625,20 +625,19 @@ export async function routerSetupLineAction(
 }
 
 /**
- * The whole setup script, to paste in, for a router that refuses the one line
- * with "failure: not allowed by device-mode".
+ * The router setup command: one line that does the whole setup with nothing
+ * to download, so it works on every MikroTik whatever its device-mode.
  *
- * RouterOS 7.17 and later ship home routers (hAP and the like) in device-mode
- * "home", which switches off /tool fetch. The one line starts with a fetch, so
- * on those routers nothing runs and nothing changes. Turning fetch back on
- * takes someone at the router pressing its button within five minutes, which
- * is a site visit for a router in a cabinet somewhere.
+ * WHY NOT A DOWNLOAD. RouterOS 7.17 and later ship home routers (hAP and the
+ * like) in device-mode "home", which switches off /tool fetch. A command that
+ * starts by downloading fails there with "not allowed by device-mode", and
+ * fixing that takes someone at the router pressing its button. So the whole
+ * script travels in the line itself, and ISPMan makes the WireGuard key pair,
+ * so the router has nothing to send back either.
  *
- * This gets round it without the visit: the same script, shown here instead
- * of downloaded, with a WireGuard key pair ISPMan has made, so the router has
- * nothing to send back. Everything else — the version check, the clock, the
- * RADIUS entry kept below the router's own, the ispman login — is identical,
- * because both come from buildSetupScript.
+ * Same steps, same guards as ever — version check, clock, RADIUS entry kept
+ * below the router's own, the ispman login — because the script comes from
+ * buildSetupScript like the downloaded one did.
  */
 export async function routerSetupScriptAction(
   _prev: TunnelActionResult | null,
@@ -706,13 +705,7 @@ export async function routerSetupScriptAction(
   return {
     ok: true,
     tunnelId: tunnel.id,
-    message:
-      'Paste all of this into ' + tunnel.name + "'s terminal. It does the same as the one line, without " +
-      'downloading anything, and the router appears here within a minute.',
-    // One block: pasted into a terminal, every line otherwise runs on its own
-    // and a :local set on one line is gone on the next. Inside { } it runs as
-    // one script, the way /import runs the downloaded one, and an :error stops
-    // the whole thing the same way.
-    setupScript: '{\n' + built.script + '\n}',
+    message: 'Paste it into ' + tunnel.name + "'s terminal and press Enter. It appears here within a minute.",
+    setupScript: routerOneLine(built.script),
   }
 }

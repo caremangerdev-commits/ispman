@@ -696,3 +696,28 @@ export function routerSetupLine(baseUrl: string, token: string): string {
     '/file remove [find name="ispman-setup.rsc"]'
   )
 }
+
+/**
+ * A script as one line, for pasting into a router's terminal.
+ *
+ * WHY ONE LINE. Winbox runs several pasted lines joined together, so a
+ * script pasted as it is turns into one long line in which the first comment
+ * swallows everything after it. Joined here instead, on purpose: comments and
+ * blank lines dropped, statements separated by ";", nothing after an opening
+ * "{" or before a closing "}" but a space. Wrapped in { } so it runs as one
+ * script, where a :local set early is still there later and an :error stops
+ * the whole thing, exactly as /import runs the downloaded copy.
+ */
+export function routerOneLine(script: string): string {
+  const parts: string[] = []
+  for (const raw of script.split('\n')) {
+    let line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    while (line.endsWith(';')) line = line.slice(0, -1).trimEnd()
+    const prev = parts[parts.length - 1]
+    if (prev === undefined) parts.push(line)
+    else if (prev.endsWith('{') || line.startsWith('}')) parts[parts.length - 1] = prev + ' ' + line
+    else parts[parts.length - 1] = prev + '; ' + line
+  }
+  return '{ ' + parts.join('') + ' }'
+}

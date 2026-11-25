@@ -6,7 +6,7 @@ import { useActionState, useEffect, useRef, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import {
-  addRouterTunnel, revokeRouterTunnel, routerSetupLineAction, routerSetupScriptAction, setRouterTunnelKey,
+  addRouterTunnel, revokeRouterTunnel, routerSetupScriptAction, setRouterTunnelKey,
   showRouterTunnelConfig,
   type TunnelActionResult,
 } from '@/app/actions/tunnels'
@@ -168,11 +168,12 @@ function OneLineHint() {
 }
 
 /**
- * The one-line path, offered before the numbered steps.
+ * The one-line setup command, offered before the numbered steps. It carries
+ * the whole setup, so it needs no download and works whatever the router's
+ * device-mode (see routerSetupScriptAction).
  *
- * WHY IT SITS ABOVE THEM AND NOT INSTEAD OF THEM. The steps are the fallback
- * for a router that cannot fetch over the internet, and for anyone who wants
- * to read each command before it runs on live equipment. Hiding them would
+ * WHY IT SITS ABOVE THE STEPS AND NOT INSTEAD OF THEM. The steps are there
+ * for anyone who wants to read each command before it runs on live equipment. Hiding them would
  * make this the only way, and the first router it could not set up would leave
  * the tenant with nothing.
  *
@@ -182,16 +183,15 @@ function OneLineHint() {
  * purity rule rightly forbids it.
  */
 function SetupLine({ tunnelId }: { tunnelId: number }) {
-  const [state, action] = useActionState(routerSetupLineAction, null)
+  const [state, action] = useActionState(routerSetupScriptAction, null)
   const [copied, setCopied] = useState(false)
-  const line = state?.ok ? state.setupLine : undefined
+  const line = state?.ok ? state.setupScript : undefined
 
   return (
     <div className="rounded-xl border border-blue-900/50 bg-blue-950/20 p-4">
       <p className="text-xs leading-relaxed text-blue-200/90">
-        Connect this router to ISPMan. Click below to get a command, then paste it into the
-        router&apos;s terminal in Winbox and press Enter. The command works once and expires after
-        30 minutes.
+        Connect this router to ISPMan. Get the setup command, paste it into the router&apos;s terminal in
+        Winbox and press Enter. It works on any MikroTik running RouterOS 7.
       </p>
 
       {!line ? (
@@ -202,82 +202,23 @@ function SetupLine({ tunnelId }: { tunnelId: number }) {
         </form>
       ) : (
         <div className="mt-3 space-y-2">
-          <div className="overflow-hidden rounded-lg border border-blue-900/50">
-            <div className="flex items-center justify-between gap-2 bg-blue-950/40 px-3 py-1.5">
-              <span className="text-[11px] text-blue-200/80">
-                Paste into the router&apos;s terminal, then press Enter
-              </span>
-              <CopyButton text={line.line} onCopied={() => setCopied(true)} />
-            </div>
-            <pre className="overflow-x-auto bg-gray-950 px-3 py-2 text-[11px] leading-relaxed text-gray-200">
-              {line.line}
-            </pre>
+          <div className="flex flex-wrap items-center gap-3">
+            <CopyButton text={line} onCopied={() => setCopied(true)} />
+            <span className="text-xs text-blue-200/80">
+              {copied
+                ? 'Copied. Paste it into the terminal and press Enter. The router turns green below within a minute.'
+                : 'Copy it, paste it into the router’s terminal, press Enter.'}
+            </span>
           </div>
-          <p className="text-[11px] text-gray-500">
-            Good for {line.minutes} minutes, once. It carries this router&apos;s RADIUS secret, so
-            don&apos;t paste it anywhere else — if it expires, ask for another.
-          </p>
-          {copied ? (
-            <p className="text-[11px] text-gray-400">
-              Copied. Once it runs, this router turns green below within a minute.
-            </p>
-          ) : null}
-        </div>
-      )}
-      <NoDownloadSetup tunnelId={tunnelId} />
-    </div>
-  )
-}
-
-/**
- * For a router that answers the one line with "failure: not allowed by
- * device-mode": newer home routers may not download anything. The same setup,
- * shown whole to paste in. See routerSetupScriptAction.
- */
-function NoDownloadSetup({ tunnelId }: { tunnelId: number }) {
-  const [open, setOpen] = useState(false)
-  const [state, action] = useActionState(routerSetupScriptAction, null)
-  const script = state?.ok ? state.setupScript : undefined
-
-  if (!open) {
-    return (
-      <p className="mt-3 text-[11px] text-gray-500">
-        Router says <span className="font-mono text-gray-400">failure: not allowed by device-mode</span>?{' '}
-        <button type="button" onClick={() => setOpen(true)} className="text-blue-400 hover:underline">
-          Set it up without downloading
-        </button>
-      </p>
-    )
-  }
-  return (
-    <div className="mt-3 space-y-2 border-t border-blue-900/40 pt-3">
-      <p className="text-xs leading-relaxed text-gray-400">
-        Newer MikroTik home routers are not allowed to download anything, so the command above stops at
-        its first step and changes nothing. This is the same setup in full, to paste straight into the
-        router&apos;s terminal. Nothing needs changing on the router first.
-      </p>
-      {!script ? (
-        <form action={action}>
-          <input type="hidden" name="id" value={tunnelId} />
-          <SubmitButton label="Show the full setup" pending="Preparing…" />
-          {state && !state.ok ? <Problem text={state.error} /> : null}
-        </form>
-      ) : (
-        <div className="space-y-2">
-          <div className="overflow-hidden rounded-lg border border-blue-900/50">
-            <div className="flex items-center justify-between gap-2 bg-blue-950/40 px-3 py-1.5">
-              <span className="text-[11px] text-blue-200/80">
-                Copy all of it, paste into the router&apos;s terminal in Winbox, press Enter
-              </span>
-              <CopyButton text={script} />
-            </div>
-            <pre className="max-h-72 overflow-auto bg-gray-950 px-3 py-2 text-[11px] leading-relaxed text-gray-300">
-              {script}
+          <details className="text-[11px] text-gray-500">
+            <summary className="cursor-pointer select-none hover:text-gray-300">See the command</summary>
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-gray-950 px-3 py-2 text-[11px] leading-relaxed text-gray-300">
+              {line}
             </pre>
-          </div>
+          </details>
           <p className="text-[11px] text-gray-500">
-            It holds this router&apos;s passwords, so don&apos;t paste it anywhere else. Asking for it again
-            makes a new one and the old one stops working.
+            It holds this router&apos;s passwords, so don&apos;t paste it anywhere else. Getting a new one makes
+            the old one stop working.
           </p>
         </div>
       )}
