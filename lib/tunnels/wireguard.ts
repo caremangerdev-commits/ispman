@@ -534,6 +534,12 @@ export type SetupScriptInput = ConnectInput &
     token: string
     /** The password for the ispman user, already stored encrypted before this is built. */
     apiPassword: string
+    /**
+     * Set for a router that cannot download (device-mode "home"): ISPMan made
+     * the key pair, the script installs this half, and there is nothing to
+     * report back. See lib/tunnels/setup-build.ts.
+     */
+    privateKey?: string
   }
 
 /**
@@ -552,6 +558,7 @@ export type SetupScriptInput = ConnectInput &
 export function routerSetupScript(input: SetupScriptInput): string {
   const base = input.baseUrl.replace(/\/+$/, '')
   const keyUrl = base + '/api/routers/setup/' + input.token + '/key'
+  const given = input.privateKey ? ' private-key="' + input.privateKey + '"' : ''
 
   return [
     '# ISPMan setup - ' + heading(input),
@@ -578,8 +585,13 @@ export function routerSetupScript(input: SetupScriptInput): string {
     '# --- the tunnel ---------------------------------------------------------',
     ':if ([:len [/interface wireguard find name=' + ROUTER_INTERFACE + ']] = 0) do={',
     '  /interface wireguard add name=' + ROUTER_INTERFACE +
-      ' listen-port=' + ROUTER_LISTEN_PORT + ' comment="' + COMMENT_INTERFACE + '"',
+      ' listen-port=' + ROUTER_LISTEN_PORT + given + ' comment="' + COMMENT_INTERFACE + '"',
     '}',
+    // Run again on a router that already has the interface: the key ISPMan
+    // now expects has to be the one it uses.
+    ...(input.privateKey
+      ? ['/interface wireguard set [find name=' + ROUTER_INTERFACE + ']' + given]
+      : []),
     '',
     ':if ([:len [/interface wireguard peers find comment="' + COMMENT_PEER + '"]] = 0) do={',
     '  /interface wireguard peers add interface=' + ROUTER_INTERFACE +
@@ -634,6 +646,21 @@ export function routerSetupScript(input: SetupScriptInput): string {
     '',
     ...allowApiFromServer(),
     '',
+    ...(input.privateKey
+      ? [
+          '# --- done ---------------------------------------------------------------',
+          '# ISPMan made this key pair and already has the public half, so there',
+          '# is nothing to report back.',
+          ':put "";',
+          ':put "ISPMan: done. The router appears in ISPMan within a minute.";',
+        ]
+      : reportKey(keyUrl)),
+  ].join('\n')
+}
+
+/** The ending for a router that can download: it sends ISPMan its public key. */
+function reportKey(keyUrl: string): string[] {
+  return [
     '# --- tell ISPMan the public key -----------------------------------------',
     '# The private half never leaves this router. This is the step that used to',
     '# be a person copying a key off the screen.',
@@ -650,7 +677,7 @@ export function routerSetupScript(input: SetupScriptInput): string {
     '  :put "Its public key, if you would rather paste it in by hand:";',
     '  :put $pub',
     '}',
-  ].join('\n')
+  ]
 }
 
 /**

@@ -6,7 +6,7 @@ import { useActionState, useEffect, useRef, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import {
-  addRouterTunnel, revokeRouterTunnel, routerSetupLineAction, setRouterTunnelKey,
+  addRouterTunnel, revokeRouterTunnel, routerSetupLineAction, routerSetupScriptAction, setRouterTunnelKey,
   showRouterTunnelConfig,
   type TunnelActionResult,
 } from '@/app/actions/tunnels'
@@ -222,6 +222,63 @@ function SetupLine({ tunnelId }: { tunnelId: number }) {
               Copied. Once it runs, this router turns green below within a minute.
             </p>
           ) : null}
+        </div>
+      )}
+      <NoDownloadSetup tunnelId={tunnelId} />
+    </div>
+  )
+}
+
+/**
+ * For a router that answers the one line with "failure: not allowed by
+ * device-mode": newer home routers may not download anything. The same setup,
+ * shown whole to paste in. See routerSetupScriptAction.
+ */
+function NoDownloadSetup({ tunnelId }: { tunnelId: number }) {
+  const [open, setOpen] = useState(false)
+  const [state, action] = useActionState(routerSetupScriptAction, null)
+  const script = state?.ok ? state.setupScript : undefined
+
+  if (!open) {
+    return (
+      <p className="mt-3 text-[11px] text-gray-500">
+        Router says <span className="font-mono text-gray-400">failure: not allowed by device-mode</span>?{' '}
+        <button type="button" onClick={() => setOpen(true)} className="text-blue-400 hover:underline">
+          Set it up without downloading
+        </button>
+      </p>
+    )
+  }
+  return (
+    <div className="mt-3 space-y-2 border-t border-blue-900/40 pt-3">
+      <p className="text-xs leading-relaxed text-gray-400">
+        Newer MikroTik home routers are not allowed to download anything, so the command above stops at
+        its first step and changes nothing. This is the same setup in full, to paste straight into the
+        router&apos;s terminal. Nothing needs changing on the router first.
+      </p>
+      {!script ? (
+        <form action={action}>
+          <input type="hidden" name="id" value={tunnelId} />
+          <SubmitButton label="Show the full setup" pending="Preparing…" />
+          {state && !state.ok ? <Problem text={state.error} /> : null}
+        </form>
+      ) : (
+        <div className="space-y-2">
+          <div className="overflow-hidden rounded-lg border border-blue-900/50">
+            <div className="flex items-center justify-between gap-2 bg-blue-950/40 px-3 py-1.5">
+              <span className="text-[11px] text-blue-200/80">
+                Copy all of it, paste into the router&apos;s terminal in Winbox, press Enter
+              </span>
+              <CopyButton text={script} />
+            </div>
+            <pre className="max-h-72 overflow-auto bg-gray-950 px-3 py-2 text-[11px] leading-relaxed text-gray-300">
+              {script}
+            </pre>
+          </div>
+          <p className="text-[11px] text-gray-500">
+            It holds this router&apos;s passwords, so don&apos;t paste it anywhere else. Asking for it again
+            makes a new one and the old one stops working.
+          </p>
         </div>
       )}
     </div>

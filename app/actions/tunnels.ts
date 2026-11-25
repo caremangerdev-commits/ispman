@@ -13,6 +13,7 @@ import { addTunnelNas, readTunnelSecret, removeTunnelNas } from '@/lib/radius/op
 import { getSchemaCapabilities } from '@/lib/schema'
 import { displayName, requirePermission, type Session } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
+import { buildSetupScript, wireGuardKeyPair } from '@/lib/tunnels/setup-build'
 import {
   generateRadiusSecret, tunnelServer, tunnelSyncConfigured, type TunnelServer,
 } from '@/lib/tunnels/server'
@@ -79,6 +80,11 @@ export type TunnelActionResult =
        * working. Shown instead of steps 2 to 4, not beside them.
        */
       setupLine?: { line: string; expiresAt: string; minutes: number }
+      /**
+       * The whole setup script, for a router that may not download anything
+       * (device-mode "home"). Pasted into its terminal as it is.
+       */
+      setupScript?: string
     }
   | { ok: false; error: string }
 
@@ -615,5 +621,98 @@ export async function routerSetupLineAction(
       expiresAt: minted.expiresAt.toISOString(),
       minutes: SETUP_TOKEN_MINUTES,
     },
+  }
+}
+
+/**
+ * The whole setup script, to paste in, for a router that refuses the one line
+ * with "failure: not allowed by device-mode".
+ *
+ * RouterOS 7.17 and later ship home routers (hAP and the like) in device-mode
+ * "home", which switches off /tool fetch. The one line starts with a fetch, so
+ * on those routers nothing runs and nothing changes. Turning fetch back on
+ * takes someone at the router pressing its button within five minutes, which
+ * is a site visit for a router in a cabinet somewhere.
+ *
+ * This gets round it without the visit: the same script, shown here instead
+ * of downloaded, with a WireGuard key pair ISPMan has made, so the router has
+ * nothing to send back. Everything else — the version check, the clock, the
+ * RADIUS entry kept below the router's own, the ispman login — is identical,
+ * because both come from buildSetupScript.
+ */
+export async function routerSetupScriptAction(
+  _prev: TunnelActionResult | null,
+  formData: FormData
+): Promise<TunnelActionResult> {
+  const begun = await begin()
+  if ('refused' in begun) return begun.refused
+  const { session } = begun
+
+  if (!(await getSchemaCapabilities()).routerLogins || !secretStorageReady()) {
+    return {
+      ok: false,
+      error: isOperator(session)
+        ? 'Needs migration 0052 and ROUTER_SECRET_KEY, the same as the one-line setup.'
+        : "This kind of setup isn't finished on this server yet. Ask the platform operator to turn it on.",
+    }
+  }
+
+  const live = await liveTunnel(session, formData)
+  if ('refused' in live) return live.refused
+  const { tunnel } = live
+
+  const srv = serverFor(session)
+  if ('refused' in srv) return srv.refused
+
+  const keys = wireGuardKeyPair()
+  if (keys.publicKey === srv.server.publicKey || (await tunnelHoldingKey(keys.publicKey))) {
+    // A fresh x25519 key matching another is not going to happen; if it ever
+    // did, saying so beats pairing two routers with one key.
+    return { ok: false, error: 'ISPMan made a key that is already in use. Press the button again.' }
+  }
+
+  // RADIUS entry and the ispman login first: if either fails, no key is
+  // recorded and nothing is shown, so the router is never told half a story.
+  const built = await buildSetupScript({
+    companyId: session.company.id,
+    tunnel,
+    baseUrl: '',
+    token: '',
+    privateKey: keys.privateKey,
+  })
+  if (!built.ok) return { ok: false, error: built.lines.filter(Boolean).join(' ') }
+
+  const { data, error } = await tenantClient()
+    .from('router_tunnels')
+    .update({ public_key: keys.publicKey, key_set_at: new Date().toISOString() })
+    .eq('id', tunnel.id)
+    .eq('company_id', session.company.id)
+    .is('revoked_at', null)
+    .select('id')
+  if (error || !data || data.length === 0) {
+    return { ok: false, error: 'Could not record the key' + (error ? ': ' + error.message : '') + '. Nothing was shown to paste.' }
+  }
+
+  await logEvent({
+    type: 'router_tunnel_setup_script',
+    tag: '[tunnels]',
+    details:
+      'Full setup script issued for ' + tunnel.name + ' at ' + tunnel.tunnelIp +
+      ' (router may not download). Key made by ISPMan | public_key=' + keys.publicKey +
+      ' | by=' + session.profile.email,
+  })
+
+  revalidatePath(PATH)
+  return {
+    ok: true,
+    tunnelId: tunnel.id,
+    message:
+      'Paste all of this into ' + tunnel.name + "'s terminal. It does the same as the one line, without " +
+      'downloading anything, and the router appears here within a minute.',
+    // One block: pasted into a terminal, every line otherwise runs on its own
+    // and a :local set on one line is gone on the next. Inside { } it runs as
+    // one script, the way /import runs the downloaded one, and an :error stops
+    // the whole thing the same way.
+    setupScript: '{\n' + built.script + '\n}',
   }
 }

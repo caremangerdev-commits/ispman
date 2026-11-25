@@ -1,17 +1,9 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
-import { devicePassword } from '@/lib/crypto'
-import {
-  findSetupToken, spendSetupToken, storeRouterLogin,
-} from '@/lib/data/router-logins'
+import { findSetupToken, spendSetupToken } from '@/lib/data/router-logins'
 import { getRouterTunnel } from '@/lib/data/tunnels'
-import { addTunnelNas, readTunnelSecret } from '@/lib/radius/operations'
 import { getSchemaCapabilities } from '@/lib/schema'
-import { tenantClient } from '@/lib/supabase/tenant'
-import { generateRadiusSecret, tunnelServer } from '@/lib/tunnels/server'
-import {
-  ROUTER_API_PORT, ROUTER_API_USER, nasDescription, nasShortname, routerSetupScript,
-} from '@/lib/tunnels/wireguard'
+import { buildSetupScript } from '@/lib/tunnels/setup-build'
 
 /**
  * The RouterOS script behind the single pasted line.
@@ -87,74 +79,14 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ token: stri
     return says(['', 'That router has been revoked in ISPMan. Nothing has been changed.'])
   }
 
-  const srv = tunnelServer()
-  if (!srv.ok) {
-    console.error('[routers/setup] server not configured:', srv.problem)
-    return says(['', 'ISPMan is not finished setting up tunnels on its side.', 'Nothing has been changed.'])
-  }
-
-  const { data: companyRow } = await tenantClient()
-    .from('companies')
-    .select('name')
-    .eq('id', found.companyId)
-    .maybeSingle()
-  const companyName = (companyRow as { name: string } | null)?.name ?? 'Company #' + found.companyId
-
-  // --- the RADIUS secret: reuse the router's own, or write it its first ------
-  let secret: string
-  const existing = await readTunnelSecret(tunnel.tunnelIp)
-  if (existing.ok && existing.secret) {
-    secret = existing.secret
-  } else {
-    secret = generateRadiusSecret()
-    const nas = await addTunnelNas({
-      tunnelIp: tunnel.tunnelIp,
-      shortname: nasShortname(tunnel.tunnelIp, companyName, tunnel.name),
-      secret,
-      description: nasDescription(tunnel.id, companyName, tunnel.name),
-    })
-    if (!nas.ok) {
-      console.error('[routers/setup] RADIUS entry failed for', tunnel.tunnelIp, nas.error)
-      return says([
-        '',
-        'ISPMan could not add this router to its RADIUS server.',
-        'Nothing on this router has been changed. Try the line again shortly.',
-      ])
-    }
-  }
-
-  // --- the login the script is about to create ------------------------------
-  const password = devicePassword()
-  const stored = await storeRouterLogin(found.companyId, tunnel.id, {
-    user: ROUTER_API_USER,
-    password,
-    kind: 'api',
-    port: ROUTER_API_PORT,
-  })
-  if (!stored.ok) {
-    // The password was never sent anywhere, so the router is untouched. Do not
-    // serve a script that sets a password ISPMan failed to remember.
-    console.error('[routers/setup] could not store the login:', stored.error)
-    return says([
-      '',
-      'ISPMan could not store the login it was about to create.',
-      'Nothing on this router has been changed.',
-    ])
-  }
-
-  const script = routerSetupScript({
-    companyName,
-    routerName: tunnel.name,
-    tunnelIp: tunnel.tunnelIp,
-    serverPublicKey: srv.server.publicKey,
-    serverEndpoint: srv.server.endpoint,
-    serverPort: srv.server.port,
-    secret,
-    services: tunnel.services,
+  const built = await buildSetupScript({
+    companyId: found.companyId,
+    tunnel,
     baseUrl: baseUrlFrom(req),
     token,
-    apiPassword: password,
   })
+  if (!built.ok) return says(built.lines)
+  const script = built.script
 
   return new NextResponse(script + '\n', {
     status: 200,
