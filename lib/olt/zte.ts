@@ -934,7 +934,7 @@ async function planOne(session: TelnetSession, change: OltConfigChange): Promise
     const old = /^description (.+)$/.exec(lines.find((l) => l.startsWith('description ')) ?? '')?.[1] ?? null
     const text = cliWord(change.text, 60)
     return {
-      summary: (text ? 'Describe ' + port + ' as ' + text : 'Clear the description of ' + port),
+      summary: (text ? 'Label ' + port + ' "' + text + '"' : 'Remove the label from ' + port),
       commands: ['interface ' + port, text ? 'description ' + text : 'no description', 'exit'],
       undo: ['interface ' + port, old ? 'description ' + old : 'no description', 'exit'],
     }

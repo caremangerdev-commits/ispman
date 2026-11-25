@@ -154,7 +154,7 @@ export function OltSettings({
     }
   }
 
-  // The description box opens at the port it belongs to, not somewhere
+  // The label box opens at the port it belongs to, not somewhere
   // further down the page where it is easy to miss.
   const describeEditor = (port: string) =>
     describing?.port === port ? (
@@ -304,7 +304,7 @@ export function OltSettings({
                       onClick={() => setDescribing({ port: u.name, text: u.description ?? '' })}
                       className={small}
                     >
-                      Describe
+                      Label
                     </button>
                   </div>
                   {describeEditor(u.name)}
@@ -417,7 +417,7 @@ export function OltSettings({
                   <th className={th}>Port</th>
                   <th className={th}>ONUs</th>
                   <th className={th}>State</th>
-                  <th className={th}>Description</th>
+                  <th className={th}>Label</th>
                   <th className={th}></th>
                 </tr>
               </thead>
@@ -438,7 +438,7 @@ export function OltSettings({
                     <td className={td}>{p.description ?? '—'}</td>
                     <td className={td + ' whitespace-nowrap text-right'}>
                       <button type="button" onClick={() => setDescribing({ port: p.name, text: p.description ?? '' })} className={small}>
-                        Describe
+                        Label
                       </button>{' '}
                       <button
                         type="button"
