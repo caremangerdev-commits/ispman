@@ -57,6 +57,23 @@ export function Section({ title, note, children }: { title: string; note?: strin
   )
 }
 
+/**
+ * A call to the server that cannot leave a button stuck. The usual way one
+ * fails is a page opened before ISPMan was updated: its buttons point at the
+ * old server code and the call throws instead of answering, which would leave
+ * "Checking…" on screen for ever with no word as to why.
+ */
+export async function safe<T extends { ok: boolean }>(call: () => Promise<T>): Promise<T | { ok: false; error: string }> {
+  try {
+    return await call()
+  } catch {
+    return {
+      ok: false,
+      error: 'ISPMan did not answer. If it was updated since this page was opened, reload the page (Ctrl+F5) and try again.',
+    }
+  }
+}
+
 export function OltSettings({
   oltId, info, signalLevels = null,
 }: {
@@ -98,7 +115,7 @@ export function OltSettings({
     setBusy(key)
     setNote(null)
     setPending(null)
-    const res = await previewOltChange(oltId, change)
+    const res = await safe(() => previewOltChange(oltId, change))
     setBusy(null)
     if (res.ok) setPending({ change, plan: res.plan })
     else setNote({ ok: false, text: res.error })
@@ -109,7 +126,7 @@ export function OltSettings({
   const runIt = async () => {
     if (!pending) return
     setBusy('run')
-    const res = await applyOltChange(oltId, pending.change)
+    const res = await safe(() => applyOltChange(oltId, pending.change))
     setBusy(null)
     setPending(null)
     setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
@@ -128,7 +145,7 @@ export function OltSettings({
   const undo = async (c: OltChange) => {
     setBusy('undo' + c.id)
     setNote(null)
-    const res = await undoOltChange(c.id)
+    const res = await safe(() => undoOltChange(c.id))
     setBusy(null)
     setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
     if (res.ok) {

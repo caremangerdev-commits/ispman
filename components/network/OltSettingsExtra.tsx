@@ -7,7 +7,7 @@ import {
   deleteOnuSetup, listOnuSetups, saveOnuSetup, saveSignalLevels, type SavedSetup,
 } from '@/app/actions/olts'
 import { SpeedPicker, setupWords } from '@/components/network/AuthoriseSetup'
-import { Section } from '@/components/network/OltSettings'
+import { Section, safe } from '@/components/network/OltSettings'
 import { DEFAULT_LEVELS, type SignalLevels } from '@/lib/olt/signal-levels'
 import type { OltSpeedProfile } from '@/lib/olt/types'
 
@@ -59,7 +59,7 @@ export function SignalLevelsSection({
   const save = async () => {
     setBusy(true)
     setNote(null)
-    const res = await saveSignalLevels(oltId, {
+    const res = await safe(() => saveSignalLevels(oltId, {
       warn: Number(warn),
       critical: Number(critical),
       ports: Object.fromEntries(
@@ -67,7 +67,7 @@ export function SignalLevelsSection({
           .filter(([, l]) => l.warn !== '' && l.critical !== '')
           .map(([p, l]) => [p, { warn: Number(l.warn), critical: Number(l.critical) }])
       ),
-    })
+    }))
     setBusy(false)
     setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
     if (res.ok) router.refresh()
@@ -154,12 +154,12 @@ export function SavedSetups({ profiles, vlans }: { profiles: OltSpeedProfile[]; 
     setBusy(true)
     setNote(null)
     const v = Number(vlan)
-    const res = await saveOnuSetup(name, {
+    const res = await safe(() => saveOnuSetup(name, {
       onuVlan: tagged ? Number(onuVlan || vlan) : null,
       vlan: v,
       upProfile: up || null,
       downProfile: down || null,
-    })
+    }))
     setBusy(false)
     setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
     if (res.ok) {
