@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { notFound, redirect } from 'next/navigation'
 
 import { OltDetail } from '@/components/network/OltDetail'
+import { getOnuDefaults } from '@/lib/data/olt-defaults'
 import { getAutoAuthorise, getOlt, savedOnuReading } from '@/lib/data/olts'
 import { listRouterTunnels } from '@/lib/data/tunnels'
 import { can } from '@/lib/permissions'
@@ -32,6 +33,7 @@ export default async function OltPage({
 
   const tunnels = await listRouterTunnels(company.id)
   const autoAuthorise = await getAutoAuthorise(company.id, olt.id)
+  const onuDefaults = await getOnuDefaults(company.id, olt.id)
   const saved = await savedOnuReading(company.id, olt.id).catch(() => null)
   const routerName = tunnels.find((t) => t.id === olt.tunnelId)?.name ?? 'a removed router'
 
@@ -48,6 +50,7 @@ export default async function OltPage({
       routerName={routerName}
       checkedText={checkedText}
       autoAuthorise={autoAuthorise}
+      onuDefaults={onuDefaults}
       saved={saved ? { onus: saved.onus, customers: saved.customers, text: savedText } : null}
       focus={focus}
       canManage={can(profile.role, 'manage_router_tunnels')}

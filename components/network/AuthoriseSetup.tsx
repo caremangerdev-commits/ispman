@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 
 import { learnPortSetup, onuCommand } from '@/app/actions/olts'
-import type { LearnedSetup, OltAuthoriseResult, OltOnu, OnuServiceSetup } from '@/lib/olt/types'
+import type { LearnedSetup, OltAuthoriseResult, OltOnu, OltSpeedProfile, OnuServiceSetup } from '@/lib/olt/types'
 
 /**
  * How new ONUs' traffic is carried, chosen before they are authorized, and
@@ -28,8 +28,13 @@ export type SetupMode = 'learn' | 'untagged' | 'tagged'
 const portName = (p: string) => 'PON ' + (p.split(/[^0-9]+/).filter(Boolean).slice(-2).join('/') || p)
 
 export function setupWords(s: OnuServiceSetup): string {
-  if (s.onuVlan == null) return 'untagged, on VLAN ' + s.vlan
-  return 'tagged VLAN ' + s.onuVlan + (s.onuVlan === s.vlan ? '' : ', carried on VLAN ' + s.vlan)
+  const vlan =
+    s.onuVlan == null
+      ? 'untagged, on VLAN ' + s.vlan
+      : 'tagged VLAN ' + s.onuVlan + (s.onuVlan === s.vlan ? '' : ', carried on VLAN ' + s.vlan)
+  const up = s.upProfile && s.upProfile !== 'ISPMAN-UP' ? 'upload ' + s.upProfile : ''
+  const down = s.downProfile ? 'download ' + s.downProfile : ''
+  return [vlan, up, down].filter(Boolean).join(', ')
 }
 
 type PortReading = { state: 'reading' } | { state: 'done'; learned: LearnedSetup | null } | { state: 'error'; error: string }
@@ -102,6 +107,7 @@ function PortSetups({ oltId, ports, vlan }: { oltId: number; ports: string[]; vl
 
 export function SetupChooser({
   oltId, canLearn, ports, mode, onMode, vlan, onVlan, vlans,
+  onuVlan, onOnuVlan, profiles, upProfile, onUpProfile, downProfile, onDownProfile,
 }: {
   oltId: number
   /** The OLT's driver can read existing ONUs' setup (ZTE). */
@@ -113,6 +119,15 @@ export function SetupChooser({
   vlan: number | null
   onVlan: (v: number | null) => void
   vlans: number[]
+  /** Tagged: the VLAN the ONU tags with. Null: the same as `vlan`. */
+  onuVlan: number | null
+  onOnuVlan: (v: number | null) => void
+  /** Speed profiles on the OLT. */
+  profiles: OltSpeedProfile[]
+  upProfile: string
+  onUpProfile: (p: string) => void
+  downProfile: string
+  onDownProfile: (p: string) => void
 }) {
   const options: { id: SetupMode; label: string; note: string }[] = [
     ...(canLearn
@@ -173,12 +188,96 @@ export function SetupChooser({
           </label>
         ))}
       </div>
-      <label className="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-400">
-        {mode === 'tagged' ? 'VLAN the ONUs tag with' : mode === 'untagged' ? 'Carry them on VLAN' : 'Where there is nothing to copy, carry them untagged on VLAN'}
-        {vlanField}
-      </label>
+      {mode === 'tagged' ? (
+        <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-400">
+          <label className="flex items-center gap-2">
+            VLAN the ONUs tag with
+            <input
+              type="number"
+              min={1}
+              max={4094}
+              value={onuVlan ?? vlan ?? ''}
+              onChange={(e) => onOnuVlan(Number(e.target.value) || null)}
+              className="w-20 rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
+            />
+          </label>
+          <label className="flex items-center gap-2">
+            Carried to the uplink on VLAN {vlanField}
+          </label>
+          <span className="w-full text-[11px] text-gray-500">
+            The same number for both is the usual case. Different numbers make the OLT translate one into the other.
+          </span>
+        </div>
+      ) : (
+        <label className="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+          {mode === 'untagged' ? 'Carry them on VLAN' : 'Where there is nothing to copy, carry them untagged on VLAN'}
+          {vlanField}
+        </label>
+      )}
+      {mode !== 'learn' ? (
+        <SpeedPicker
+          profiles={profiles}
+          up={upProfile}
+          onUp={onUpProfile}
+          down={downProfile}
+          onDown={onDownProfile}
+          noneLabel="No limit on the OLT"
+        />
+      ) : null}
       {mode === 'learn' && ports.length ? <PortSetups oltId={oltId} ports={ports} vlan={vlan} /> : null}
     </fieldset>
+  )
+}
+
+const speedWords = (p: OltSpeedProfile) =>
+  p.name + (p.kbps ? ' · ' + (p.kbps >= 1024 ? Math.round(p.kbps / 102.4) / 10 + ' Mbps' : p.kbps + ' kbps') : '')
+
+/**
+ * Upload and download speed from the OLT's own profiles. A company that
+ * limits speed on its router picks "No limit on the OLT"; one that limits on
+ * the OLT picks the profile. Both are normal.
+ */
+export function SpeedPicker({
+  profiles, up, onUp, down, onDown, noneLabel, keepLabel,
+}: {
+  profiles: OltSpeedProfile[]
+  up: string
+  onUp: (p: string) => void
+  down: string
+  onDown: (p: string) => void
+  noneLabel: string
+  /** When set, an option to leave that direction as it is (value "keep"). */
+  keepLabel?: string
+}) {
+  const ups = profiles.filter((p) => p.direction === 'up')
+  const downs = profiles.filter((p) => p.direction === 'down')
+  const select = 'rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100'
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-400">
+      <label className="flex items-center gap-2">
+        Upload speed
+        <select value={up} onChange={(e) => onUp(e.target.value)} className={select}>
+          {keepLabel ? <option value="keep">{keepLabel}</option> : null}
+          <option value="">{noneLabel}</option>
+          {ups.map((p) => (
+            <option key={p.name} value={p.name}>{speedWords(p)}</option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-2">
+        Download speed
+        <select value={down} onChange={(e) => onDown(e.target.value)} className={select}>
+          {keepLabel ? <option value="keep">{keepLabel}</option> : null}
+          <option value="">{noneLabel}</option>
+          {downs.map((p) => (
+            <option key={p.name} value={p.name}>{speedWords(p)}</option>
+          ))}
+        </select>
+      </label>
+      {!ups.length && !downs.length ? (
+        <span className="text-[11px] text-gray-500">This OLT has no speed profiles yet. Create them under Settings.</span>
+      ) : null}
+    </div>
   )
 }
 

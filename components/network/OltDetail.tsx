@@ -7,6 +7,7 @@ import { useFormStatus } from 'react-dom'
 import { OutagePanel } from '@/components/network/OutagePanel'
 import { OltFrontPanel } from '@/components/network/OltFrontPanel'
 import { OltSettings } from '@/components/network/OltSettings'
+import type { OnuDefaults } from '@/lib/data/olt-defaults'
 import { oltFeatures } from '@/lib/olt/features'
 import { checkOlt, loadOnus, setOltAutoAuthorise, type OltActionResult } from '@/app/actions/olts'
 import { DeviceIcon } from '@/components/network/DeviceIcon'
@@ -113,7 +114,7 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 export function OltDetail({
-  olt, routerName, checkedText, canManage, autoAuthorise = false, saved = null, focus = null,
+  olt, routerName, checkedText, canManage, autoAuthorise = false, saved = null, focus = null, onuDefaults = null,
 }: {
   olt: Olt
   routerName: string
@@ -125,6 +126,8 @@ export function OltDetail({
   saved?: { onus: OnuLists['onus']; customers: OnuLists['customers']; text: string | null } | null
   /** Open on this ONU: from the ONU search. */
   focus?: { port: string; serial: string } | null
+  /** How new ONUs were last set up on this OLT. */
+  onuDefaults?: OnuDefaults | null
 }) {
   const [auto, setAuto] = useState(autoAuthorise)
   const [autoNote, setAutoNote] = useState<string | null>(null)
@@ -384,6 +387,8 @@ export function OltDetail({
             onReload={() => void reload()}
             focus={tab === 'pending' ? null : pickN > 0 || !focus ? { port: pickedPort, serial: '' } : focus}
             onPortChange={tab === 'pending' ? undefined : setPickedPort}
+            onuDefaults={onuDefaults}
+            speedProfiles={info?.speedProfiles ?? []}
           />
         ) : null}
 

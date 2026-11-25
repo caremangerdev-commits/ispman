@@ -3,7 +3,7 @@ import 'server-only'
 import { CliError, TelnetSession } from '@/lib/olt/telnet'
 import type {
   OltAuthoriseResult, OltCard, OltDriver, OltInfo, OltLogin, OltOnu, OltOnuDetail, OltOnuLists,
-  OltPendingOnu, LearnedSetup, OnuServiceSetup, OltChangePlan, OltConfigChange,
+  OltPendingOnu, LearnedSetup, OnuServiceSetup, OltChangePlan, OltConfigChange, OltSpeedProfile,
   OltPonPort, OltUplink, OltVlan,
 } from '@/lib/olt/types'
 
@@ -575,10 +575,14 @@ function summarise(t: Template): OnuServiceSetup | null {
     const m = /^service-port\s+\d+\s+vport\s+\d+\s+user-vlan\s+(untag(?:ged)?|\d+)\b.*?\svlan\s+(\d+)/i.exec(line)
     if (!m) continue
     const profile = t.iface.map((l) => /^tcont\s+\d+\s+(?:name\s+\S+\s+)?profile\s+(\S+)/i.exec(l)).find(Boolean)
+    const down = t.iface
+      .map((l) => /^gemport\s+\d+\s+traffic-limit\s+(?:upstream\s+\S+\s+)?downstream\s+(\S+)/i.exec(l))
+      .find(Boolean)
     return {
       onuVlan: /^untag/i.test(m[1]) ? null : Number(m[1]),
       vlan: Number(m[2]),
       upProfile: profile ? profile[1] : null,
+      downProfile: down && down[1] !== 'default' ? down[1] : null,
     }
   }
   return null
@@ -591,6 +595,8 @@ function templateFor(setup: OnuServiceSetup): Template {
     iface: [
       'tcont 1 profile ' + (setup.upProfile || UP_PROFILE),
       'gemport 1 tcont 1',
+      // A download limit, when the company limits speed on the OLT.
+      ...(setup.downProfile ? ['gemport 1 traffic-limit downstream ' + setup.downProfile] : []),
       'service-port 1 vport 1 user-vlan ' + (tagged ? setup.onuVlan : 'untagged') + ' vlan ' + setup.vlan,
     ],
     // A tagged ONU is told its VLAN too, so an ONU that takes its settings
@@ -645,6 +651,39 @@ async function learnOnPort(session: TelnetSession, port: string): Promise<(Learn
  *     switchport vlan 100 untag
  *     switchport default vlan 100
  */
+
+/**
+ * The speed profiles defined in the gpon section, as a real C320 holds them:
+ *
+ *   profile tcont T-UP-4M type 4 maximum 4096        upload
+ *   profile tcont 5M type 1 fixed 5120               upload
+ *   profile traffic P-10M sir 11264 pir 11264        download
+ *
+ * Read from `show running-config | include profile t`, which also brings
+ * every ONU's "tcont 1 profile …" line; only lines that start with "profile"
+ * are definitions.
+ */
+function parseSpeedProfiles(text: string): OltSpeedProfile[] {
+  const out: OltSpeedProfile[] = []
+  if (refused(text)) return out
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    const up = /^profile tcont (\S+) (type .+)$/.exec(line)
+    if (up) {
+      const k = /(?:maximum|fixed|assured)\s+(\d+)\s*$/.exec(up[2]) ?? /(\d+)\s*$/.exec(up[2])
+      out.push({ name: up[1], direction: 'up', kbps: k ? Number(k[1]) : null, raw: up[2] })
+      continue
+    }
+    const down = /^profile traffic (\S+) (.+)$/.exec(line)
+    if (down) {
+      const k = /pir\s+(\d+)/.exec(down[2]) ?? /sir\s+(\d+)/.exec(down[2])
+      out.push({ name: down[1], direction: 'down', kbps: k ? Number(k[1]) : null, raw: down[2] })
+    }
+  }
+  return out
+}
+
+const PROFILE_NAME = /^[A-Za-z0-9_.-]{1,32}$/
 
 const UPLINK = /^x?gei_\d+\/\d+\/\d+$/
 const PON = /^gpon-olt_\d+\/\d+\/\d+$/
@@ -785,6 +824,43 @@ async function planOne(session: TelnetSession, change: OltConfigChange): Promise
     }
   }
 
+  if (change.kind === 'speed-add' || change.kind === 'speed-remove') {
+    const name = String(change.name).trim()
+    if (!PROFILE_NAME.test(name)) say('Use letters, numbers, dots, dashes or underscores for the name, up to 32.')
+    const up = change.direction === 'up'
+    const word = up ? 'tcont' : 'traffic'
+    const all = parseSpeedProfiles(await run(session, 'show running-config | include profile t'))
+    const found = all.find((p) => p.name === name && p.direction === change.direction)
+
+    if (change.kind === 'speed-add') {
+      const mbps = Number(change.mbps)
+      if (!(mbps > 0 && mbps <= 10000)) say('Choose a speed from 1 to 10000 Mbps.')
+      if (found) say('There is already a' + (up ? 'n upload' : ' download') + ' profile called ' + name + '.')
+      const kbps = Math.round(mbps * 1024)
+      // Upload: a type 4 T-CONT, best effort up to the maximum. Download: a
+      // traffic profile with committed and peak rate both at the limit.
+      const line = up ? 'profile tcont ' + name + ' type 4 maximum ' + kbps : 'profile traffic ' + name + ' sir ' + kbps + ' pir ' + kbps
+      return {
+        summary: 'Create ' + (up ? 'upload' : 'download') + ' speed profile ' + name + ' (' + mbps + ' Mbps)',
+        commands: ['gpon', line, 'exit'],
+        undo: ['gpon', 'no profile ' + word + ' ' + name, 'exit'],
+      }
+    }
+
+    if (!found) say('There is no ' + (up ? 'upload' : 'download') + ' profile called ' + name + '.')
+    if (up && name === UP_PROFILE) say(name + ' is the profile ISPMan gives ONUs with no upload limit. It cannot be removed from here.')
+    const uses = (await run(session, 'show running-config | include ' + name))
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => (up ? new RegExp('^tcont\\s+\\d+\\s+(?:name\\s+\\S+\\s+)?profile\\s+' + name.replace(/[.]/g, '\\.') + '$') : new RegExp('traffic-limit.*\\s' + name.replace(/[.]/g, '\\.') + '(\\s|$)')).test(l)).length
+    if (uses) say(name + ' is used by ' + uses + (uses === 1 ? ' ONU' : ' ONUs') + '. Move them to another profile first.')
+    return {
+      summary: 'Remove ' + (up ? 'upload' : 'download') + ' speed profile ' + name,
+      commands: ['gpon', 'no profile ' + word + ' ' + name, 'exit'],
+      undo: ['gpon', 'profile ' + word + ' ' + name + ' ' + found!.raw, 'exit'],
+    }
+  }
+
   if (change.kind === 'port-description') {
     const port = String(change.port)
     if (!UPLINK.test(port) && !PON.test(port)) say('That is not a port on this OLT.')
@@ -889,9 +965,12 @@ async function readOnuDetail(session: TelnetSession, id: string): Promise<OltOnu
   const up = /up\s+Rx\s*:\s*(\S+?)(?:\(dbm\))?\s+Tx\s*:\s*(\S+?)(?:\(dbm\))?\s/i.exec(power)
   const down = /down\s+Tx\s*:\s*(\S+?)(?:\(dbm\))?\s+Rx\s*:\s*(\S+?)(?:\(dbm\))?\s/i.exec(power)
   const phase = field(info, 'Phase state') ?? 'unknown'
+  // Its VLAN and speed as configured, so the page can show and prefill them.
+  const setup = summarise(await readTemplate(session, id))
 
   return {
     id,
+    setup,
     name: field(info, 'Name'),
     description: field(info, 'Description'),
     type: field(info, 'Type'),
@@ -1003,7 +1082,8 @@ export const zte: OltDriver = {
       const version = /Version\s+(V[\d.]+)/i.exec(description ?? '')?.[1] ?? null
       const model = /^(\S+)\s+Version/i.exec(description ?? '')?.[1] ?? null
 
-      return { name, model, version, uptime, cards, uplinks, ponPorts, vlans, onus }
+      const speedProfiles = parseSpeedProfiles(await run(session, 'show running-config | include profile t'))
+      return { name, model, version, uptime, cards, uplinks, ponPorts, vlans, onus, speedProfiles }
     } finally {
       session.close()
     }
@@ -1087,6 +1167,26 @@ export const zte: OltDriver = {
         // and back. The ONU keeps its registration and every setting.
         await must('interface ' + id, 'opening the ONU')
         await must(action.kind === 'disable' ? 'shutdown' : 'no shutdown', action.kind === 'disable' ? 'disabling the ONU' : 'enabling the ONU')
+        save = true
+      } else if (action.kind === 'speed') {
+        // On whichever T-CONT and GEM port the ONU actually has, which for an
+        // ONU set up by hand need not be number 1.
+        await run(session, 'end')
+        const now = await readTemplate(session, id)
+        const tcont = /^tcont\s+(\d+)\s/.exec(now.iface.find((l) => /^tcont\s+\d+\s/.test(l)) ?? '')?.[1] ?? '1'
+        const gem = /^gemport\s+(\d+)\s/.exec(now.iface.find((l) => /^gemport\s+\d+\s+(?:name\s+\S+\s+)?tcont/.test(l)) ?? '')?.[1] ?? '1'
+        const named = (v: string) => PROFILE_NAME.test(v)
+        if ((action.up != null && !named(action.up)) || (action.down != null && action.down !== '' && !named(action.down))) {
+          throw new CliError('That is not a profile name.')
+        }
+        await run(session, 'configure terminal')
+        await must('interface ' + id, 'opening the ONU')
+        if (action.up != null) await must('tcont ' + tcont + ' profile ' + action.up, 'setting its upload profile to ' + action.up)
+        if (action.down != null) {
+          // "default" is the OLT's own unlimited traffic profile.
+          await must('gemport ' + gem + ' traffic-limit downstream ' + (action.down || 'default'), 'setting its download profile')
+        }
+        await must('exit', 'leaving the ONU')
         save = true
       } else if (action.kind === 'service') {
         // Swap only the VLAN half — the service-port on the OLT side and the

@@ -69,6 +69,8 @@ export type OltInfo = {
   uplinks?: OltUplink[]
   ponPorts?: OltPonPort[]
   vlans?: OltVlan[]
+  /** Upload and download speed profiles defined on the OLT. */
+  speedProfiles?: OltSpeedProfile[]
   /** ONU counts across the whole OLT, as of the last reading. */
   onus?: {
     /** Registered on a PON port and allowed on the network. */
@@ -158,6 +160,8 @@ export type OltOnuDetail = {
    */
   traffic?: { downBps: number | null; upBps: number | null; downBytes: number | null; upBytes: number | null } | null
   disabled?: boolean
+  /** How its traffic is carried and its speed, read off the OLT. ZTE only. */
+  setup?: OnuServiceSetup | null
 }
 
 export type OltOnuAction =
@@ -176,6 +180,11 @@ export type OltOnuAction =
    * VLAN) without unregistering it. The customer drops for a few seconds.
    */
   | { kind: 'service'; setup: OnuServiceSetup }
+  /**
+   * Set this ONU's speed from the OLT's profiles. Null leaves that direction
+   * as it is; '' takes the download limit off.
+   */
+  | { kind: 'speed'; up: string | null; down: string | null }
 
 /**
  * How an ONU's traffic reaches the uplink. Two halves that have to agree:
@@ -193,8 +202,20 @@ export type OltOnuAction =
 export type OnuServiceSetup = {
   onuVlan: number | null
   vlan: number
-  /** The upstream profile to use, when copying a setup that names one. */
+  /** Upload speed profile (a T-CONT profile on ZTE). Null: ISPMan's own, no limit. */
   upProfile?: string | null
+  /** Download speed profile (a traffic profile on ZTE). Null: no download limit. */
+  downProfile?: string | null
+}
+
+/** A speed profile that exists on the OLT. */
+export type OltSpeedProfile = {
+  name: string
+  direction: 'up' | 'down'
+  /** The limit in kbps, as the OLT holds it: maximum for upload, PIR for download. */
+  kbps: number | null
+  /** As the OLT words it, e.g. "type 4 maximum 4096" or "sir 11264 pir 11264". */
+  raw: string
 }
 
 /** A setup read off ONUs already working on a port. */
@@ -221,6 +242,8 @@ export type OltConfigChange =
   | { kind: 'port-description'; port: string; text: string }
   | { kind: 'pon-enable'; port: string }
   | { kind: 'pon-disable'; port: string }
+  | { kind: 'speed-add'; direction: 'up' | 'down'; name: string; mbps: number }
+  | { kind: 'speed-remove'; direction: 'up' | 'down'; name: string }
 
 /** What a change will do, worked out before it is done. */
 export type OltChangePlan = {

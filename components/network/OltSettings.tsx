@@ -66,6 +66,9 @@ export function OltSettings({ oltId, info }: { oltId: number; info: OltInfo | nu
   const [newName, setNewName] = useState('')
   const [addTo, setAddTo] = useState<Record<string, { vlan: string; tagged: boolean }>>({})
   const [describing, setDescribing] = useState<{ port: string; text: string } | null>(null)
+  const [speedDir, setSpeedDir] = useState<'up' | 'down'>('down')
+  const [speedName, setSpeedName] = useState('')
+  const [speedMbps, setSpeedMbps] = useState('')
 
   const loadChanges = useCallback(async () => {
     const res = await listOltChanges(oltId)
@@ -79,6 +82,7 @@ export function OltSettings({ oltId, info }: { oltId: number; info: OltInfo | nu
   const vlans = info?.vlans ?? []
   const uplinks = info?.uplinks ?? []
   const pons = info?.ponPorts ?? []
+  const speeds = info?.speedProfiles ?? []
 
   const preview = async (change: OltConfigChange, key: string) => {
     setBusy(key)
@@ -100,6 +104,8 @@ export function OltSettings({ oltId, info }: { oltId: number; info: OltInfo | nu
     if (res.ok) {
       setNewVlan('')
       setNewName('')
+      setSpeedName('')
+      setSpeedMbps('')
       setDescribing(null)
       router.refresh()
       void loadChanges()
@@ -346,6 +352,75 @@ export function OltSettings({ oltId, info }: { oltId: number; info: OltInfo | nu
           </div>
         </Section>
       ) : null}
+
+      <Section
+        title="Speed profiles"
+        note="Upload and download limits held on the OLT, for companies that set speed there. Pick them when authorizing, or per ONU under Speed. A profile still used by ONUs cannot be removed."
+      >
+        {(['down', 'up'] as const).map((dir) => {
+          const list = speeds.filter((p) => p.direction === dir)
+          return (
+            <div key={dir} className="mb-3">
+              <p className="mb-1 text-[11px] font-semibold text-gray-400">{dir === 'down' ? 'Download' : 'Upload'}</p>
+              {list.length ? (
+                <ul className="flex flex-wrap gap-1.5">
+                  {list.map((p) => (
+                    <li key={p.name} className="inline-flex items-center gap-1.5 rounded-full bg-gray-800 px-2.5 py-0.5 text-[11px] text-gray-200">
+                      <span className="font-semibold">{p.name}</span>
+                      <span className="text-gray-400">
+                        {p.kbps ? (p.kbps >= 1024 ? Math.round(p.kbps / 102.4) / 10 + ' Mbps' : p.kbps + ' kbps') : p.raw}
+                      </span>
+                      {p.name !== 'ISPMAN-UP' ? (
+                        <button
+                          type="button"
+                          aria-label={'Remove profile ' + p.name}
+                          onClick={() => void preview({ kind: 'speed-remove', direction: dir, name: p.name }, 'sr' + dir + p.name)}
+                          disabled={!!busy}
+                          className="text-gray-500 hover:text-red-300"
+                        >
+                          ×
+                        </button>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-[11px] text-gray-500">None yet.</p>
+              )}
+            </div>
+          )
+        })}
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={speedDir} onChange={(e) => setSpeedDir(e.target.value === 'up' ? 'up' : 'down')} className={field}>
+            <option value="down">Download</option>
+            <option value="up">Upload</option>
+          </select>
+          <input
+            value={speedName}
+            onChange={(e) => setSpeedName(e.target.value.replace(/\s+/g, '-'))}
+            placeholder="Name, e.g. 20M-DOWN"
+            maxLength={32}
+            className={field + ' w-44'}
+          />
+          <input
+            type="number"
+            min={1}
+            max={10000}
+            value={speedMbps}
+            onChange={(e) => setSpeedMbps(e.target.value)}
+            placeholder="Mbps"
+            className={field + ' w-24'}
+          />
+          <button
+            type="button"
+            onClick={() => void preview({ kind: 'speed-add', direction: speedDir, name: speedName, mbps: Number(speedMbps) }, 'sa')}
+            disabled={!!busy || !speedName.trim() || !(Number(speedMbps) > 0)}
+            className={primary}
+          >
+            {busy === 'sa' ? 'Checking…' : 'Create profile'}
+          </button>
+        </div>
+      </Section>
 
       {describing ? (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-800 p-3 text-xs text-gray-400">

@@ -10,6 +10,7 @@ import {
 import { linkOnuToCustomer, linkOnusToCustomers, type OnuCustomer } from '@/lib/data/customer-devices'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forward'
+import { setOnuDefaults } from '@/lib/data/olt-defaults'
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import { oltDriver } from '@/lib/olt'
 import type {
@@ -345,7 +346,11 @@ export async function authoriseOnus(input: {
    * traffic. 'tagged': the ONU tags its own traffic with `onuVlan` (or `vlan`).
    */
   mode?: 'learn' | 'untagged' | 'tagged'
+  /** Tagged: the VLAN the ONU tags with, when it differs from the one carried to the uplink (`vlan`). */
   onuVlan?: number
+  /** Speed profiles on the OLT. Empty: no limit set on the OLT. */
+  upProfile?: string
+  downProfile?: string
 }): Promise<AuthoriseResult> {
   const session = await manager()
   if (!session) return { ok: false, error: 'You do not have permission to authorise ONUs.' }
@@ -360,7 +365,14 @@ export async function authoriseOnus(input: {
   if (onuVlan != null && (!Number.isInteger(onuVlan) || onuVlan < 1 || onuVlan > 4094)) {
     return { ok: false, error: 'Choose the VLAN the ONUs tag with, 1 to 4094.' }
   }
-  const setup: OnuSetupChoice = mode === 'learn' ? 'learn' : { onuVlan, vlan }
+  const profile = (v: string | undefined) => {
+    const t = String(v ?? '').trim()
+    return /^[A-Za-z0-9_.-]{1,32}$/.test(t) ? t : null
+  }
+  const setup: OnuSetupChoice =
+    mode === 'learn'
+      ? 'learn'
+      : { onuVlan, vlan, upProfile: profile(input.upProfile), downProfile: profile(input.downProfile) }
 
   const r = await reach(session.company.id, Number(input.oltId))
   if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
@@ -386,6 +398,14 @@ export async function authoriseOnus(input: {
     const done = results.filter((x) => x.ok)
 
     await setServiceVlan(session.company.id, r.olt.id, vlan)
+    // This company's way of doing it becomes this OLT's starting point next time.
+    await setOnuDefaults(session.company.id, r.olt.id, {
+      mode,
+      vlan,
+      onuVlan: onuVlan ?? null,
+      upProfile: profile(input.upProfile),
+      downProfile: profile(input.downProfile),
+    })
     if (done.length) {
       await logEvent({
         type: 'onu_authorised',
@@ -555,7 +575,7 @@ export async function onuCommand(input: {
   if (!oltFeatures(r.olt.brand).writes) return { ok: false, error: READ_ONLY_NOTE }
 
   const kind = input.action?.kind
-  if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename' && kind !== 'disable' && kind !== 'enable' && kind !== 'vsol-fix' && kind !== 'service') {
+  if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename' && kind !== 'disable' && kind !== 'enable' && kind !== 'vsol-fix' && kind !== 'service' && kind !== 'speed') {
     return { ok: false, error: 'Unknown action.' }
   }
   if (kind === 'vsol-fix' && r.olt.brand !== 'gcom') {
@@ -568,13 +588,16 @@ export async function onuCommand(input: {
   }
 
   const did =
-    kind === 'reboot' ? 'rebooted' : kind === 'remove' ? 'removed' : kind === 'disable' ? 'disabled' : kind === 'enable' ? 'enabled' : kind === 'vsol-fix' ? 'set_up_for_vsol' : kind === 'service' ? 'vlan_changed' : 'renamed'
+    kind === 'reboot' ? 'rebooted' : kind === 'remove' ? 'removed' : kind === 'disable' ? 'disabled' : kind === 'enable' ? 'enabled' : kind === 'vsol-fix' ? 'set_up_for_vsol' : kind === 'service' ? 'vlan_changed' : kind === 'speed' ? 'speed_changed' : 'renamed'
   await logEvent({
     type: 'onu_' + did,
     tag: '[olt]',
     details:
       'ONU ' + input.onuId + ' ' + did.split('_').join(' ') +
       (input.action.kind === 'service' ? ' to ' + setupWords(input.action.setup) : '') +
+      (input.action.kind === 'speed'
+        ? ' to upload ' + (input.action.up ?? 'unchanged') + ', download ' + (input.action.down == null ? 'unchanged' : input.action.down || 'no limit')
+        : '') +
       ' on ' + r.olt.name + ' | by=' + session.profile.email,
   })
   revalidatePath(PATH + '/' + r.olt.id)
@@ -593,7 +616,9 @@ export async function onuCommand(input: {
                 ? 'V-SOL settings saved on this ONU only. Reboot it if the customer is not browsing within a minute.'
                 : input.action.kind === 'service'
                   ? 'Now ' + setupWords(input.action.setup) + '. Traffic should pass within a minute.'
-                  : 'Saved.',
+                  : input.action.kind === 'speed'
+                    ? 'Speed saved on the OLT. It applies straight away.'
+                    : 'Saved.',
   }
 }
 
@@ -907,6 +932,10 @@ function cleanChange(raw: OltConfigChange): OltConfigChange | null {
     case 'pon-enable':
     case 'pon-disable':
       return { kind: c.kind, port: s(c.port) }
+    case 'speed-add':
+      return { kind: 'speed-add', direction: c.direction === 'down' ? 'down' : 'up', name: s(c.name).slice(0, 32), mbps: n(c.mbps) }
+    case 'speed-remove':
+      return { kind: 'speed-remove', direction: c.direction === 'down' ? 'down' : 'up', name: s(c.name).slice(0, 32) }
     default:
       return null
   }

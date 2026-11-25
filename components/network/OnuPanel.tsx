@@ -8,10 +8,11 @@ import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
 import { SignalBars } from '@/components/network/SignalBars'
 import type { OnuCustomer } from '@/lib/data/customer-devices'
 import type { UsageDay } from '@/lib/data/usage'
-import { DataCheck, SetupChooser, type SetupMode } from '@/components/network/AuthoriseSetup'
+import { DataCheck, SetupChooser, SpeedPicker, setupWords, type SetupMode } from '@/components/network/AuthoriseSetup'
+import type { OnuDefaults } from '@/lib/data/olt-defaults'
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import type {
-  OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
+  OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu, OltSpeedProfile,
 } from '@/lib/olt/types'
 
 /**
@@ -377,7 +378,7 @@ function Fact({ label, value, tone }: { label: string; value: string; tone?: str
  * ONU is being moved and a bad thing to do by a slip of the mouse.
  */
 function OnuRow({
-  oltId, brand, onu, customer, seen, canManage, onChanged, focused = false,
+  oltId, brand, onu, customer, seen, canManage, onChanged, focused = false, speedProfiles = [],
 }: {
   oltId: number
   brand: string
@@ -388,9 +389,12 @@ function OnuRow({
   onChanged: () => void
   /** The ONU the search led here: opened, read, and scrolled to. */
   focused?: boolean
+  speedProfiles?: OltSpeedProfile[]
 }) {
   const writes = oltFeatures(brand).writes
   const [open, setOpen] = useState(focused)
+  const [speedUp, setSpeedUp] = useState('keep')
+  const [speedDown, setSpeedDown] = useState('keep')
   const rowRef = useRef<HTMLTableRowElement>(null)
   const [detail, setDetail] = useState<OltOnuDetail | null>(null)
   const [history, setHistory] = useState<OnuSignalDay[]>([])
@@ -401,7 +405,7 @@ function OnuRow({
   const [readAt, setReadAt] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
-  const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link' | 'disable' | 'vsol' | 'vlan'>('view')
+  const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link' | 'disable' | 'vsol' | 'vlan' | 'speed'>('view')
   const [vlanTagged, setVlanTagged] = useState(false)
   const [vlanId, setVlanId] = useState('')
   // What this screen last did, until the list is read again.
@@ -463,7 +467,7 @@ function OnuRow({
     setMode('view')
     setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
     if (res.ok && action.kind === 'remove') onChanged()
-    if (res.ok && action.kind === 'rename') void read()
+    if (res.ok && (action.kind === 'rename' || action.kind === 'speed' || action.kind === 'service')) void read()
     if (res.ok && (action.kind === 'disable' || action.kind === 'enable')) {
       setDisabledNow(action.kind === 'disable')
       void read()
@@ -551,6 +555,7 @@ function OnuRow({
                     <Fact label="Make" value={detail.vendor ?? '—'} />
                     <Fact label="Model" value={detail.model ?? '—'} />
                     <Fact label="Firmware" value={detail.firmware ?? '—'} />
+                    {detail.setup ? <Fact label="VLAN and speed" value={setupWords(detail.setup)} /> : null}
                   </dl>
                   {detail.description ? (
                     <p className="mt-3 text-xs text-gray-400">Note: {detail.description}</p>
@@ -615,9 +620,34 @@ function OnuRow({
                     </button>
                   )}
                   {writes && oltFeatures(brand).copySetup ? (
-                    <button type="button" onClick={() => setMode('vlan')} disabled={!!busy} className={small}>
+                    <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (detail?.setup) {
+                          setVlanTagged(detail.setup.onuVlan != null)
+                          setVlanId(String(detail.setup.onuVlan ?? detail.setup.vlan))
+                        }
+                        setMode('vlan')
+                      }}
+                      disabled={!!busy}
+                      className={small}
+                    >
                       VLAN setup
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSpeedUp('keep')
+                        setSpeedDown('keep')
+                        setMode('speed')
+                      }}
+                      disabled={!!busy}
+                      className={small}
+                    >
+                      Speed
+                    </button>
+                    </>
                   ) : null}
                   <button type="button" onClick={() => setMode('rename')} disabled={!!busy} className={small}>
                     Rename
@@ -660,6 +690,45 @@ function OnuRow({
                   <div className="flex gap-2">
                     <button type="button" onClick={() => void act({ kind: 'vsol-fix' })} disabled={!!busy} className={button}>
                       {busy === 'vsol-fix' ? 'Setting up…' : 'Set up for V-SOL'}
+                    </button>
+                    <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
+                  </div>
+                </div>
+              ) : null}
+
+              {mode === 'speed' ? (
+                <div className="mt-4 rounded-lg border border-gray-800 p-3">
+                  <p className="text-xs text-gray-400">
+                    This ONU&apos;s speed from the OLT&apos;s profiles
+                    {detail?.setup
+                      ? ', now upload ' + (detail.setup.upProfile ?? 'not set') + ', download ' + (detail.setup.downProfile ?? 'no limit')
+                      : ''}
+                    . It applies straight away; the customer stays online.
+                  </p>
+                  <SpeedPicker
+                    profiles={speedProfiles}
+                    up={speedUp}
+                    onUp={setSpeedUp}
+                    down={speedDown}
+                    onDown={setSpeedDown}
+                    noneLabel="No limit on the OLT"
+                    keepLabel="Leave as it is"
+                  />
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void act({
+                          kind: 'speed',
+                          // Upload always needs a profile on the OLT; "no limit" is ISPMan's wide one.
+                          up: speedUp === 'keep' ? null : speedUp || 'ISPMAN-UP',
+                          down: speedDown === 'keep' ? null : speedDown,
+                        })
+                      }
+                      disabled={!!busy || (speedUp === 'keep' && speedDown === 'keep')}
+                      className={button}
+                    >
+                      {busy === 'speed' ? 'Saving…' : 'Save speed'}
                     </button>
                     <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
                   </div>
@@ -805,7 +874,7 @@ function OnuRow({
 }
 
 export function OnuPanel({
-  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null, focus = null, onPortChange,
+  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null, focus = null, onPortChange, onuDefaults = null, speedProfiles = [],
 }: {
   oltId: number
   brand: string
@@ -824,10 +893,19 @@ export function OnuPanel({
   focus?: { port: string; serial: string } | null
   /** Told when the port filter changes here, so the front panel can light the same port. */
   onPortChange?: (port: string) => void
+  /** How new ONUs were last set up on this OLT, to start from. */
+  onuDefaults?: OnuDefaults | null
+  /** Speed profiles on the OLT. */
+  speedProfiles?: OltSpeedProfile[]
 }) {
-  const [vlan, setVlan] = useState<number | null>(defaultVlan)
+  const [vlan, setVlan] = useState<number | null>(onuDefaults?.vlan ?? defaultVlan)
   const canLearn = oltFeatures(brand).copySetup
-  const [mode, setMode] = useState<SetupMode>(canLearn ? 'learn' : 'untagged')
+  const [mode, setMode] = useState<SetupMode>(
+    onuDefaults?.mode && (canLearn || onuDefaults.mode !== 'learn') ? onuDefaults.mode : canLearn ? 'learn' : 'untagged'
+  )
+  const [onuVlan, setOnuVlan] = useState<number | null>(onuDefaults?.onuVlan ?? null)
+  const [upProfile, setUpProfile] = useState(onuDefaults?.upProfile ?? '')
+  const [downProfile, setDownProfile] = useState(onuDefaults?.downProfile ?? '')
   // The ONUs authorized in this visit, checked for data a little later.
   const [justDone, setJustDone] = useState<OltAuthoriseResult[]>([])
   const [checking, setChecking] = useState(false)
@@ -859,7 +937,9 @@ export function OnuPanel({
       // answering.
       const failedSn: string[] = []
       for (let round = 0; round < 80; round += 1) {
-        const res = await authoriseOnus({ oltId, vlan, items, skip: failedSn, mode, onuVlan: vlan })
+        const res = await authoriseOnus({
+          oltId, vlan, items, skip: failedSn, mode, onuVlan: onuVlan ?? vlan, upProfile, downProfile,
+        })
         if (!res.ok) {
           setProblem(
             res.error + (all.length ? ' Stopped after ' + all.filter((r) => r.ok).length + ' authorized.' : '')
@@ -947,7 +1027,14 @@ export function OnuPanel({
             onMode={setMode}
             vlan={vlan}
             onVlan={setVlan}
+            onuVlan={onuVlan}
+            onOnuVlan={setOnuVlan}
             vlans={vlans}
+            profiles={speedProfiles}
+            upProfile={upProfile}
+            onUpProfile={setUpProfile}
+            downProfile={downProfile}
+            onDownProfile={setDownProfile}
           />
         ) : null}
         {justDone.length ? (
@@ -1080,6 +1167,7 @@ export function OnuPanel({
                   canManage={canManage}
                   onChanged={onReload}
                   focused={Boolean(focus && o.sn && o.sn.toUpperCase() === focus.serial)}
+                  speedProfiles={speedProfiles}
                 />
               ))}
             </tbody>
