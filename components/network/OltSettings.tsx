@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   applyOltChange, listOltChanges, previewOltChange, undoOltChange, type OltChange,
@@ -69,6 +69,7 @@ export function OltSettings({
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
   const [changes, setChanges] = useState<OltChange[]>([])
+  const topRef = useRef<HTMLDivElement>(null)
 
   const [newVlan, setNewVlan] = useState('')
   const [newName, setNewName] = useState('')
@@ -101,6 +102,8 @@ export function OltSettings({
     setBusy(null)
     if (res.ok) setPending({ change, plan: res.plan })
     else setNote({ ok: false, text: res.error })
+    // The commands appear at the top of the tab; bring them into view.
+    window.setTimeout(() => topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
   }
 
   const runIt = async () => {
@@ -110,6 +113,7 @@ export function OltSettings({
     setBusy(null)
     setPending(null)
     setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
+    window.setTimeout(() => topRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
     if (res.ok) {
       setNewVlan('')
       setNewName('')
@@ -132,6 +136,36 @@ export function OltSettings({
       void loadChanges()
     }
   }
+
+  // The description box opens at the port it belongs to, not somewhere
+  // further down the page where it is easy to miss.
+  const describeEditor = (port: string) =>
+    describing?.port === port ? (
+      <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-blue-500/40 bg-gray-950 p-2 text-xs text-gray-400">
+        <input
+          autoFocus
+          value={describing.text}
+          onChange={(e) => setDescribing({ ...describing, text: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void preview({ kind: 'port-description', port, text: describing.text }, 'pd')
+            if (e.key === 'Escape') setDescribing(null)
+          }}
+          maxLength={60}
+          placeholder="e.g. To Lacovia, Pole 14"
+          className={field + ' w-64'}
+        />
+        <button
+          type="button"
+          onClick={() => void preview({ kind: 'port-description', port, text: describing.text }, 'pd')}
+          disabled={!!busy}
+          className={small}
+        >
+          {busy === 'pd' ? 'Checking…' : 'Save'}
+        </button>
+        <button type="button" onClick={() => setDescribing(null)} className={small}>Cancel</button>
+        <span className="w-full text-[11px] text-gray-500">The OLT stores one word, so spaces become dashes.</span>
+      </div>
+    ) : null
 
   const confirm = pending ? (
     <div className="sticky top-2 z-10 rounded-xl border border-blue-500/60 bg-gray-900 p-4 shadow-lg">
@@ -156,7 +190,7 @@ export function OltSettings({
   ) : null
 
   return (
-    <div className="space-y-4 py-2">
+    <div ref={topRef} className="scroll-mt-4 space-y-4 py-2">
       {note ? (
         <p className={'rounded-lg px-3 py-2 text-xs ' + (note.ok ? 'bg-emerald-950/40 text-emerald-300' : 'bg-red-950/40 text-red-300')}>
           {note.text}
@@ -256,6 +290,7 @@ export function OltSettings({
                       Describe
                     </button>
                   </div>
+                  {describeEditor(u.name)}
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
                     {carried.length ? (
                       carried.map((v) => (
@@ -371,7 +406,8 @@ export function OltSettings({
               </thead>
               <tbody>
                 {pons.map((p) => (
-                  <tr key={p.name} className="border-t border-gray-800">
+                  <Fragment key={p.name}>
+                  <tr className="border-t border-gray-800">
                     <td className={td}>
                       <span className="font-semibold text-gray-100">{portShort(p.name)}</span>{' '}
                       <span className="font-mono text-[11px] text-gray-500">{p.name}</span>
@@ -397,6 +433,12 @@ export function OltSettings({
                       </button>
                     </td>
                   </tr>
+                  {describing?.port === p.name ? (
+                    <tr>
+                      <td colSpan={5} className="pb-2">{describeEditor(p.name)}</td>
+                    </tr>
+                  ) : null}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -473,28 +515,6 @@ export function OltSettings({
         </div>
       </Section>
 
-      {describing ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-800 p-3 text-xs text-gray-400">
-          Description for <span className="font-mono text-gray-200">{describing.port}</span>
-          <input
-            value={describing.text}
-            onChange={(e) => setDescribing({ ...describing, text: e.target.value })}
-            maxLength={60}
-            placeholder="e.g. To Lacovia, Pole 14"
-            className={field + ' w-64'}
-          />
-          <button
-            type="button"
-            onClick={() => void preview({ kind: 'port-description', port: describing.port, text: describing.text }, 'pd')}
-            disabled={!!busy}
-            className={small}
-          >
-            {busy === 'pd' ? 'Checking…' : 'Save'}
-          </button>
-          <button type="button" onClick={() => setDescribing(null)} className={small}>Cancel</button>
-          <span className="w-full text-[11px] text-gray-500">The OLT stores one word, so spaces become dashes.</span>
-        </div>
-      ) : null}
 
       <SignalLevelsSection oltId={oltId} ports={pons.map((p) => p.name)} levels={signalLevels} />
 
