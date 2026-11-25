@@ -7,6 +7,7 @@ import { oltWatchTargets, type OltWatchTarget } from '@/lib/data/olts'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { oltForwardPort } from '@/lib/olt/forward'
 import { getOnuAuto, getSignalLevels, setupForPort } from '@/lib/data/olt-defaults'
+import { acsStepFor } from '@/lib/data/onu-config'
 import { oltFeatures } from '@/lib/olt/features'
 import { levelsFor } from '@/lib/olt/signal-levels'
 import { oltDriver } from '@/lib/olt'
@@ -125,7 +126,8 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
     for (const p of lists.pending.slice(0, AUTHORISE_BATCH)) {
       items.push({ port: p.port, sn: p.sn, setup: await setupForPort(companyId, auto, p.port) })
     }
-    const done = (await driver.authorise(cli, login, items, olt.serviceVlan)).filter((r) => r.ok)
+    const acs = olt.brand === 'zte' ? await acsStepFor(companyId) : undefined
+    const done = (await driver.authorise(cli, login, items, olt.serviceVlan, acs ? { acs } : undefined)).filter((r) => r.ok)
     result.authorised = done.length
     if (done.length) {
       await raiseNetworkAlert(

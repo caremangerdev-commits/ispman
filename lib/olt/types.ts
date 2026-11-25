@@ -278,6 +278,8 @@ export type OltAuthoriseResult = {
   setup?: OnuServiceSetup
   /** Where that setup came from, when it was learned. */
   learnedFrom?: string
+  /** Pointing it at ISPMan's ACS: 'set', or what went wrong. Absent when not asked. */
+  acs?: string
   error?: string
 }
 
@@ -298,7 +300,9 @@ export type OltDriver = {
     target: CliTarget,
     creds: OltLogin,
     items: { port: string; sn: string; setup?: OnuSetupChoice }[],
-    vlan: number
+    vlan: number,
+    /** ZTE: also point each ONU at ISPMan's ACS, on this VLAN. */
+    opts?: { acs?: { url: string; vlan: number } }
   ): Promise<OltAuthoriseResult[]>
   /**
    * Read how the ONUs already working on a port are set up, so a new one can

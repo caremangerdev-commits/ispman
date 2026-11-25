@@ -4,10 +4,11 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 
 import {
-  deleteOnuSetup, listOnuSetups, saveOnuAuto, saveOnuSetup, saveSignalLevels, type SavedSetup,
+  deleteOnuSetup, listOnuSetups, loadOnuConfig, saveOnuAuto, saveOnuConfig, saveOnuSetup, saveSignalLevels, type SavedSetup,
 } from '@/app/actions/olts'
 import { SpeedPicker, setupWords } from '@/components/network/AuthoriseSetup'
 import { Section, safe } from '@/components/network/OltSettings'
+import { wifiNameFor, type OnuConfig, type OnuCustomer } from '@/lib/acs/config'
 import type { OnuAuto } from '@/lib/data/olt-defaults'
 import { DEFAULT_LEVELS, type SignalLevels } from '@/lib/olt/signal-levels'
 import type { OltSpeedProfile } from '@/lib/olt/types'
@@ -331,6 +332,118 @@ export function NewOnusPanel({
             </ul>
           </details>
         ) : null}
+        <button type="button" onClick={() => void save()} disabled={busy} className={primary}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+      <Note note={note} />
+    </Section>
+  )
+}
+
+/**
+ * Inside the ONU: the Wi-Fi name and password, and the internet login, set
+ * through ISPMan's ACS (TR-069) for every customer's ONU of this company.
+ * Company-wide, since a company names its customers' Wi-Fi the same way on
+ * every OLT.
+ */
+export function OnuInsidePanel() {
+  const [cfg, setCfg] = useState<OnuConfig | null>(null)
+  const [acsUrl, setAcsUrl] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
+
+  useEffect(() => {
+    let live = true
+    const t = window.setTimeout(async () => {
+      const res = await safe(() => loadOnuConfig())
+      if (!live) return
+      if (res.ok) {
+        setCfg(res.config)
+        setAcsUrl(res.acsUrl)
+      } else setNote({ ok: false, text: res.error })
+    }, 0)
+    return () => {
+      live = false
+      window.clearTimeout(t)
+    }
+  }, [])
+
+  if (!cfg) return note ? <Note note={note} /> : null
+  const set = (patch: Partial<OnuConfig>) => setCfg({ ...cfg, ...patch })
+  const example: OnuCustomer = { first: 'Jane', last: 'Brown', account: '10452', phone: '876-555-0142', pppoeUser: null, pppoePass: null, pppoe: false }
+  const exampleName = wifiNameFor(cfg.wifiName, example)
+
+  const save = async () => {
+    setBusy(true)
+    setNote(null)
+    const res = await safe(() => saveOnuConfig(cfg))
+    setBusy(false)
+    setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
+  }
+
+  const select = 'rounded-lg border border-gray-700 bg-gray-950 px-3 py-1.5 text-sm text-gray-100'
+  const input = select + ' w-56'
+
+  return (
+    <Section
+      title="Inside the ONU: Wi-Fi and internet"
+      note="ISPMan can set each customer's ONU itself, through its ACS (TR-069): the Wi-Fi name and password, and the PPPoE login for PPPoE customers. It applies to ONUs linked to a customer, the first time they check in and whenever the customer's details change."
+    >
+      <div className="space-y-5">
+        <label className="flex items-center gap-2 text-sm font-medium text-gray-100">
+          <input type="checkbox" checked={cfg.enabled} onChange={(e) => set({ enabled: e.target.checked })} />
+          Set up customers&apos; ONUs from ISPMan
+        </label>
+
+        <fieldset disabled={!cfg.enabled} className="space-y-5 disabled:opacity-50">
+          <div>
+            <label className="block text-sm font-medium text-gray-200" htmlFor="wifi-name">Wi-Fi name</label>
+            <input id="wifi-name" value={cfg.wifiName} onChange={(e) => set({ wifiName: e.target.value })} maxLength={60} className={input + ' mt-1.5'} />
+            <p className="mt-1 text-xs text-gray-500">
+              Use {'{first}'}, {'{last}'}, {'{name}'} or {'{account}'} for the customer&apos;s details. Leave empty to keep the ONU&apos;s own name.
+              {exampleName ? <> For Jane Brown, account 10452: <span className="text-gray-300">{exampleName}</span></> : null}
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-200" htmlFor="wifi-pass">Wi-Fi password</label>
+            <select id="wifi-pass" value={cfg.wifiPassword} onChange={(e) => set({ wifiPassword: e.target.value as OnuConfig['wifiPassword'] })} className={select + ' mt-1.5'}>
+              <option value="leave">Leave it as it is</option>
+              <option value="phone">The customer&apos;s phone number</option>
+              <option value="account">The customer&apos;s account number</option>
+              <option value="random">A new one for each customer (shown on the ONU)</option>
+            </select>
+            <p className="mt-1 text-xs text-gray-500">Wi-Fi passwords need at least 8 characters; a shorter number is not used.</p>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm text-gray-200">
+            <input type="checkbox" checked={cfg.pppoe} onChange={(e) => set({ pppoe: e.target.checked })} />
+            Put the customer&apos;s PPPoE login into the ONU (PPPoE customers only)
+          </label>
+
+          <div className="rounded-lg border border-gray-800 p-4">
+            <p className="text-sm font-medium text-gray-200">How ONUs reach ISPMan&apos;s ACS</p>
+            <label className="mt-2 flex flex-wrap items-center gap-2 text-sm text-gray-200">
+              <input type="checkbox" checked={cfg.acs.zte} onChange={(e) => set({ acs: { ...cfg.acs, zte: e.target.checked } })} />
+              On ZTE OLTs, set it on each ONU when it is authorized, using VLAN
+              <input
+                type="number"
+                min={1}
+                max={4094}
+                value={cfg.acs.vlan ?? ''}
+                onChange={(e) => set({ acs: { ...cfg.acs, vlan: Number(e.target.value) || null } })}
+                className={select + ' w-24'}
+              />
+            </label>
+            <p className="mt-2 text-xs leading-relaxed text-gray-500">
+              The ONU takes an address by DHCP on that VLAN, so it must be able to reach the internet there. Other ONUs, and
+              most Huawei ones, need this address set once on the ONU, or given by your DHCP server:{' '}
+              <span className="font-mono text-gray-300">{acsUrl}</span>
+            </p>
+          </div>
+        </fieldset>
+
         <button type="button" onClick={() => void save()} disabled={busy} className={primary}>
           {busy ? 'Saving…' : 'Save'}
         </button>

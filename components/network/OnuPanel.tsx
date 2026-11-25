@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { authoriseOnus, linkOnu, loadOnuDetail, onuCommand, type OnuDrop, type OnuSignalDay } from '@/app/actions/olts'
 import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
+import { OnuAcsButton } from '@/components/network/OnuAcsPanel'
 import { SignalBars } from '@/components/network/SignalBars'
 import type { OnuCustomer } from '@/lib/data/customer-devices'
 import type { UsageDay } from '@/lib/data/usage'
@@ -661,6 +662,7 @@ function OnuRow({
                       Set up for V-SOL
                     </button>
                   ) : null}
+                  {onu.sn ? <OnuAcsButton serial={onu.sn} canManage={canManage} /> : null}
                   {onu.sn ? (
                     <button type="button" onClick={() => setMode('link')} disabled={!!busy} className={small}>
                       {owner ? 'Change customer' : 'Link to a customer'}
@@ -1066,6 +1068,14 @@ export function OnuPanel({
           <p className="mb-3 rounded-lg bg-emerald-950/40 px-3 py-2 text-xs text-emerald-300">
             {succeeded.length} authorized: {succeeded.map((o) => o.sn).join(', ')}
           </p>
+        ) : null}
+        {succeeded.some((o) => o.acs && o.acs !== 'set') ? (
+          <p className="mb-3 rounded-lg bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+            Authorized, but not pointed at ISPMan&apos;s ACS:{' '}
+            {succeeded.filter((o) => o.acs && o.acs !== 'set').map((o) => o.sn + ' (' + o.acs + ')').join('; ')}
+          </p>
+        ) : succeeded.some((o) => o.acs === 'set') ? (
+          <p className="mb-3 text-xs text-gray-400">Pointed at ISPMan&apos;s ACS. They pick up Wi-Fi and internet settings within a few minutes.</p>
         ) : null}
         {failed.length ? (
           <div className="mb-3 rounded-lg bg-red-950/30 px-3 py-2 text-xs text-red-300">

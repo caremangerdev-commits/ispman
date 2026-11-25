@@ -632,6 +632,61 @@ async function learnOnPort(session: TelnetSession, port: string): Promise<(Learn
   return { ...best.summary, from: best.from, agreeing: best.count, read, template: best.template }
 }
 
+/**
+ * Tell a newly authorized ONU where ISPMan's ACS is, through the OLT, so it
+ * checks in and gets its Wi-Fi and internet login from there.
+ *
+ * The lines are the ones a real C320 (V2.1.0) took for a ZTE F660:
+ *
+ *   interface gpon-onu_1/1/8:3
+ *     service-port 2 vport 1 user-vlan 100 vlan 100     (only if it has no tagged path on 100)
+ *   pon-onu-mng gpon-onu_1/1/8:3
+ *     service 2 gemport 1 iphost 1 vlan 100
+ *     ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable
+ *     tr069-mgmt 1 state unlock
+ *     tr069-mgmt 1 acs http://app.ispman.online/cwmp
+ *     tr069-mgmt 1 tag pri 0 vlan 100
+ *
+ * The ONU gets an address by DHCP on that VLAN and reaches the ACS over the
+ * internet, so the VLAN must give it one. Many non-ZTE ONUs ignore this and
+ * need the ACS address set once on the ONU itself.
+ *
+ * NEVER FATAL. It runs after the ONU is authorized and working; a refusal is
+ * reported and the ONU keeps its service.
+ */
+async function pointAtAcs(session: TelnetSession, onu: string, acs: { url: string; vlan: number }): Promise<string | null> {
+  if (!/^https?:\/\/[A-Za-z0-9.:-]+\/[A-Za-z0-9/_-]*$/.test(acs.url) || !Number.isInteger(acs.vlan)) return 'not set up'
+  const now = await readTemplate(session, onu)
+  if (now.mng.some((l) => l.startsWith('tr069-mgmt'))) return null
+  const tagged = now.iface.some((l) => new RegExp('^service-port\\s+\\d+\\s+vport\\s+\\d+\\s+user-vlan\\s+' + acs.vlan + '\\s').test(l))
+  const ports = now.iface.map((l) => Number(/^service-port\s+(\d+)/.exec(l)?.[1] ?? 0))
+  const services = now.mng.map((l) => /^service\s+(\S+)\s/.exec(l)?.[1]).filter((n): n is string => !!n)
+  const service = String(Math.max(0, ...services.map(Number).filter(Number.isFinite)) + 1)
+
+  const steps: string[] = [
+    'configure terminal',
+    'interface ' + onu,
+    ...(tagged ? [] : ['service-port ' + (Math.max(0, ...ports) + 1) + ' vport 1 user-vlan ' + acs.vlan + ' vlan ' + acs.vlan]),
+    'exit',
+    'pon-onu-mng ' + onu,
+    'service ' + service + ' gemport 1 iphost 1 vlan ' + acs.vlan,
+    'ip-host 1 dhcp-enable enable ping-response enable traceroute-response enable',
+    'tr069-mgmt 1 state unlock',
+    'tr069-mgmt 1 acs ' + acs.url,
+    'tr069-mgmt 1 tag pri 0 vlan ' + acs.vlan,
+    'exit',
+  ]
+  for (const step of steps) {
+    const out = await run(session, step)
+    if (refused(out)) {
+      await run(session, 'end')
+      return 'the OLT refused "' + step + '": ' + (out.split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? '')
+    }
+  }
+  await run(session, 'end')
+  return null
+}
+
 /* -------------------------------------------------------------------------- */
 /* The OLT's own settings: VLANs, uplinks, PON ports                          */
 /* -------------------------------------------------------------------------- */
@@ -1379,7 +1434,7 @@ export const zte: OltDriver = {
     }
   },
 
-  async authorise(target, creds, items, vlan): Promise<OltAuthoriseResult[]> {
+  async authorise(target, creds, items, vlan, opts): Promise<OltAuthoriseResult[]> {
     const session = new TelnetSession(target)
     await session.open()
     try {
@@ -1441,7 +1496,10 @@ export const zte: OltDriver = {
           results.push({ sn: item.sn, port: item.port, ok: false, error: problem })
         } else {
           used.add(index)
+          const onuId = item.port.replace('gpon-olt_', 'gpon-onu_') + ':' + index
+          const acs = opts?.acs ? await pointAtAcs(session, onuId, opts.acs).catch((e) => String(e?.message ?? e)) : undefined
           results.push({
+            ...(acs !== undefined ? { acs: acs ?? 'set' } : {}),
             sn: item.sn,
             port: item.port,
             ok: true,

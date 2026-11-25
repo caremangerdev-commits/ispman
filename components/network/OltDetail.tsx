@@ -7,7 +7,7 @@ import { useFormStatus } from 'react-dom'
 import { OutagePanel } from '@/components/network/OutagePanel'
 import { OltFrontPanel } from '@/components/network/OltFrontPanel'
 import { OltSettings } from '@/components/network/OltSettings'
-import { NewOnusPanel } from '@/components/network/OltSettingsExtra'
+import { NewOnusPanel, OnuInsidePanel } from '@/components/network/OltSettingsExtra'
 import type { OnuAuto, OnuDefaults } from '@/lib/data/olt-defaults'
 import { oltFeatures } from '@/lib/olt/features'
 import type { SignalLevels } from '@/lib/olt/signal-levels'
@@ -450,7 +450,12 @@ export function OltDetail({
             canManage={canManage}
             signalLevels={signalLevels}
             unlocked={settingsUnlocked}
-            newOnus={<NewOnusPanel oltId={olt.id} auto={onuAuto} ports={pon.map((p) => p.name)} autoSwitch={autoSwitch} />}
+            newOnus={
+              <div className="space-y-4">
+                <NewOnusPanel oltId={olt.id} auto={onuAuto} ports={pon.map((p) => p.name)} autoSwitch={autoSwitch} />
+                <OnuInsidePanel />
+              </div>
+            }
           />
         ) : null}
         {tab === 'pon' || tab === 'uplinks' || tab === 'vlans' || tab === 'speeds' ? (

@@ -29,6 +29,9 @@ import { createIncident } from '@/lib/data/incidents'
 import { customerUsage, type UsageDay } from '@/lib/data/usage'
 import { displayName, getSession } from '@/lib/session'
 import { tenantClient } from '@/lib/supabase/tenant'
+import { cleanOnuConfig, type OnuConfig } from '@/lib/acs/config'
+import { findAcsDevice, rebootAcsDevice, resendAcsSetup } from '@/lib/acs/genieacs'
+import { acsStepFor, acsUrl, getOnuConfig, setOnuConfig } from '@/lib/data/onu-config'
 
 /**
  * Adding, checking and removing a company's OLTs.
@@ -397,7 +400,8 @@ export async function authoriseOnus(input: {
     if (items.length === 0) return { ok: true, results: [], remaining: 0 }
     items = items.map((i) => ({ ...i, setup }))
 
-    const results = await r.driver.authorise(r.target, r.login, items, vlan)
+    const acs = r.olt.brand === 'zte' ? await acsStepFor(session.company.id) : undefined
+    const results = await r.driver.authorise(r.target, r.login, items, vlan, acs ? { acs } : undefined)
     const done = results.filter((x) => x.ok)
 
     await setServiceVlan(session.company.id, r.olt.id, vlan)
@@ -1267,4 +1271,107 @@ export async function saveOnuAuto(oltId: number, auto: OnuAuto): Promise<OltActi
   })
   revalidatePath(PATH + '/' + Number(oltId))
   return { ok: true, message: 'Saved. New ONUs on this OLT get this from now on.' }
+}
+
+/* -------------------------------------------------------------------------- */
+/* The ONU itself: Wi-Fi and internet login over TR-069                       */
+/* -------------------------------------------------------------------------- */
+
+export async function loadOnuConfig(): Promise<{ ok: true; config: OnuConfig; acsUrl: string } | { ok: false; error: string }> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'view_network_infrastructure')) return { ok: false, error: 'You do not have permission to see this.' }
+  return { ok: true, config: await getOnuConfig(session.company.id), acsUrl: acsUrl() }
+}
+
+export async function saveOnuConfig(config: OnuConfig): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to change this.' }
+  const clean = cleanOnuConfig(config)
+  if (clean.acs.zte && !clean.acs.vlan) return { ok: false, error: 'Choose the VLAN ONUs use to reach the ACS.' }
+  if (!(await setOnuConfig(session.company.id, clean))) {
+    return { ok: false, error: 'Could not save that. Migration 0071 may not be applied.' }
+  }
+  await logEvent({
+    type: 'onu_config_saved',
+    tag: '[olt]',
+    details:
+      'ONU setup ' + (clean.enabled ? 'on' : 'off') + ': Wi-Fi name "' + clean.wifiName + '", password from ' + clean.wifiPassword +
+      ', PPPoE ' + (clean.pppoe ? 'yes' : 'no') + ', ZTE ACS ' + (clean.acs.zte ? 'on VLAN ' + clean.acs.vlan : 'off') +
+      ' | by=' + session.profile.email,
+  })
+  return { ok: true, message: 'Saved. ONUs get this the next time they check in, within about 5 minutes.' }
+}
+
+export type OnuAcsStatus = {
+  /** The ACS has a record of it. */
+  reached: boolean
+  lastSeen: string | null
+  model: string | null
+  wifiNames: string[]
+  pppoeUser: string | null
+  /** What ISPMan last sent it, and a generated Wi-Fi password to tell the customer. */
+  sentAt: string | null
+  wifiName: string | null
+  wifiPassword: string | null
+}
+
+/** Whether an ONU has reached ISPMan's ACS, and what it has. */
+export async function onuAcsStatus(serial: string): Promise<{ ok: true; status: OnuAcsStatus } | { ok: false; error: string }> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'view_network_infrastructure')) return { ok: false, error: 'You do not have permission to see this.' }
+  const sn = String(serial ?? '').toUpperCase()
+  const { data } = await tenantClient()
+    .from('onu_acs')
+    .select('last_seen, model, sent_at, wifi_name, wifi_password')
+    .eq('company_id', session.company.id)
+    .eq('serial', sn)
+    .maybeSingle()
+  const row = data as { last_seen: string | null; model: string | null; sent_at: string | null; wifi_name: string | null; wifi_password: string | null } | null
+  let device = null
+  try {
+    device = row ? await findAcsDevice(sn) : null
+  } catch {
+    device = null
+  }
+  return {
+    ok: true,
+    status: {
+      reached: Boolean(row),
+      lastSeen: device?.lastInform ?? row?.last_seen ?? null,
+      model: device?.model ?? row?.model ?? null,
+      wifiNames: device?.wifiNames ?? [],
+      pppoeUser: device?.pppoeUser ?? null,
+      sentAt: row?.sent_at ?? null,
+      wifiName: row?.wifi_name ?? null,
+      wifiPassword: can(session.profile.role, 'manage_router_tunnels') ? row?.wifi_password ?? null : null,
+    },
+  }
+}
+
+/** Send an ONU its setup again, or reboot it, through the ACS. */
+export async function onuAcsAction(serial: string, action: 'resend' | 'reboot'): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to do that.' }
+  const sn = String(serial ?? '').toUpperCase()
+  // Only an ONU this company has on one of its OLTs.
+  const { data } = await tenantClient().from('onu_acs').select('serial').eq('company_id', session.company.id).eq('serial', sn).maybeSingle()
+  if (!data) return { ok: false, error: 'This ONU has not reached the ACS yet.' }
+  try {
+    const device = await findAcsDevice(sn)
+    if (!device) return { ok: false, error: 'The ACS has no record of this ONU.' }
+    const how = action === 'reboot' ? await rebootAcsDevice(device.id) : await resendAcsSetup(device)
+    await logEvent({
+      type: 'onu_acs_' + action,
+      tag: '[olt]',
+      details: 'ONU ' + sn + ' ' + (action === 'reboot' ? 'rebooted' : 'sent its setup again') + ' through the ACS | by=' + session.profile.email,
+    })
+    return {
+      ok: true,
+      message:
+        (action === 'reboot' ? 'Reboot' : 'Setup') +
+        (how === 'done' ? ' sent now.' : ' queued: the ONU gets it when it next checks in, within about 5 minutes.'),
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }

@@ -39,6 +39,9 @@ const PUBLIC_PATHS = [
   '/api/tunnels/peers',
   '/api/routers/setup',
   '/api/usage/poll',
+  // ISPMan's own ACS asking what an ONU should have. Authorizes itself with
+  // ACS_SHARED_SECRET (app/api/acs/config).
+  '/api/acs/config',
 ]
 
 /**
