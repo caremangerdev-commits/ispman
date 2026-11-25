@@ -208,6 +208,32 @@ export type LearnedSetup = OnuServiceSetup & {
   lines?: string[]
 }
 
+/**
+ * One change to an OLT's own settings, as a person asks for it. Never the
+ * commands themselves: the server works those out from what the OLT says
+ * now, so nothing typed in a browser reaches an OLT as a command.
+ */
+export type OltConfigChange =
+  | { kind: 'vlan-add'; vlan: number; name?: string }
+  | { kind: 'vlan-remove'; vlan: number }
+  | { kind: 'uplink-vlan-add'; port: string; vlan: number; tagged: boolean }
+  | { kind: 'uplink-vlan-remove'; port: string; vlan: number }
+  | { kind: 'port-description'; port: string; text: string }
+  | { kind: 'pon-enable'; port: string }
+  | { kind: 'pon-disable'; port: string }
+
+/** What a change will do, worked out before it is done. */
+export type OltChangePlan = {
+  /** One line, for the list of changes. */
+  summary: string
+  /** The commands, in order, from config mode. Shown before they run. */
+  commands: string[]
+  /** The commands that put it back. */
+  undo: string[]
+  /** Something to weigh before going ahead, e.g. how many ONUs drop. */
+  warning?: string
+}
+
 /** 'learn': copy whatever the working ONUs on the same port use. */
 export type OnuSetupChoice = OnuServiceSetup | 'learn'
 
@@ -248,4 +274,15 @@ export type OltDriver = {
    * be set up the same way. Null when none could be read.
    */
   learnSetup?(target: CliTarget, creds: OltLogin, port: string): Promise<LearnedSetup | null>
+  /**
+   * Work out a settings change from the OLT's current state: its commands,
+   * its undo, and a refusal (thrown CliError) when it would cut the OLT off
+   * from its management network or strand customers' service.
+   */
+  planChange?(target: CliTarget, creds: OltLogin, change: OltConfigChange): Promise<OltChangePlan>
+  /**
+   * Run commands from a plan (or its undo) in config mode, stopping at the
+   * first the OLT refuses, then save. Returns how many ran.
+   */
+  runCommands?(target: CliTarget, creds: OltLogin, commands: string[]): Promise<number>
 }

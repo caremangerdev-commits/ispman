@@ -13,7 +13,7 @@ import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forwa
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import { oltDriver } from '@/lib/olt'
 import type {
-  LearnedSetup, OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu, OnuServiceSetup,
+  LearnedSetup, OltAuthoriseResult, OltChangePlan, OltConfigChange, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu, OnuServiceSetup,
   OnuSetupChoice,
 } from '@/lib/olt/types'
 import { can } from '@/lib/permissions'
@@ -866,4 +866,195 @@ export async function searchOnus(query: string): Promise<{ ok: true; hits: OnuHi
     }
   }
   return { ok: true, hits: hits.map(({ _cid, ...h }) => { void _cid; return h }) }
+}
+
+/* -------------------------------------------------------------------------- */
+/* The OLT's own settings                                                     */
+/* -------------------------------------------------------------------------- */
+
+export type OltChange = {
+  id: number
+  madeAt: string
+  madeBy: string | null
+  summary: string
+  commands: string[]
+  undone: boolean
+  /** This row is itself an undo of another change. */
+  isUndo: boolean
+}
+
+export type PlanResult = { ok: true; plan: OltChangePlan } | { ok: false; error: string }
+
+/**
+ * Only the fields each kind needs, coerced, so a change that arrives from a
+ * browser is never more than what the form could have sent.
+ */
+function cleanChange(raw: OltConfigChange): OltConfigChange | null {
+  const c = raw as Record<string, unknown>
+  const n = (v: unknown) => Number(v)
+  const s = (v: unknown) => String(v ?? '').slice(0, 120)
+  switch (c.kind) {
+    case 'vlan-add':
+      return { kind: 'vlan-add', vlan: n(c.vlan), name: s(c.name) }
+    case 'vlan-remove':
+      return { kind: 'vlan-remove', vlan: n(c.vlan) }
+    case 'uplink-vlan-add':
+      return { kind: 'uplink-vlan-add', port: s(c.port), vlan: n(c.vlan), tagged: c.tagged === true }
+    case 'uplink-vlan-remove':
+      return { kind: 'uplink-vlan-remove', port: s(c.port), vlan: n(c.vlan) }
+    case 'port-description':
+      return { kind: 'port-description', port: s(c.port), text: s(c.text) }
+    case 'pon-enable':
+    case 'pon-disable':
+      return { kind: c.kind, port: s(c.port) }
+    default:
+      return null
+  }
+}
+
+/** One change at a time on any one OLT: a second person waits rather than interleaving commands. */
+const oltBusy = new Set<number>()
+
+async function reachForChange(oltId: number) {
+  const session = await manager()
+  if (!session) return { error: 'You do not have permission to change OLT settings.' } as const
+  const r = await reach(session.company.id, Number(oltId))
+  if ('error' in r) return { error: r.error ?? 'Could not reach the OLT.' } as const
+  if (!oltFeatures(r.olt.brand).writes) return { error: READ_ONLY_NOTE } as const
+  if (!r.driver.planChange || !r.driver.runCommands) {
+    return { error: 'Changing settings from ISPMan is only available on ZTE OLTs so far.' } as const
+  }
+  return { session, r } as const
+}
+
+/** What a change would do — its commands and anything to weigh — without doing it. */
+export async function previewOltChange(oltId: number, change: OltConfigChange): Promise<PlanResult> {
+  const got = await reachForChange(oltId)
+  if ('error' in got) return { ok: false, error: got.error as string }
+  const clean = cleanChange(change)
+  if (!clean) return { ok: false, error: 'Unknown change.' }
+  try {
+    return { ok: true, plan: await got.r.driver.planChange!(got.r.target, got.r.login, clean) }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * Make a change. PLANNED AGAIN HERE from the OLT's state now, not taken from
+ * the preview: the preview may be minutes old, and nothing a browser sends is
+ * ever run on an OLT as a command.
+ */
+export async function applyOltChange(oltId: number, change: OltConfigChange): Promise<OltActionResult> {
+  const got = await reachForChange(oltId)
+  if ('error' in got) return { ok: false, error: got.error as string }
+  const { session, r } = got
+  const clean = cleanChange(change)
+  if (!clean) return { ok: false, error: 'Unknown change.' }
+  if (oltBusy.has(r.olt.id)) return { ok: false, error: 'Another change is being made on this OLT. Try again in a moment.' }
+  oltBusy.add(r.olt.id)
+  try {
+    const plan = await r.driver.planChange!(r.target, r.login, clean)
+    await r.driver.runCommands!(r.target, r.login, plan.commands)
+    await recordChange(session.company.id, r.olt.id, session.profile.email, plan, null)
+    await logEvent({
+      type: 'olt_setting_changed',
+      tag: '[olt]',
+      details: plan.summary + ' on ' + r.olt.name + ' | commands=' + plan.commands.join(' ; ') + ' | by=' + session.profile.email,
+    })
+    // Read it back so the page shows the OLT as it now is.
+    await connect(session.company.id, r.olt.id)
+    revalidatePath(PATH + '/' + r.olt.id)
+    return { ok: true, message: plan.summary + ': done and saved on the OLT.' }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  } finally {
+    oltBusy.delete(r.olt.id)
+  }
+}
+
+async function recordChange(
+  companyId: number, oltId: number, by: string | null, plan: OltChangePlan, undoOf: number | null
+): Promise<void> {
+  await tenantClient()
+    .from('olt_changes')
+    .insert({
+      company_id: companyId,
+      olt_id: oltId,
+      made_by: by,
+      summary: plan.summary,
+      commands: plan.commands,
+      undo: plan.undo,
+      undo_of: undoOf,
+    })
+}
+
+/** The last 20 changes made to this OLT from ISPMan. Empty before migration 0066. */
+export async function listOltChanges(oltId: number): Promise<{ ok: true; changes: OltChange[] } | { ok: false; error: string }> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'view_network_infrastructure')) return { ok: false, error: 'You do not have permission to see this.' }
+  const { data, error } = await tenantClient()
+    .from('olt_changes')
+    .select('id, made_at, made_by, summary, commands, undone_at, undo_of')
+    .eq('company_id', session.company.id)
+    .eq('olt_id', Number(oltId))
+    .order('made_at', { ascending: false })
+    .limit(20)
+  if (error) return { ok: true, changes: [] }
+  return {
+    ok: true,
+    changes: ((data ?? []) as {
+      id: number; made_at: string; made_by: string | null; summary: string; commands: string[]
+      undone_at: string | null; undo_of: number | null
+    }[]).map((c) => ({
+      id: c.id,
+      madeAt: c.made_at,
+      madeBy: c.made_by,
+      summary: c.summary,
+      commands: c.commands ?? [],
+      undone: !!c.undone_at,
+      isUndo: c.undo_of != null,
+    })),
+  }
+}
+
+/** Put a change back, with the undo commands worked out when it was made. */
+export async function undoOltChange(changeId: number): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to change OLT settings.' }
+  const { data } = await tenantClient()
+    .from('olt_changes')
+    .select('id, olt_id, summary, undo, undone_at, undo_of')
+    .eq('company_id', session.company.id)
+    .eq('id', Number(changeId))
+    .maybeSingle()
+  const row = data as { id: number; olt_id: number; summary: string; undo: string[]; undone_at: string | null; undo_of: number | null } | null
+  if (!row) return { ok: false, error: 'That change was not found.' }
+  if (row.undone_at) return { ok: false, error: 'That change has already been undone.' }
+  if (row.undo_of != null) return { ok: false, error: 'That was itself an undo. Make the change again instead.' }
+
+  const got = await reachForChange(row.olt_id)
+  if ('error' in got) return { ok: false, error: got.error as string }
+  const { r } = got
+  if (oltBusy.has(r.olt.id)) return { ok: false, error: 'Another change is being made on this OLT. Try again in a moment.' }
+  oltBusy.add(r.olt.id)
+  try {
+    await r.driver.runCommands!(r.target, r.login, row.undo)
+    await tenantClient().from('olt_changes').update({ undone_at: new Date().toISOString() }).eq('id', row.id)
+    await recordChange(session.company.id, r.olt.id, session.profile.email, {
+      summary: 'Undid: ' + row.summary, commands: row.undo, undo: [],
+    }, row.id)
+    await logEvent({
+      type: 'olt_setting_undone',
+      tag: '[olt]',
+      details: 'Undid "' + row.summary + '" on ' + r.olt.name + ' | by=' + session.profile.email,
+    })
+    await connect(session.company.id, r.olt.id)
+    revalidatePath(PATH + '/' + r.olt.id)
+    return { ok: true, message: 'Undone: ' + row.summary + '.' }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  } finally {
+    oltBusy.delete(r.olt.id)
+  }
 }

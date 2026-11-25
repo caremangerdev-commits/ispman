@@ -3,7 +3,7 @@ import 'server-only'
 import { CliError, TelnetSession } from '@/lib/olt/telnet'
 import type {
   OltAuthoriseResult, OltCard, OltDriver, OltInfo, OltLogin, OltOnu, OltOnuDetail, OltOnuLists,
-  OltPendingOnu, LearnedSetup, OnuServiceSetup,
+  OltPendingOnu, LearnedSetup, OnuServiceSetup, OltChangePlan, OltConfigChange,
   OltPonPort, OltUplink, OltVlan,
 } from '@/lib/olt/types'
 
@@ -627,6 +627,206 @@ async function learnOnPort(session: TelnetSession, port: string): Promise<(Learn
 }
 
 /* -------------------------------------------------------------------------- */
+/* The OLT's own settings: VLANs, uplinks, PON ports                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every change here is planned from what the OLT says at that moment, never
+ * from what a page remembers, and comes with the commands that undo it.
+ *
+ * THE ONE THING IT WILL NOT DO is cut the OLT off from its own management.
+ * The VLAN holding the OLT's address (vlan100 at 10.10.4.6 on a real C320) is
+ * how ISPMan, and the person, reach it; removing that VLAN, or taking it off
+ * an uplink that is switched on, could leave a site visit as the only way back.
+ *
+ * Commands and their syntax are as a real C320 (V2.1.0) prints them back:
+ *   interface gei_1/3/3
+ *     switchport mode hybrid
+ *     switchport vlan 100 untag
+ *     switchport default vlan 100
+ */
+
+const UPLINK = /^x?gei_\d+\/\d+\/\d+$/
+const PON = /^gpon-olt_\d+\/\d+\/\d+$/
+
+/** A port's settings as printed, every line kept. */
+async function portLines(session: TelnetSession, port: string): Promise<string[]> {
+  const text = await run(session, 'show running-config interface ' + port)
+  if (refused(text)) throw new CliError('The OLT has no port called ' + port + '.')
+  const out: string[] = []
+  let inside = false
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!inside) {
+      if (line.startsWith('interface ')) inside = true
+      continue
+    }
+    if (line === '!' || line === 'end') break
+    if (line) out.push(line)
+  }
+  return out
+}
+
+/** VLAN interfaces with an address on them: the OLT's management. */
+async function managementVlans(session: TelnetSession): Promise<Map<number, string>> {
+  const out = new Map<number, string>()
+  for (const line of (await run(session, 'show ip interface brief')).split('\n')) {
+    const m = /^\s*vlan(\d+)\s+(\d+\.\d+\.\d+\.\d+)/i.exec(line)
+    if (m) out.set(Number(m[1]), m[2])
+  }
+  return out
+}
+
+const validVlan = (v: number) => Number.isInteger(v) && v >= 1 && v <= 4094
+
+async function planOne(session: TelnetSession, change: OltConfigChange): Promise<OltChangePlan> {
+  const say = (s: string): never => {
+    throw new CliError(s)
+  }
+
+  if (change.kind === 'vlan-add' || change.kind === 'vlan-remove') {
+    const v = Number(change.vlan)
+    if (!validVlan(v) || v === 1) say('Choose a VLAN from 2 to 4094.')
+    const existing = new Set(parseVlanList(await run(session, 'show vlan summary')))
+
+    if (change.kind === 'vlan-add') {
+      if (existing.has(v)) say('VLAN ' + v + ' already exists on this OLT.')
+      const name = cliWord(change.name ?? '', 30)
+      return {
+        summary: 'Create VLAN ' + v + (name ? ' (' + name + ')' : ''),
+        commands: ['vlan ' + v, ...(name ? ['name ' + name] : []), 'exit'],
+        undo: ['no vlan ' + v],
+      }
+    }
+
+    if (!existing.has(v)) say('There is no VLAN ' + v + ' on this OLT.')
+    const mgmt = await managementVlans(session)
+    if (mgmt.has(v)) {
+      say(
+        'VLAN ' + v + ' is how this OLT is managed: its address ' + mgmt.get(v) + ' is on it. ' +
+          'Removing it would cut ISPMan, and you, off from the OLT.'
+      )
+    }
+    // Still carrying customers or uplinks: say so rather than strand them.
+    const uses = (await run(session, 'show running-config | include vlan ' + v))
+      .split('\n')
+      .map((l) => l.trim())
+    const onus = uses.filter((l) => new RegExp('^service-port\\s.*\\svlan\\s' + v + '\\b').test(l)).length
+    const ports = uses.filter((l) => new RegExp('^switchport\\s+(?:vlan|default vlan)\\s' + v + '\\b').test(l)).length
+    if (onus || ports) {
+      say(
+        'VLAN ' + v + ' is still in use: ' +
+          [onus ? onus + (onus === 1 ? ' ONU' : ' ONUs') : '', ports ? ports + ' uplink setting' + (ports === 1 ? '' : 's') : '']
+            .filter(Boolean)
+            .join(' and ') +
+          '. Move them to another VLAN first.'
+      )
+    }
+    const was = parseVlan(v, await run(session, 'show vlan ' + v))
+    return {
+      summary: 'Remove VLAN ' + v,
+      commands: ['no vlan ' + v],
+      undo: ['vlan ' + v, ...(was.name && !/^VLAN0*\d+$/i.test(was.name) ? ['name ' + cliWord(was.name, 30)] : []), 'exit'],
+    }
+  }
+
+  if (change.kind === 'uplink-vlan-add' || change.kind === 'uplink-vlan-remove') {
+    const port = String(change.port)
+    const v = Number(change.vlan)
+    if (!UPLINK.test(port)) say('That is not an uplink port.')
+    if (!validVlan(v)) say('Choose a VLAN from 1 to 4094.')
+    const lines = await portLines(session, port)
+    const mode = /^switchport mode (\S+)/.exec(lines.find((l) => l.startsWith('switchport mode')) ?? '')?.[1] ?? 'access'
+    const has = lines
+      .map((l) => /^switchport vlan (\S+) (tag|untag)$/.exec(l))
+      .find((m) => m && m[1].split(',').some((part) => {
+        const r = /^(\d+)(?:-(\d+))?$/.exec(part)
+        return !!r && v >= Number(r[1]) && v <= Number(r[2] ?? r[1])
+      }))
+
+    if (change.kind === 'uplink-vlan-add') {
+      if (!parseVlanList(await run(session, 'show vlan summary')).includes(v)) {
+        say('There is no VLAN ' + v + ' on this OLT yet. Create it first.')
+      }
+      if (has) say(port + ' already carries VLAN ' + v + (has[2] === 'tag' ? ', tagged.' : ', untagged.'))
+      if (mode === 'access') say(port + ' is an access port, which carries one VLAN only. Change it to trunk or hybrid on the OLT first.')
+      if (!change.tagged && mode === 'trunk') {
+        say(port + ' is a trunk port, which carries VLANs tagged only. Add it tagged, or set the port to hybrid on the OLT first.')
+      }
+      const how = change.tagged ? 'tag' : 'untag'
+      // Untagged traffic arriving on a hybrid port goes into the port's
+      // default VLAN, whatever else it carries untagged on the way out.
+      const pvid = Number(/^switchport default vlan (\d+)$/.exec(lines.find((l) => l.startsWith('switchport default vlan')) ?? '')?.[1] ?? 1)
+      return {
+        summary: 'Carry VLAN ' + v + ' ' + (change.tagged ? 'tagged' : 'untagged') + ' on ' + port,
+        commands: ['interface ' + port, 'switchport vlan ' + v + ' ' + how, 'exit'],
+        undo: ['interface ' + port, 'no switchport vlan ' + v, 'exit'],
+        warning:
+          !change.tagged && pvid !== v
+            ? 'Untagged traffic coming in on ' + port + ' goes to VLAN ' + pvid + ', the port\'s default. ' +
+              'This adds VLAN ' + v + ' going out untagged only.'
+            : undefined,
+      }
+    }
+
+    if (!has) say(port + ' does not carry VLAN ' + v + '.')
+    const mgmt = await managementVlans(session)
+    const off = lines.includes('shutdown')
+    if (mgmt.has(v) && !off) {
+      say(
+        'VLAN ' + v + ' carries this OLT\'s management (' + mgmt.get(v) + '), and ' + port + ' is switched on: ' +
+          'this may be the way ISPMan, and you, reach the OLT. Change it at the OLT itself if you are sure.'
+      )
+    }
+    return {
+      summary: 'Stop carrying VLAN ' + v + ' on ' + port,
+      commands: ['interface ' + port, 'no switchport vlan ' + v, 'exit'],
+      undo: ['interface ' + port, 'switchport vlan ' + v + ' ' + (has?.[2] ?? 'tag'), 'exit'],
+    }
+  }
+
+  if (change.kind === 'port-description') {
+    const port = String(change.port)
+    if (!UPLINK.test(port) && !PON.test(port)) say('That is not a port on this OLT.')
+    const lines = await portLines(session, port)
+    const old = /^description (.+)$/.exec(lines.find((l) => l.startsWith('description ')) ?? '')?.[1] ?? null
+    const text = cliWord(change.text, 60)
+    return {
+      summary: (text ? 'Describe ' + port + ' as ' + text : 'Clear the description of ' + port),
+      commands: ['interface ' + port, text ? 'description ' + text : 'no description', 'exit'],
+      undo: ['interface ' + port, old ? 'description ' + old : 'no description', 'exit'],
+    }
+  }
+
+  // PON port on or off.
+  const port = String(change.port)
+  if (!PON.test(port)) say('That is not a PON port.')
+  const lines = await portLines(session, port)
+  const off = lines.includes('shutdown')
+  if (change.kind === 'pon-enable') {
+    if (!off) say(port + ' is already switched on.')
+    return {
+      summary: 'Switch on ' + port,
+      commands: ['interface ' + port, 'no shutdown', 'exit'],
+      undo: ['interface ' + port, 'shutdown', 'exit'],
+    }
+  }
+  if (off) say(port + ' is already switched off.')
+  const working = [...parseStates(await run(session, 'show gpon onu state ' + port)).values()].filter((s) =>
+    /working/i.test(s)
+  ).length
+  return {
+    summary: 'Switch off ' + port,
+    commands: ['interface ' + port, 'shutdown', 'exit'],
+    undo: ['interface ' + port, 'no shutdown', 'exit'],
+    warning: working
+      ? working + (working === 1 ? ' ONU is' : ' ONUs are') + ' working on this port right now. ' +
+        (working === 1 ? 'That customer loses' : 'Those customers lose') + ' service until it is switched back on.'
+      : undefined,
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* One ONU: what it reports, and what can be done to it                       */
 /* -------------------------------------------------------------------------- */
 
@@ -928,6 +1128,44 @@ export const zte: OltDriver = {
         session.send('write')
         await session.until(/\[OK\]|%Error|%Code/i, 'saving the configuration')
       }
+    } finally {
+      session.close()
+    }
+  },
+
+  async planChange(target, creds, change): Promise<OltChangePlan> {
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      await run(session, 'terminal length 0')
+      return await planOne(session, change)
+    } finally {
+      session.close()
+    }
+  },
+
+  async runCommands(target, creds, commands): Promise<number> {
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      await run(session, 'terminal length 0')
+      await run(session, 'configure terminal')
+      let ran = 0
+      for (const command of commands) {
+        const out = await run(session, command)
+        if (refused(out)) {
+          const said = out.split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? ''
+          await run(session, 'end')
+          throw new CliError('The OLT refused "' + command + '" after ' + ran + ' of ' + commands.length + ' commands: ' + said)
+        }
+        ran += 1
+      }
+      await run(session, 'end')
+      session.send('write')
+      await session.until(/\[OK\]|%Error|%Code/i, 'saving the configuration')
+      return ran
     } finally {
       session.close()
     }
