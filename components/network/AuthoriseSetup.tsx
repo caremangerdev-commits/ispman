@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 
-import { learnPortSetup, onuCommand } from '@/app/actions/olts'
+import { applySetupToOnus, learnPortSetup, listOnuSetups, onuCommand, type SavedSetup } from '@/app/actions/olts'
 import type { LearnedSetup, OltAuthoriseResult, OltOnu, OltSpeedProfile, OnuServiceSetup } from '@/lib/olt/types'
 
 /**
@@ -171,6 +171,15 @@ export function SetupChooser({
   return (
     <fieldset className="mb-3 rounded-lg border border-gray-800 p-3">
       <legend className="px-1 text-xs font-semibold text-gray-200">How new ONUs are set up</legend>
+      <SavedPick
+        onPick={(x) => {
+          onMode(x.onuVlan == null ? 'untagged' : 'tagged')
+          onVlan(x.vlan)
+          onOnuVlan(x.onuVlan)
+          onUpProfile(x.upProfile ?? '')
+          onDownProfile(x.downProfile ?? '')
+        }}
+      />
       <div className="flex flex-wrap gap-x-5 gap-y-2">
         {options.map((o) => (
           <label key={o.id} className="flex cursor-pointer items-start gap-2 text-xs">
@@ -226,6 +235,129 @@ export function SetupChooser({
       ) : null}
       {mode === 'learn' && ports.length ? <PortSetups oltId={oltId} ports={ports} vlan={vlan} /> : null}
     </fieldset>
+  )
+}
+
+/** Start from one of the company's saved setups, which fills in the choices below. */
+function SavedPick({ onPick }: { onPick: (s: OnuServiceSetup) => void }) {
+  const [setups, setSetups] = useState<SavedSetup[]>([])
+  useEffect(() => {
+    let live = true
+    const t = window.setTimeout(async () => {
+      const list = await listOnuSetups()
+      if (live) setSetups(list)
+    }, 0)
+    return () => {
+      live = false
+      window.clearTimeout(t)
+    }
+  }, [])
+  if (!setups.length) return null
+  return (
+    <label className="mb-3 flex flex-wrap items-center gap-2 text-xs text-gray-400">
+      Start from a saved setup
+      <select
+        defaultValue=""
+        onChange={(e) => {
+          const found = setups.find((x) => String(x.id) === e.target.value)
+          if (found) onPick(found.setup)
+        }}
+        className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
+      >
+        <option value="">Choose…</option>
+        {setups.map((x) => (
+          <option key={x.id} value={x.id}>{x.name}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+/**
+ * Give the ONUs in the list one of the saved setups, ten at a time, each
+ * reported. For moving a whole port to a new VLAN or speed in one go.
+ */
+export function BulkApply({ oltId, onuIds, onDone }: { oltId: number; onuIds: string[]; onDone: () => void }) {
+  const [setups, setSetups] = useState<SavedSetup[]>([])
+  const [pick, setPick] = useState('')
+  const [sure, setSure] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [failed, setFailed] = useState<{ onuId: string; error?: string }[]>([])
+  const [done, setDone] = useState<number | null>(null)
+  useEffect(() => {
+    let live = true
+    const t = window.setTimeout(async () => {
+      const list = await listOnuSetups()
+      if (live) setSetups(list)
+    }, 0)
+    return () => {
+      live = false
+      window.clearTimeout(t)
+    }
+  }, [])
+  if (!setups.length || !onuIds.length) return null
+  const chosen = setups.find((x) => String(x.id) === pick)
+
+  const run = async () => {
+    if (!chosen) return
+    setFailed([])
+    setDone(null)
+    let ok = 0
+    const bad: { onuId: string; error?: string }[] = []
+    for (let i = 0; i < onuIds.length; i += 10) {
+      setBusy(Math.min(i + 10, onuIds.length) + ' of ' + onuIds.length + '…')
+      const res = await applySetupToOnus(oltId, onuIds.slice(i, i + 10), chosen.setup)
+      if (!res.ok) {
+        bad.push({ onuId: 'all', error: res.error })
+        break
+      }
+      ok += res.results.filter((r) => r.ok).length
+      bad.push(...res.results.filter((r) => !r.ok))
+    }
+    setBusy(null)
+    setSure(false)
+    setDone(ok)
+    setFailed(bad)
+    onDone()
+  }
+
+  return (
+    <div className="mb-3 rounded-lg border border-gray-800 px-3 py-2 text-xs text-gray-400">
+      <div className="flex flex-wrap items-center gap-2">
+        Give the {onuIds.length} ONUs shown
+        <select value={pick} onChange={(e) => { setPick(e.target.value); setSure(false) }} className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100">
+          <option value="">a saved setup…</option>
+          {setups.map((x) => (
+            <option key={x.id} value={x.id}>{x.name}</option>
+          ))}
+        </select>
+        {chosen && !sure ? (
+          <button type="button" onClick={() => setSure(true)} className="rounded-md bg-gray-800 px-2.5 py-1 text-[11px] font-medium text-gray-200 hover:bg-gray-700">
+            Continue
+          </button>
+        ) : null}
+      </div>
+      {chosen && sure ? (
+        <div className="mt-2 rounded-md bg-amber-950/30 px-3 py-2 text-amber-200">
+          Each of the {onuIds.length} ONUs becomes {setupWords(chosen.setup)}. Each customer drops for a few seconds as theirs is changed.{' '}
+          <button type="button" onClick={() => void run()} disabled={!!busy} className="font-semibold text-blue-300 hover:underline disabled:opacity-50">
+            {busy ? 'Changing ' + busy : 'Change all ' + onuIds.length}
+          </button>
+        </div>
+      ) : null}
+      {done != null ? (
+        <p className="mt-2 text-emerald-300">
+          {done} changed.{failed.length ? ' ' + failed.length + ' could not be:' : ''}
+        </p>
+      ) : null}
+      {failed.length ? (
+        <ul className="mt-1 text-red-300">
+          {failed.map((f) => (
+            <li key={f.onuId}><span className="font-mono">{f.onuId}</span>: {f.error}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   )
 }
 

@@ -6,7 +6,9 @@ import { closeIncident, getIncident } from '@/lib/data/incidents'
 import { oltWatchTargets, type OltWatchTarget } from '@/lib/data/olts'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { oltForwardPort } from '@/lib/olt/forward'
+import { getSignalLevels } from '@/lib/data/olt-defaults'
 import { oltFeatures } from '@/lib/olt/features'
+import { levelsFor } from '@/lib/olt/signal-levels'
 import { oltDriver } from '@/lib/olt'
 import type { OltOnu } from '@/lib/olt/types'
 import { tenantClient } from '@/lib/supabase/tenant'
@@ -107,6 +109,7 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
     return result
   }
   const cli = { host: router.tunnelIp, port: olt.forwardPort ?? oltForwardPort(olt.id) }
+  const levels = await getSignalLevels(companyId, olt.id)
 
   let lists = await driver.listOnus(cli, login)
 
@@ -231,19 +234,23 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
     const was = last.get(sn)
     const rx = o.rx ?? null
     let weakAlerted = was?.weak_alerted ?? false
-    if (rx !== null && rx < RX_TOO_LOW && !weakAlerted) {
+    // This company's own level for this port, where it has set one.
+    const tooLow = levels ? levelsFor(levels, o.port).critical : RX_TOO_LOW
+    const recovered = levels ? tooLow + 1 : RX_RECOVERED
+    if (rx !== null && rx < tooLow && !weakAlerted) {
       // Recorded on the first reading too, but not announced then.
       if (!first) {
         await raiseNetworkAlert(
           companyId,
           owners[sn]?.customerId ?? null,
           'Low signal on ' + olt.name + ': ' + who(sn, owners) + ' is receiving ' + rx.toFixed(1) +
-            ' dBm. Below ' + RX_TOO_LOW + ' the connection drops. Check the fibre and connectors.'
+            ' dBm, below the ' + tooLow + ' dBm set as too low' + (levels ? '' : ', where the connection drops') +
+            '. Check the fibre and connectors.'
         )
         result.alerts += 1
       }
       weakAlerted = true
-    } else if (rx !== null && rx >= RX_RECOVERED) {
+    } else if (rx !== null && rx >= recovered) {
       weakAlerted = false
     }
     rows.push({

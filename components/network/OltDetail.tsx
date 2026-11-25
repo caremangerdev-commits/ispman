@@ -9,6 +9,7 @@ import { OltFrontPanel } from '@/components/network/OltFrontPanel'
 import { OltSettings } from '@/components/network/OltSettings'
 import type { OnuDefaults } from '@/lib/data/olt-defaults'
 import { oltFeatures } from '@/lib/olt/features'
+import type { SignalLevels } from '@/lib/olt/signal-levels'
 import { checkOlt, loadOnus, setOltAutoAuthorise, type OltActionResult } from '@/app/actions/olts'
 import { DeviceIcon } from '@/components/network/DeviceIcon'
 import { OnuPanel, type OnuLists } from '@/components/network/OnuPanel'
@@ -115,6 +116,7 @@ function Field({ label, value }: { label: string; value: string }) {
 
 export function OltDetail({
   olt, routerName, checkedText, canManage, autoAuthorise = false, saved = null, focus = null, onuDefaults = null,
+  signalLevels = null,
 }: {
   olt: Olt
   routerName: string
@@ -128,6 +130,7 @@ export function OltDetail({
   focus?: { port: string; serial: string } | null
   /** How new ONUs were last set up on this OLT. */
   onuDefaults?: OnuDefaults | null
+  signalLevels?: SignalLevels | null
 }) {
   const [auto, setAuto] = useState(autoAuthorise)
   const [autoNote, setAutoNote] = useState<string | null>(null)
@@ -389,6 +392,7 @@ export function OltDetail({
             onPortChange={tab === 'pending' ? undefined : setPickedPort}
             onuDefaults={onuDefaults}
             speedProfiles={info?.speedProfiles ?? []}
+            signalLevels={signalLevels}
           />
         ) : null}
 
@@ -439,7 +443,7 @@ export function OltDetail({
         ) : null}
 
         {tab === 'outages' ? <OutagePanel oltId={olt.id} canManage={canManage} /> : null}
-        {tab === 'settings' ? <OltSettings oltId={olt.id} info={info ?? null} /> : null}
+        {tab === 'settings' ? <OltSettings oltId={olt.id} info={info ?? null} signalLevels={signalLevels} /> : null}
         {tab === 'pon' ? (
           pon.length === 0 ? (
             <Empty>No PON ports read yet. They appear once a PON card is set up on the OLT.</Empty>

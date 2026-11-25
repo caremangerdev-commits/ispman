@@ -1,0 +1,231 @@
+'use client'
+
+import { useRouter } from 'next/navigation'
+import { useCallback, useEffect, useState } from 'react'
+
+import {
+  deleteOnuSetup, listOnuSetups, saveOnuSetup, saveSignalLevels, type SavedSetup,
+} from '@/app/actions/olts'
+import { SpeedPicker, setupWords } from '@/components/network/AuthoriseSetup'
+import { Section } from '@/components/network/OltSettings'
+import { DEFAULT_LEVELS, type SignalLevels } from '@/lib/olt/signal-levels'
+import type { OltSpeedProfile } from '@/lib/olt/types'
+
+/**
+ * Two things each company decides for itself, kept in ISPMan rather than on
+ * the OLT:
+ *
+ *   Signal levels — what counts as weak and too low, for the whole OLT and
+ *   for any PON port that differs (a long run, an extra splitter). The ONU
+ *   list colours by them and the low-signal alert fires by them.
+ *
+ *   Saved setups — named ways of setting an ONU up (tagged or untagged, the
+ *   VLANs, the speed profiles), picked when authorizing or applied to many
+ *   ONUs at once from the ONU list.
+ */
+
+const field =
+  'rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100 focus:border-blue-500 focus:outline-none'
+const small = 'rounded-md bg-gray-800 px-2.5 py-1 text-[11px] font-medium text-gray-200 hover:bg-gray-700 disabled:opacity-50'
+const primary = 'rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-60'
+const portShort = (p: string) => p.replace(/^gpon-olt_/, 'PON ')
+
+function Note({ note }: { note: { ok: boolean; text: string } | null }) {
+  if (!note) return null
+  return (
+    <p className={'mt-2 rounded-md px-3 py-2 text-xs ' + (note.ok ? 'bg-emerald-950/40 text-emerald-300' : 'bg-red-950/40 text-red-300')}>
+      {note.text}
+    </p>
+  )
+}
+
+export function SignalLevelsSection({
+  oltId, ports, levels,
+}: {
+  oltId: number
+  ports: string[]
+  levels: SignalLevels | null
+}) {
+  const router = useRouter()
+  const start = levels ?? DEFAULT_LEVELS
+  const [warn, setWarn] = useState(String(start.warn))
+  const [critical, setCritical] = useState(String(start.critical))
+  const [own, setOwn] = useState<Record<string, { warn: string; critical: string }>>(
+    Object.fromEntries(Object.entries(start.ports ?? {}).map(([p, l]) => [p, { warn: String(l.warn), critical: String(l.critical) }]))
+  )
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
+
+  const save = async () => {
+    setBusy(true)
+    setNote(null)
+    const res = await saveSignalLevels(oltId, {
+      warn: Number(warn),
+      critical: Number(critical),
+      ports: Object.fromEntries(
+        Object.entries(own)
+          .filter(([, l]) => l.warn !== '' && l.critical !== '')
+          .map(([p, l]) => [p, { warn: Number(l.warn), critical: Number(l.critical) }])
+      ),
+    })
+    setBusy(false)
+    setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
+    if (res.ok) router.refresh()
+  }
+
+  return (
+    <Section
+      title="Signal levels"
+      note="What counts as weak and too low for the light an ONU receives, in dBm. The ONU list is coloured by these and the low-signal alert fires below 'too low'. Give a port its own levels when it normally runs lower."
+    >
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-400">
+        <label className="flex items-center gap-2">
+          Weak below
+          <input type="number" step="0.5" value={warn} onChange={(e) => setWarn(e.target.value)} className={field + ' w-20'} />
+        </label>
+        <label className="flex items-center gap-2">
+          Too low below
+          <input type="number" step="0.5" value={critical} onChange={(e) => setCritical(e.target.value)} className={field + ' w-20'} />
+        </label>
+      </div>
+      {ports.length ? (
+        <details className="mt-3">
+          <summary className="cursor-pointer select-none text-[11px] text-gray-400 hover:text-gray-200">
+            Ports with their own levels ({Object.values(own).filter((l) => l.warn !== '').length})
+          </summary>
+          <ul className="mt-2 space-y-1.5">
+            {ports.map((p) => {
+              const l = own[p] ?? { warn: '', critical: '' }
+              return (
+                <li key={p} className="flex flex-wrap items-center gap-2 text-xs text-gray-400">
+                  <span className="w-20 font-semibold text-gray-200">{portShort(p)}</span>
+                  weak below
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={l.warn}
+                    placeholder={warn}
+                    onChange={(e) => setOwn({ ...own, [p]: { ...l, warn: e.target.value } })}
+                    className={field + ' w-20'}
+                  />
+                  too low below
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={l.critical}
+                    placeholder={critical}
+                    onChange={(e) => setOwn({ ...own, [p]: { ...l, critical: e.target.value } })}
+                    className={field + ' w-20'}
+                  />
+                </li>
+              )
+            })}
+          </ul>
+        </details>
+      ) : null}
+      <div className="mt-3">
+        <button type="button" onClick={() => void save()} disabled={busy} className={primary}>
+          {busy ? 'Saving…' : 'Save levels'}
+        </button>
+      </div>
+      <Note note={note} />
+    </Section>
+  )
+}
+
+export function SavedSetups({ profiles, vlans }: { profiles: OltSpeedProfile[]; vlans: number[] }) {
+  const [setups, setSetups] = useState<SavedSetup[]>([])
+  const [name, setName] = useState('')
+  const [tagged, setTagged] = useState(false)
+  const [onuVlan, setOnuVlan] = useState('')
+  const [vlan, setVlan] = useState(vlans[0] ? String(vlans[0]) : '')
+  const [up, setUp] = useState('')
+  const [down, setDown] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
+
+  const load = useCallback(async () => setSetups(await listOnuSetups()), [])
+  useEffect(() => {
+    const t = window.setTimeout(() => void load(), 0)
+    return () => window.clearTimeout(t)
+  }, [load])
+
+  const save = async () => {
+    setBusy(true)
+    setNote(null)
+    const v = Number(vlan)
+    const res = await saveOnuSetup(name, {
+      onuVlan: tagged ? Number(onuVlan || vlan) : null,
+      vlan: v,
+      upProfile: up || null,
+      downProfile: down || null,
+    })
+    setBusy(false)
+    setNote(res.ok ? { ok: true, text: res.message } : { ok: false, text: res.error })
+    if (res.ok) {
+      setName('')
+      void load()
+    }
+  }
+
+  return (
+    <Section
+      title="Saved ONU setups"
+      note="Your own ways of setting ONUs up, by name, for every OLT: tagged or untagged, the VLANs, the speed. Pick one when authorizing, or apply one to many ONUs at once from the Authorized list."
+    >
+      {setups.length ? (
+        <ul className="mb-3 divide-y divide-gray-800">
+          {setups.map((s) => (
+            <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-1.5 text-xs">
+              <span>
+                <span className="font-semibold text-gray-100">{s.name}</span>{' '}
+                <span className="text-gray-500">· {setupWords(s.setup)}</span>
+              </span>
+              <button
+                type="button"
+                onClick={async () => {
+                  await deleteOnuSetup(s.id)
+                  void load()
+                }}
+                className={small}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mb-3 text-xs text-gray-500">None yet.</p>
+      )}
+      <div className="space-y-2 rounded-lg border border-gray-800 p-3">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-400">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name, e.g. Home 20M" maxLength={60} className={field + ' w-48'} />
+          <label className="flex items-center gap-1.5">
+            <input type="radio" checked={!tagged} onChange={() => setTagged(false)} /> Untagged
+          </label>
+          <label className="flex items-center gap-1.5">
+            <input type="radio" checked={tagged} onChange={() => setTagged(true)} /> Tagged
+          </label>
+          {tagged ? (
+            <label className="flex items-center gap-2">
+              ONU tags with VLAN
+              <input type="number" min={1} max={4094} value={onuVlan} placeholder={vlan} onChange={(e) => setOnuVlan(e.target.value)} className={field + ' w-20'} />
+            </label>
+          ) : null}
+          <label className="flex items-center gap-2">
+            Carried on VLAN
+            <input type="number" min={1} max={4094} value={vlan} onChange={(e) => setVlan(e.target.value)} className={field + ' w-20'} />
+          </label>
+        </div>
+        <SpeedPicker profiles={profiles} up={up} onUp={setUp} down={down} onDown={setDown} noneLabel="No limit on the OLT" />
+        <button type="button" onClick={() => void save()} disabled={busy || !name.trim() || !(Number(vlan) >= 1)} className={primary}>
+          {busy ? 'Saving…' : 'Save setup'}
+        </button>
+        <p className="text-[11px] text-gray-500">
+          Speed profiles are named per OLT. A setup naming one that another OLT lacks is refused there, with the OLT&apos;s reason.
+        </p>
+      </div>
+      <Note note={note} />
+    </Section>
+  )
+}

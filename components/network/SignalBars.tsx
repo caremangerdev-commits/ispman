@@ -22,11 +22,13 @@ const TONES = ['bg-red-500', 'bg-amber-400', 'bg-green-500', 'bg-green-500']
 const TEXT = ['text-red-400', 'text-amber-300', 'text-gray-300', 'text-gray-300']
 
 export function SignalBars({
-  label, dbm, side,
+  label, dbm, side, levels,
 }: {
   label: string
   dbm: number | null
   side: 'onu' | 'olt'
+  /** The company's own weak / too-low levels for this port (ONU side). */
+  levels?: { warn: number; critical: number }
 }) {
   if (dbm === null) {
     return (
@@ -36,7 +38,8 @@ export function SignalBars({
       </span>
     )
   }
-  const level = SCALES[side].filter((limit) => dbm >= limit).length
+  const scale = side === 'onu' && levels ? [levels.critical, levels.warn, levels.warn + 3] : SCALES[side]
+  const level = scale.filter((limit) => dbm >= limit).length
   return (
     <span
       className={'inline-flex items-center gap-1.5 ' + TEXT[level]}

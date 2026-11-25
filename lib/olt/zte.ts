@@ -824,6 +824,72 @@ async function planOne(session: TelnetSession, change: OltConfigChange): Promise
     }
   }
 
+  if (change.kind === 'uplink-mode' || change.kind === 'uplink-pvid') {
+    const port = String(change.port)
+    if (!UPLINK.test(port)) say('That is not an uplink port.')
+    const lines = await portLines(session, port)
+    const mode = /^switchport mode (\S+)/.exec(lines.find((l) => l.startsWith('switchport mode')) ?? '')?.[1] ?? 'access'
+    const pvid = Number(/^switchport default vlan (\d+)$/.exec(lines.find((l) => l.startsWith('switchport default vlan')) ?? '')?.[1] ?? 1)
+    const carried = lines
+      .map((l) => /^switchport vlan (\S+) (tag|untag)$/.exec(l))
+      .filter((m): m is RegExpExecArray => !!m)
+      .flatMap((m) => m[1].split(',').flatMap((part) => {
+        const r = /^(\d+)(?:-(\d+))?$/.exec(part)
+        if (!r) return []
+        const out: number[] = []
+        for (let v = Number(r[1]); v <= Number(r[2] ?? r[1]) && out.length < 4094; v += 1) out.push(v)
+        return out
+      }))
+    const mgmt = await managementVlans(session)
+    const live = !lines.includes('shutdown')
+    const carriesMgmt = [...mgmt.keys()].some((v) => carried.includes(v) || pvid === v)
+
+    if (change.kind === 'uplink-mode') {
+      const to = change.mode
+      if (to !== 'trunk' && to !== 'hybrid' && to !== 'access') say('Choose trunk, hybrid or access.')
+      if (to === mode) say(port + ' is already ' + mode + '.')
+      // Changing the mode can clear what the port carries. On the port the
+      // OLT is managed through, that is the OLT gone until someone is there.
+      if (live && carriesMgmt) {
+        say(
+          port + ' carries this OLT\'s management VLAN and is switched on. Changing its mode can drop that, ' +
+            'and with it ISPMan and you. Change it at the OLT itself, or move management to another port first.'
+        )
+      }
+      return {
+        summary: 'Set ' + port + ' to ' + to + ' mode',
+        commands: ['interface ' + port, 'switchport mode ' + to, 'exit'],
+        undo: [
+          'interface ' + port,
+          'switchport mode ' + mode,
+          ...lines.filter((l) => /^switchport (vlan|default vlan) /.test(l)),
+          'exit',
+        ],
+        warning:
+          'Changing the mode can clear the VLANs ' + port + ' carries' +
+          (carried.length ? ' (' + [...new Set(carried)].slice(0, 8).join(', ') + ')' : '') +
+          '. Check them afterwards; Undo puts them back.',
+      }
+    }
+
+    const v = Number(change.vlan)
+    if (!validVlan(v)) say('Choose a VLAN from 1 to 4094.')
+    if (v === pvid) say(port + '\'s default VLAN is already ' + v + '.')
+    if (mode === 'trunk') say(port + ' is a trunk port, which has no use for a default VLAN. Set it to hybrid first.')
+    if (!parseVlanList(await run(session, 'show vlan summary')).includes(v)) say('There is no VLAN ' + v + ' on this OLT yet. Create it first.')
+    if (live && mgmt.has(pvid) && !mgmt.has(v)) {
+      say(
+        'Untagged traffic on ' + port + ' now goes to VLAN ' + pvid + ', which this OLT is managed on. Moving it ' +
+          'could cut ISPMan, and you, off from the OLT. Change it at the OLT itself if you are sure.'
+      )
+    }
+    return {
+      summary: 'Send untagged traffic on ' + port + ' to VLAN ' + v,
+      commands: ['interface ' + port, 'switchport default vlan ' + v, 'exit'],
+      undo: ['interface ' + port, 'switchport default vlan ' + pvid, 'exit'],
+    }
+  }
+
   if (change.kind === 'speed-add' || change.kind === 'speed-remove') {
     const name = String(change.name).trim()
     if (!PROFILE_NAME.test(name)) say('Use letters, numbers, dots, dashes or underscores for the name, up to 32.')
@@ -1046,7 +1112,13 @@ export const zte: OltDriver = {
           if (type.startsWith('SM')) {
             const name = 'gei_1/' + card.slot + '/' + p
             const text = await run(session, 'show interface ' + name)
-            if (!refused(text)) uplinks.push(parseUplink(name, text))
+            if (!refused(text)) {
+              // Its mode and default VLAN, for the Settings tab.
+              const conf = await portLines(session, name).catch(() => [] as string[])
+              const mode = /^switchport mode (\S+)/.exec(conf.find((l) => l.startsWith('switchport mode')) ?? '')?.[1]
+              const pvid = /^switchport default vlan (\d+)$/.exec(conf.find((l) => l.startsWith('switchport default vlan')) ?? '')?.[1]
+              uplinks.push({ ...parseUplink(name, text), mode: mode ?? 'access', pvid: pvid ? Number(pvid) : 1 })
+            }
           } else if (type.startsWith('GT')) {
             const name = 'gpon-olt_1/' + card.slot + '/' + p
             const text = await run(session, 'show interface ' + name)

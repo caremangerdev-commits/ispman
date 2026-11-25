@@ -1,5 +1,6 @@
 import 'server-only'
 
+import { cleanLevels, type SignalLevels } from '@/lib/olt/signal-levels'
 import { tenantClient } from '@/lib/supabase/tenant'
 
 /**
@@ -36,4 +37,28 @@ export async function getOnuDefaults(companyId: number, oltId: number): Promise<
   if (error || !data) return null
   const d = (data as { onu_defaults: OnuDefaults | null }).onu_defaults
   return d && typeof d === 'object' ? d : null
+}
+
+/**
+ * This OLT's signal levels (migration 0068). Asked for on its own, so a
+ * server without the column reads the usual levels instead of failing.
+ */
+export async function getSignalLevels(companyId: number, oltId: number): Promise<SignalLevels | null> {
+  const { data, error } = await tenantClient()
+    .from('olts')
+    .select('signal_levels')
+    .eq('company_id', companyId)
+    .eq('id', oltId)
+    .maybeSingle()
+  if (error || !data) return null
+  return cleanLevels((data as { signal_levels: unknown }).signal_levels)
+}
+
+export async function setSignalLevels(companyId: number, oltId: number, levels: SignalLevels): Promise<boolean> {
+  const { error } = await tenantClient()
+    .from('olts')
+    .update({ signal_levels: levels })
+    .eq('company_id', companyId)
+    .eq('id', oltId)
+  return !error
 }

@@ -32,6 +32,10 @@ export type OltUplink = {
   /** Bits per second, averaged by the OLT over its own short window. */
   inBps: number | null
   outBps: number | null
+  /** trunk, hybrid or access. ZTE only, read from its settings. */
+  mode?: string
+  /** Where untagged traffic coming in goes. ZTE only. */
+  pvid?: number
 }
 
 /** A port customers' ONUs hang off. */
@@ -242,6 +246,8 @@ export type OltConfigChange =
   | { kind: 'port-description'; port: string; text: string }
   | { kind: 'pon-enable'; port: string }
   | { kind: 'pon-disable'; port: string }
+  | { kind: 'uplink-mode'; port: string; mode: 'trunk' | 'hybrid' | 'access' }
+  | { kind: 'uplink-pvid'; port: string; vlan: number }
   | { kind: 'speed-add'; direction: 'up' | 'down'; name: string; mbps: number }
   | { kind: 'speed-remove'; direction: 'up' | 'down'; name: string }
 

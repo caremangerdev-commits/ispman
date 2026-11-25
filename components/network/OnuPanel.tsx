@@ -8,9 +8,10 @@ import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
 import { SignalBars } from '@/components/network/SignalBars'
 import type { OnuCustomer } from '@/lib/data/customer-devices'
 import type { UsageDay } from '@/lib/data/usage'
-import { DataCheck, SetupChooser, SpeedPicker, setupWords, type SetupMode } from '@/components/network/AuthoriseSetup'
+import { BulkApply, DataCheck, SetupChooser, SpeedPicker, setupWords, type SetupMode } from '@/components/network/AuthoriseSetup'
 import type { OnuDefaults } from '@/lib/data/olt-defaults'
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
+import { levelsFor, type SignalLevels } from '@/lib/olt/signal-levels'
 import type {
   OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu, OltSpeedProfile,
 } from '@/lib/olt/types'
@@ -378,7 +379,7 @@ function Fact({ label, value, tone }: { label: string; value: string; tone?: str
  * ONU is being moved and a bad thing to do by a slip of the mouse.
  */
 function OnuRow({
-  oltId, brand, onu, customer, seen, canManage, onChanged, focused = false, speedProfiles = [],
+  oltId, brand, onu, customer, seen, canManage, onChanged, focused = false, speedProfiles = [], signalLevels = null,
 }: {
   oltId: number
   brand: string
@@ -390,6 +391,7 @@ function OnuRow({
   /** The ONU the search led here: opened, read, and scrolled to. */
   focused?: boolean
   speedProfiles?: OltSpeedProfile[]
+  signalLevels?: SignalLevels | null
 }) {
   const writes = oltFeatures(brand).writes
   const [open, setOpen] = useState(focused)
@@ -524,7 +526,7 @@ function OnuRow({
               : 'Offline (' + onu.phase + ')'}
         </td>
         <td className={td}>
-          <SignalBars label="RX" dbm={onu.rx ?? null} side="onu" />
+          <SignalBars label="RX" dbm={onu.rx ?? null} side="onu" levels={levelsFor(signalLevels, onu.port)} />
         </td>
         <td className={td}>
           <SignalBars label="TX" dbm={onu.tx ?? null} side="olt" />
@@ -874,7 +876,7 @@ function OnuRow({
 }
 
 export function OnuPanel({
-  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null, focus = null, onPortChange, onuDefaults = null, speedProfiles = [],
+  oltId, brand, view, lists, loading, error, canManage, vlans, defaultVlan, onReload, freshness = null, focus = null, onPortChange, onuDefaults = null, speedProfiles = [], signalLevels = null,
 }: {
   oltId: number
   brand: string
@@ -897,6 +899,8 @@ export function OnuPanel({
   onuDefaults?: OnuDefaults | null
   /** Speed profiles on the OLT. */
   speedProfiles?: OltSpeedProfile[]
+  /** This company's weak / too-low signal levels on this OLT. */
+  signalLevels?: SignalLevels | null
 }) {
   const [vlan, setVlan] = useState<number | null>(onuDefaults?.vlan ?? defaultVlan)
   const canLearn = oltFeatures(brand).copySetup
@@ -1120,6 +1124,9 @@ export function OnuPanel({
   return (
     <div className="py-2">
       {banner}
+      {canManage && writes && canLearn && view === 'authorised' ? (
+        <BulkApply oltId={oltId} onuIds={shown.map((o) => o.id)} onDone={onReload} />
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-2 pb-3">
         <div className="flex flex-wrap items-center gap-3">
           <PortFilter ports={lists.onus.map((o) => o.port)} value={port} onChange={setPort} />
@@ -1168,6 +1175,7 @@ export function OnuPanel({
                   onChanged={onReload}
                   focused={Boolean(focus && o.sn && o.sn.toUpperCase() === focus.serial)}
                   speedProfiles={speedProfiles}
+                  signalLevels={signalLevels}
                 />
               ))}
             </tbody>

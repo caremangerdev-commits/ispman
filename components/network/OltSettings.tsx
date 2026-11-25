@@ -6,6 +6,8 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   applyOltChange, listOltChanges, previewOltChange, undoOltChange, type OltChange,
 } from '@/app/actions/olts'
+import { SavedSetups, SignalLevelsSection } from '@/components/network/OltSettingsExtra'
+import type { SignalLevels } from '@/lib/olt/signal-levels'
 import type { OltChangePlan, OltConfigChange, OltInfo } from '@/lib/olt/types'
 
 /**
@@ -45,7 +47,7 @@ const primary = 'rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-w
 const th = 'py-2 pr-4 text-left text-[10px] font-medium uppercase tracking-wider text-gray-500'
 const td = 'py-2 pr-4 text-xs text-gray-300 align-top'
 
-function Section({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
+export function Section({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
   return (
     <section className="rounded-xl border border-gray-800 p-4">
       <h3 className="text-sm font-semibold text-white">{title}</h3>
@@ -55,7 +57,13 @@ function Section({ title, note, children }: { title: string; note?: string; chil
   )
 }
 
-export function OltSettings({ oltId, info }: { oltId: number; info: OltInfo | null }) {
+export function OltSettings({
+  oltId, info, signalLevels = null,
+}: {
+  oltId: number
+  info: OltInfo | null
+  signalLevels?: SignalLevels | null
+}) {
   const router = useRouter()
   const [pending, setPending] = useState<{ change: OltConfigChange; plan: OltChangePlan } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -69,6 +77,7 @@ export function OltSettings({ oltId, info }: { oltId: number; info: OltInfo | nu
   const [speedDir, setSpeedDir] = useState<'up' | 'down'>('down')
   const [speedName, setSpeedName] = useState('')
   const [speedMbps, setSpeedMbps] = useState('')
+  const [pvidFor, setPvidFor] = useState<Record<string, string>>({})
 
   const loadChanges = useCallback(async () => {
     const res = await listOltChanges(oltId)
@@ -298,6 +307,48 @@ export function OltSettings({ oltId, info }: { oltId: number; info: OltInfo | nu
                       {busy === 'ua' + u.name ? 'Checking…' : 'Add'}
                     </button>
                   </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-400">
+                    <label className="flex items-center gap-2">
+                      Mode
+                      <select
+                        value={u.mode ?? ''}
+                        onChange={(e) => {
+                          const m = e.target.value
+                          if (m === 'trunk' || m === 'hybrid' || m === 'access') {
+                            void preview({ kind: 'uplink-mode', port: u.name, mode: m }, 'um' + u.name)
+                          }
+                        }}
+                        disabled={!!busy}
+                        className={field}
+                      >
+                        {u.mode ? null : <option value="">—</option>}
+                        <option value="trunk">trunk (tagged VLANs only)</option>
+                        <option value="hybrid">hybrid (tagged and untagged)</option>
+                        <option value="access">access (one VLAN)</option>
+                      </select>
+                    </label>
+                    {u.mode !== 'trunk' ? (
+                      <label className="flex items-center gap-2">
+                        Untagged traffic in goes to VLAN
+                        <input
+                          type="number"
+                          min={1}
+                          max={4094}
+                          value={pvidFor[u.name] ?? String(u.pvid ?? '')}
+                          onChange={(e) => setPvidFor({ ...pvidFor, [u.name]: e.target.value })}
+                          className={field + ' w-20'}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void preview({ kind: 'uplink-pvid', port: u.name, vlan: Number(pvidFor[u.name] ?? u.pvid) }, 'up' + u.name)}
+                          disabled={!!busy || !pvidFor[u.name] || Number(pvidFor[u.name]) === u.pvid}
+                          className={small}
+                        >
+                          {busy === 'up' + u.name ? 'Checking…' : 'Set'}
+                        </button>
+                      </label>
+                    ) : null}
+                  </div>
                 </li>
               )
             })}
@@ -444,6 +495,10 @@ export function OltSettings({ oltId, info }: { oltId: number; info: OltInfo | nu
           <span className="w-full text-[11px] text-gray-500">The OLT stores one word, so spaces become dashes.</span>
         </div>
       ) : null}
+
+      <SignalLevelsSection oltId={oltId} ports={pons.map((p) => p.name)} levels={signalLevels} />
+
+      <SavedSetups profiles={speeds} vlans={vlans.map((v) => v.id).filter((v) => v !== 1)} />
 
       <Section title="Changes made from ISPMan" note="Newest first. Undo sends the commands that put a change back, worked out when it was made.">
         {changes.length === 0 ? (

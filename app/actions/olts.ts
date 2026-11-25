@@ -10,7 +10,8 @@ import {
 import { linkOnuToCustomer, linkOnusToCustomers, type OnuCustomer } from '@/lib/data/customer-devices'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forward'
-import { setOnuDefaults } from '@/lib/data/olt-defaults'
+import { setOnuDefaults, setSignalLevels } from '@/lib/data/olt-defaults'
+import { cleanLevels, type SignalLevels } from '@/lib/olt/signal-levels'
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import { oltDriver } from '@/lib/olt'
 import type {
@@ -932,6 +933,14 @@ function cleanChange(raw: OltConfigChange): OltConfigChange | null {
     case 'pon-enable':
     case 'pon-disable':
       return { kind: c.kind, port: s(c.port) }
+    case 'uplink-mode':
+      return {
+        kind: 'uplink-mode',
+        port: s(c.port),
+        mode: c.mode === 'trunk' || c.mode === 'hybrid' || c.mode === 'access' ? c.mode : 'trunk',
+      }
+    case 'uplink-pvid':
+      return { kind: 'uplink-pvid', port: s(c.port), vlan: n(c.vlan) }
     case 'speed-add':
       return { kind: 'speed-add', direction: c.direction === 'down' ? 'down' : 'up', name: s(c.name).slice(0, 32), mbps: n(c.mbps) }
     case 'speed-remove':
@@ -1086,4 +1095,119 @@ export async function undoOltChange(changeId: number): Promise<OltActionResult> 
   } finally {
     oltBusy.delete(r.olt.id)
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Each company's own levels and setups                                       */
+/* -------------------------------------------------------------------------- */
+
+/** Save what counts as weak and too low on this OLT, and on ports that differ. */
+export async function saveSignalLevels(oltId: number, levels: SignalLevels): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to change this.' }
+  const clean = cleanLevels(levels)
+  if (!clean) return { ok: false, error: 'Use levels between -40 and -10 dBm, with "weak" above "too low".' }
+  if (!(await setSignalLevels(session.company.id, Number(oltId), clean))) {
+    return { ok: false, error: 'Could not save that. Migration 0068 may not be applied.' }
+  }
+  await logEvent({
+    type: 'olt_signal_levels',
+    tag: '[olt]',
+    details: 'Signal levels set on OLT #' + oltId + ': weak below ' + clean.warn + ', too low below ' + clean.critical +
+      (clean.ports ? ', ' + Object.keys(clean.ports).length + ' port(s) with their own' : '') + ' | by=' + session.profile.email,
+  })
+  revalidatePath(PATH + '/' + Number(oltId))
+  return { ok: true, message: 'Saved. The ONU list and low-signal alerts use these from now on.' }
+}
+
+export type SavedSetup = { id: number; name: string; setup: OnuServiceSetup }
+
+function cleanSetup(raw: unknown): OnuServiceSetup | null {
+  const r = raw as OnuServiceSetup | null
+  const v = (x: unknown) => Number.isInteger(x) && (x as number) >= 1 && (x as number) <= 4094
+  const p = (x: unknown) => (typeof x === 'string' && /^[A-Za-z0-9_.-]{1,32}$/.test(x) ? x : null)
+  if (!r || !v(r.vlan) || (r.onuVlan != null && !v(r.onuVlan))) return null
+  return { onuVlan: r.onuVlan ?? null, vlan: r.vlan, upProfile: p(r.upProfile), downProfile: p(r.downProfile) }
+}
+
+/** This company's saved ONU setups. Empty before migration 0068. */
+export async function listOnuSetups(): Promise<SavedSetup[]> {
+  const session = await getSession()
+  const { data, error } = await tenantClient()
+    .from('onu_setups')
+    .select('id, name, setup')
+    .eq('company_id', session.company.id)
+    .order('name')
+  if (error) return []
+  return ((data ?? []) as { id: number; name: string; setup: unknown }[])
+    .map((r) => ({ id: r.id, name: r.name, setup: cleanSetup(r.setup) }))
+    .filter((r): r is SavedSetup => r.setup !== null)
+}
+
+export async function saveOnuSetup(name: string, setup: OnuServiceSetup): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to change this.' }
+  const clean = cleanSetup(setup)
+  const label = String(name ?? '').trim().slice(0, 60)
+  if (!label) return { ok: false, error: 'Give the setup a name.' }
+  if (!clean) return { ok: false, error: 'That setup needs a VLAN from 1 to 4094.' }
+  const { error } = await tenantClient()
+    .from('onu_setups')
+    .upsert({ company_id: session.company.id, name: label, setup: clean }, { onConflict: 'company_id,name' })
+  if (error) return { ok: false, error: 'Could not save it. Migration 0068 may not be applied.' }
+  return { ok: true, message: 'Saved as "' + label + '".' }
+}
+
+export async function deleteOnuSetup(id: number): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to change this.' }
+  await tenantClient().from('onu_setups').delete().eq('company_id', session.company.id).eq('id', Number(id))
+  return { ok: true, message: 'Removed.' }
+}
+
+export type BulkResult =
+  | { ok: true; results: { onuId: string; ok: boolean; error?: string }[] }
+  | { ok: false; error: string }
+
+/**
+ * Give many ONUs the same setup: their VLAN, then their speed, one ONU at a
+ * time. One that the OLT refuses is reported and the rest carry on. Ten at a
+ * time; the page asks again for the next ten.
+ */
+export async function applySetupToOnus(oltId: number, onuIds: string[], setup: OnuServiceSetup): Promise<BulkResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to do that.' }
+  const clean = cleanSetup(setup)
+  if (!clean) return { ok: false, error: 'That setup needs a VLAN from 1 to 4094.' }
+  const r = await reach(session.company.id, Number(oltId))
+  if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
+  if (!oltFeatures(r.olt.brand).writes || !oltFeatures(r.olt.brand).copySetup) {
+    return { ok: false, error: 'Applying a setup to ONUs is only available on ZTE OLTs so far.' }
+  }
+  const results: { onuId: string; ok: boolean; error?: string }[] = []
+  for (const id of (Array.isArray(onuIds) ? onuIds : []).slice(0, 10).map(String)) {
+    try {
+      await r.driver.onuAction(r.target, r.login, id, { kind: 'service', setup: clean })
+      if (clean.upProfile || clean.downProfile !== undefined) {
+        await r.driver.onuAction(r.target, r.login, id, {
+          kind: 'speed',
+          up: clean.upProfile ?? 'ISPMAN-UP',
+          down: clean.downProfile ?? '',
+        })
+      }
+      results.push({ onuId: id, ok: true })
+    } catch (err) {
+      results.push({ onuId: id, ok: false, error: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  const done = results.filter((x) => x.ok)
+  if (done.length) {
+    await logEvent({
+      type: 'onu_setup_applied',
+      tag: '[olt]',
+      details: setupWords(clean) + ' applied to ' + done.length + ' ONU(s) on ' + r.olt.name + ': ' +
+        done.map((x) => x.onuId).join(', ') + ' | by=' + session.profile.email,
+    })
+  }
+  return { ok: true, results }
 }
