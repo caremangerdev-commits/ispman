@@ -3,7 +3,7 @@ import 'server-only'
 import { CliError, TelnetSession } from '@/lib/olt/telnet'
 import type {
   OltAuthoriseResult, OltCard, OltDriver, OltInfo, OltLogin, OltOnu, OltOnuDetail, OltOnuLists,
-  OltPendingOnu,
+  OltPendingOnu, LearnedSetup, OnuServiceSetup,
   OltPonPort, OltUplink, OltVlan,
 } from '@/lib/olt/types'
 
@@ -471,7 +471,7 @@ async function authoriseOne(
   port: string,
   index: number,
   sn: string,
-  vlan: number
+  template: Template
 ): Promise<string | null> {
   const onu = port.replace('gpon-olt_', 'gpon-onu_') + ':' + index
   const steps: [string, string][] = [
@@ -479,12 +479,10 @@ async function authoriseOne(
     ['onu ' + index + ' type ' + ONU_TYPE + ' sn ' + sn, 'registering it on the port'],
     ['exit', ''],
     ['interface ' + onu, ''],
-    ['tcont 1 profile ' + UP_PROFILE, 'setting its upstream profile'],
-    ['gemport 1 tcont 1', 'creating its data channel'],
-    ['service-port 1 vport 1 user-vlan untagged vlan ' + vlan, 'putting it on VLAN ' + vlan],
+    ...template.iface.map((l): [string, string] => [l, '"' + l + '"']),
     ['exit', ''],
     ['pon-onu-mng ' + onu, ''],
-    ['service 1 gemport 1', 'telling the ONU which channel to use'],
+    ...template.mng.map((l): [string, string] => [l, '"' + l + '"']),
     ['exit', ''],
   ]
 
@@ -509,6 +507,123 @@ async function authoriseOne(
   }
   await run(session, 'end')
   return null
+}
+
+/* -------------------------------------------------------------------------- */
+/* Setting up a new ONU the way its neighbours are                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The lines of one ONU's configuration that describe how it is set up rather
+ * than who it belongs to, with its own id taken out so they can be replayed on
+ * another ONU.
+ *
+ *   show running-config interface gpon-onu_1/1/3:5
+ *     interface gpon-onu_1/1/3:5
+ *       name Jane Brown
+ *       tcont 1 profile 1G
+ *       gemport 1 tcont 1
+ *       service-port 1 vport 1 user-vlan 20 vlan 20
+ *     !
+ *
+ *   show onu running config gpon-onu_1/1/3:5
+ *     pon-onu-mng gpon-onu_1/1/3:5
+ *       service 1 gemport 1 vlan 20
+ *       vlan port eth_0/1 mode tag vlan 20
+ *     !
+ *
+ * WHAT IS LEFT OUT, AND WHY. A name or description is that customer's. A
+ * PPPoE login, a Wi-Fi name or any password is that customer's and must never
+ * be copied onto someone else's ONU. A serial binding ties the line to that
+ * one ONU. Everything else — channels, profiles, VLANs, port modes,
+ * management — is how the company runs its network, which is the point.
+ */
+const PERSONAL = /^(name|description|sn-bind|auth|security-mgmt|ssid|wifi|wlan)\b|password|username|user-name|pppoe|key\s/i
+
+function configLines(text: string, header: RegExp): string[] {
+  if (refused(text)) return []
+  const out: string[] = []
+  let inside = false
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (!inside) {
+      if (header.test(line)) inside = true
+      continue
+    }
+    if (line === '!' || line === 'end' || line === '$' || /^(interface|pon-onu-mng)\s/.test(line)) break
+    if (!line || PERSONAL.test(line)) continue
+    out.push(line)
+  }
+  return out
+}
+
+type Template = { iface: string[]; mng: string[] }
+
+async function readTemplate(session: TelnetSession, onu: string): Promise<Template> {
+  const iface = configLines(
+    await run(session, 'show running-config interface ' + onu),
+    /^interface\s+gpon-onu_/
+  )
+  const mng = configLines(await run(session, 'show onu running config ' + onu), /^pon-onu-mng\s+gpon-onu_/)
+  return { iface, mng }
+}
+
+/** The tagged/untagged and VLAN a template amounts to, for showing a person. */
+function summarise(t: Template): OnuServiceSetup | null {
+  for (const line of t.iface) {
+    // A real C320 (V2.1.0) prints the untagged form back as "user-vlan untag".
+    const m = /^service-port\s+\d+\s+vport\s+\d+\s+user-vlan\s+(untag(?:ged)?|\d+)\b.*?\svlan\s+(\d+)/i.exec(line)
+    if (!m) continue
+    const profile = t.iface.map((l) => /^tcont\s+\d+\s+(?:name\s+\S+\s+)?profile\s+(\S+)/i.exec(l)).find(Boolean)
+    return {
+      onuVlan: /^untag/i.test(m[1]) ? null : Number(m[1]),
+      vlan: Number(m[2]),
+      upProfile: profile ? profile[1] : null,
+    }
+  }
+  return null
+}
+
+/** What ISPMan writes when it is told the setup rather than copying one. */
+function templateFor(setup: OnuServiceSetup): Template {
+  const tagged = setup.onuVlan != null
+  return {
+    iface: [
+      'tcont 1 profile ' + (setup.upProfile || UP_PROFILE),
+      'gemport 1 tcont 1',
+      'service-port 1 vport 1 user-vlan ' + (tagged ? setup.onuVlan : 'untagged') + ' vlan ' + setup.vlan,
+    ],
+    // A tagged ONU is told its VLAN too, so an ONU that takes its settings
+    // from the OLT tags with the right one.
+    mng: ['service 1 gemport 1' + (tagged ? ' vlan ' + setup.onuVlan : '')],
+  }
+}
+
+/**
+ * Read up to four working ONUs on a port and take the setup most of them
+ * share. Working ones first: an ONU that never passed traffic proves nothing.
+ */
+async function learnOnPort(session: TelnetSession, port: string): Promise<(LearnedSetup & { template: Template }) | null> {
+  const states = parseStates(await run(session, 'show gpon onu state ' + port))
+  const ids = [...states.entries()]
+    .sort((a, b) => Number(/working/i.test(b[1])) - Number(/working/i.test(a[1])) || a[0] - b[0])
+    .map(([index]) => port.replace('gpon-olt_', 'gpon-onu_') + ':' + index)
+    .slice(0, 4)
+
+  const seen = new Map<string, { template: Template; summary: OnuServiceSetup; from: string; count: number }>()
+  for (const id of ids) {
+    const template = await readTemplate(session, id)
+    const summary = summarise(template)
+    if (!summary) continue
+    const key = template.iface.join('|') + '#' + template.mng.join('|')
+    const had = seen.get(key)
+    if (had) had.count += 1
+    else seen.set(key, { template, summary, from: id, count: 1 })
+  }
+  const best = [...seen.values()].sort((a, b) => b.count - a.count)[0]
+  if (!best) return null
+  const read = [...seen.values()].reduce((n, v) => n + v.count, 0)
+  return { ...best.summary, from: best.from, agreeing: best.count, read, template: best.template }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -773,6 +888,32 @@ export const zte: OltDriver = {
         await must('interface ' + id, 'opening the ONU')
         await must(action.kind === 'disable' ? 'shutdown' : 'no shutdown', action.kind === 'disable' ? 'disabling the ONU' : 'enabling the ONU')
         save = true
+      } else if (action.kind === 'service') {
+        // Swap only the VLAN half — the service-port on the OLT side and the
+        // service line on the ONU side — and leave the channel, profile and
+        // everything else as it is. The ONU stays registered throughout.
+        const s = action.setup
+        const ok = (v: number) => Number.isInteger(v) && v >= 1 && v <= 4094
+        if (!ok(s.vlan) || (s.onuVlan != null && !ok(s.onuVlan))) {
+          await run(session, 'end')
+          throw new CliError('Choose VLANs from 1 to 4094.')
+        }
+        await run(session, 'end')
+        const now = await readTemplate(session, id)
+        const fresh = templateFor(s)
+        const oldPorts = now.iface.map((l) => /^service-port\s+(\d+)\s/i.exec(l)?.[1]).filter((n): n is string => !!n)
+        const oldServices = now.mng.map((l) => /^service\s+(\S+)\s+gemport/i.exec(l)?.[1]).filter((n): n is string => !!n)
+
+        await run(session, 'configure terminal')
+        await must('interface ' + id, 'opening the ONU')
+        for (const n of oldPorts) await must('no service-port ' + n, 'removing its old VLAN setting')
+        await must(fresh.iface[fresh.iface.length - 1], 'putting it on VLAN ' + s.vlan)
+        await must('exit', 'leaving the ONU')
+        await must('pon-onu-mng ' + id, 'opening the ONU settings')
+        for (const n of oldServices) await must('no service ' + n, 'removing its old service line')
+        await must(fresh.mng[0], 'telling the ONU its VLAN')
+        await must('exit', 'leaving the ONU settings')
+        save = true
       } else {
         await must('interface ' + id, 'opening the ONU')
         const name = cliWord(action.name, 60)
@@ -792,6 +933,22 @@ export const zte: OltDriver = {
     }
   },
 
+  async learnSetup(target, creds, port): Promise<LearnedSetup | null> {
+    if (!/^gpon-olt_\d+\/\d+\/\d+$/.test(port)) return null
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      await run(session, 'terminal length 0')
+      const found = await learnOnPort(session, port)
+      if (!found) return null
+      const { template, ...rest } = found
+      return { ...rest, lines: [...template.iface, ...template.mng] }
+    } finally {
+      session.close()
+    }
+  },
+
   async authorise(target, creds, items, vlan): Promise<OltAuthoriseResult[]> {
     const session = new TelnetSession(target)
     await session.open()
@@ -803,6 +960,8 @@ export const zte: OltDriver = {
       // The slots already taken on each port, read once and then kept up to
       // date here, so two ONUs on one port in the same batch get two numbers.
       const taken = new Map<string, Set<number>>()
+      // What the working ONUs on each port look like, read once per port.
+      const learned = new Map<string, Awaited<ReturnType<typeof learnOnPort>>>()
       const results: OltAuthoriseResult[] = []
       for (const item of items) {
         if (!/^gpon-olt_\d+\/\d+\/\d+$/.test(item.port) || !SERIAL.test(item.sn)) {
@@ -825,7 +984,29 @@ export const zte: OltDriver = {
           results.push({ sn: item.sn, port: item.port, ok: false, error: 'That PON port is full (128 ONUs).' })
           continue
         }
-        const problem = await authoriseOne(session, item.port, index, item.sn.toUpperCase(), vlan)
+        // LEARN, OR FALL BACK TO WHAT ISPMAN ALWAYS DID. A port with nothing
+        // working on it yet has nothing to copy: untagged on the OLT's VLAN.
+        let template: Template
+        let setup: OnuServiceSetup
+        let learnedFrom: string | undefined
+        const choice = item.setup ?? { onuVlan: null, vlan }
+        if (choice === 'learn') {
+          if (!learned.has(item.port)) learned.set(item.port, await learnOnPort(session, item.port))
+          const copy = learned.get(item.port)
+          if (copy) {
+            template = copy.template
+            setup = { onuVlan: copy.onuVlan, vlan: copy.vlan, upProfile: copy.upProfile }
+            learnedFrom = copy.from
+          } else {
+            setup = { onuVlan: null, vlan }
+            template = templateFor(setup)
+          }
+        } else {
+          setup = choice
+          template = templateFor(choice)
+        }
+
+        const problem = await authoriseOne(session, item.port, index, item.sn.toUpperCase(), template)
         if (problem) {
           results.push({ sn: item.sn, port: item.port, ok: false, error: problem })
         } else {
@@ -835,6 +1016,8 @@ export const zte: OltDriver = {
             port: item.port,
             ok: true,
             id: item.port.replace('gpon-olt_', 'gpon-onu_') + ':' + index,
+            setup,
+            learnedFrom,
           })
         }
       }

@@ -13,7 +13,8 @@ import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forwa
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import { oltDriver } from '@/lib/olt'
 import type {
-  OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
+  LearnedSetup, OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu, OnuServiceSetup,
+  OnuSetupChoice,
 } from '@/lib/olt/types'
 import { can } from '@/lib/permissions'
 import { searchClauses } from '@/lib/search'
@@ -337,6 +338,14 @@ export async function authoriseOnus(input: {
    * stopping there.
    */
   skip?: string[]
+  /**
+   * How their traffic is carried. 'learn' (the default) copies the setup of
+   * the ONUs already working on the same port, and falls back to untagged on
+   * `vlan` where there is nothing to copy. 'untagged': the ONU sends plain
+   * traffic. 'tagged': the ONU tags its own traffic with `onuVlan` (or `vlan`).
+   */
+  mode?: 'learn' | 'untagged' | 'tagged'
+  onuVlan?: number
 }): Promise<AuthoriseResult> {
   const session = await manager()
   if (!session) return { ok: false, error: 'You do not have permission to authorise ONUs.' }
@@ -346,12 +355,19 @@ export async function authoriseOnus(input: {
     return { ok: false, error: 'Choose the VLAN to put them on, 1 to 4094.' }
   }
 
+  const mode = input.mode ?? 'learn'
+  const onuVlan = mode === 'tagged' ? Number(input.onuVlan ?? vlan) : null
+  if (onuVlan != null && (!Number.isInteger(onuVlan) || onuVlan < 1 || onuVlan > 4094)) {
+    return { ok: false, error: 'Choose the VLAN the ONUs tag with, 1 to 4094.' }
+  }
+  const setup: OnuSetupChoice = mode === 'learn' ? 'learn' : { onuVlan, vlan }
+
   const r = await reach(session.company.id, Number(input.oltId))
   if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
   if (!oltFeatures(r.olt.brand).writes) return { ok: false, error: READ_ONLY_NOTE }
 
   try {
-    let items: { port: string; sn: string }[]
+    let items: { port: string; sn: string; setup?: OnuSetupChoice }[]
     let waiting = 0
     if (input.items === 'all') {
       const skip = new Set((Array.isArray(input.skip) ? input.skip : []).map((s) => String(s).toUpperCase()))
@@ -364,6 +380,7 @@ export async function authoriseOnus(input: {
       waiting = input.items.length
     }
     if (items.length === 0) return { ok: true, results: [], remaining: 0 }
+    items = items.map((i) => ({ ...i, setup }))
 
     const results = await r.driver.authorise(r.target, r.login, items, vlan)
     const done = results.filter((x) => x.ok)
@@ -374,8 +391,10 @@ export async function authoriseOnus(input: {
         type: 'onu_authorised',
         tag: '[olt]',
         details:
-          done.length + ' ONU(s) authorised on ' + r.olt.name + ', VLAN ' + vlan + ': ' +
-          done.map((x) => x.sn + ' as ' + x.id).join(', ') + ' | by=' + session.profile.email,
+          done.length + ' ONU(s) authorised on ' + r.olt.name + ': ' +
+          done.map((x) => x.sn + ' as ' + x.id + ' (' + setupWords(x.setup ?? { onuVlan: null, vlan }) +
+            (x.learnedFrom ? ', copied from ' + x.learnedFrom : '') + ')').join(', ') +
+          ' | by=' + session.profile.email,
       })
     }
     revalidatePath(PATH + '/' + r.olt.id)
@@ -383,6 +402,35 @@ export async function authoriseOnus(input: {
     // from the next round, so they no longer count as waiting.
     const left = input.items === 'all' ? waiting - results.length : waiting - done.length
     return { ok: true, results, remaining: Math.max(0, left) }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** "tagged VLAN 20" / "untagged on VLAN 100", for logs and messages. */
+function setupWords(s: OnuServiceSetup): string {
+  if (s.onuVlan == null) return 'untagged on VLAN ' + s.vlan
+  return 'tagged VLAN ' + s.onuVlan + (s.onuVlan === s.vlan ? '' : ' carried on VLAN ' + s.vlan)
+}
+
+export type PortSetupResult =
+  | { ok: true; learned: LearnedSetup | null; canLearn: boolean }
+  | { ok: false; error: string }
+
+/**
+ * How the ONUs already working on a PON port are set up, so the Authorize
+ * screen can say what a new ONU there will get before it gets it.
+ */
+export async function learnPortSetup(oltId: number, port: string): Promise<PortSetupResult> {
+  const session = await getSession()
+  if (!can(session.profile.role, 'view_network_infrastructure')) {
+    return { ok: false, error: 'You do not have permission to see this.' }
+  }
+  const r = await reach(session.company.id, Number(oltId))
+  if ('error' in r) return { ok: false, error: r.error ?? 'Could not reach the OLT.' }
+  if (!r.driver.learnSetup) return { ok: true, learned: null, canLearn: false }
+  try {
+    return { ok: true, learned: await r.driver.learnSetup(r.target, r.login, String(port)), canLearn: true }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
@@ -507,7 +555,7 @@ export async function onuCommand(input: {
   if (!oltFeatures(r.olt.brand).writes) return { ok: false, error: READ_ONLY_NOTE }
 
   const kind = input.action?.kind
-  if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename' && kind !== 'disable' && kind !== 'enable' && kind !== 'vsol-fix') {
+  if (kind !== 'reboot' && kind !== 'remove' && kind !== 'rename' && kind !== 'disable' && kind !== 'enable' && kind !== 'vsol-fix' && kind !== 'service') {
     return { ok: false, error: 'Unknown action.' }
   }
   if (kind === 'vsol-fix' && r.olt.brand !== 'gcom') {
@@ -520,11 +568,14 @@ export async function onuCommand(input: {
   }
 
   const did =
-    kind === 'reboot' ? 'rebooted' : kind === 'remove' ? 'removed' : kind === 'disable' ? 'disabled' : kind === 'enable' ? 'enabled' : kind === 'vsol-fix' ? 'set_up_for_vsol' : 'renamed'
+    kind === 'reboot' ? 'rebooted' : kind === 'remove' ? 'removed' : kind === 'disable' ? 'disabled' : kind === 'enable' ? 'enabled' : kind === 'vsol-fix' ? 'set_up_for_vsol' : kind === 'service' ? 'vlan_changed' : 'renamed'
   await logEvent({
     type: 'onu_' + did,
     tag: '[olt]',
-    details: 'ONU ' + input.onuId + ' ' + did.split('_').join(' ') + ' on ' + r.olt.name + ' | by=' + session.profile.email,
+    details:
+      'ONU ' + input.onuId + ' ' + did.split('_').join(' ') +
+      (input.action.kind === 'service' ? ' to ' + setupWords(input.action.setup) : '') +
+      ' on ' + r.olt.name + ' | by=' + session.profile.email,
   })
   revalidatePath(PATH + '/' + r.olt.id)
   return {
@@ -540,7 +591,9 @@ export async function onuCommand(input: {
               ? 'Enabled. Service comes back within a minute.'
               : kind === 'vsol-fix'
                 ? 'V-SOL settings saved on this ONU only. Reboot it if the customer is not browsing within a minute.'
-                : 'Saved.',
+                : input.action.kind === 'service'
+                  ? 'Now ' + setupWords(input.action.setup) + '. Traffic should pass within a minute.'
+                  : 'Saved.',
   }
 }
 

@@ -113,7 +113,11 @@ async function watchOne(target: OltWatchTarget): Promise<OltWatchResult> {
   // 1. Let new ONUs on. Only with a VLAN already chosen — the first one is
   // authorised by a person, which is what picks it.
   if (target.autoAuthorise && olt.serviceVlan && oltFeatures(olt.brand).writes && lists.pending.length) {
-    const items = lists.pending.slice(0, AUTHORISE_BATCH).map((p) => ({ port: p.port, sn: p.sn }))
+    // Each new ONU is set up like the ones already working on its port
+    // (tagged or not, which VLAN), so a company that tags gets tagged ONUs.
+    const items = lists.pending
+      .slice(0, AUTHORISE_BATCH)
+      .map((p) => ({ port: p.port, sn: p.sn, setup: 'learn' as const }))
     const done = (await driver.authorise(cli, login, items, olt.serviceVlan)).filter((r) => r.ok)
     result.authorised = done.length
     if (done.length) {

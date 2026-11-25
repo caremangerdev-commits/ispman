@@ -8,6 +8,7 @@ import { useCustomerSearch } from '@/components/customers/useCustomerSearch'
 import { SignalBars } from '@/components/network/SignalBars'
 import type { OnuCustomer } from '@/lib/data/customer-devices'
 import type { UsageDay } from '@/lib/data/usage'
+import { DataCheck, SetupChooser, type SetupMode } from '@/components/network/AuthoriseSetup'
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import type {
   OltAuthoriseResult, OltOnu, OltOnuAction, OltOnuDetail, OltPendingOnu,
@@ -400,7 +401,9 @@ function OnuRow({
   const [readAt, setReadAt] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
-  const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link' | 'disable' | 'vsol'>('view')
+  const [mode, setMode] = useState<'view' | 'rename' | 'remove' | 'link' | 'disable' | 'vsol' | 'vlan'>('view')
+  const [vlanTagged, setVlanTagged] = useState(false)
+  const [vlanId, setVlanId] = useState('')
   // What this screen last did, until the list is read again.
   const [disabledNow, setDisabledNow] = useState<boolean | null>(null)
   const isDisabled = disabledNow ?? detail?.disabled ?? onu.disabled ?? false
@@ -611,6 +614,11 @@ function OnuRow({
                       Disable
                     </button>
                   )}
+                  {writes && oltFeatures(brand).copySetup ? (
+                    <button type="button" onClick={() => setMode('vlan')} disabled={!!busy} className={small}>
+                      VLAN setup
+                    </button>
+                  ) : null}
                   <button type="button" onClick={() => setMode('rename')} disabled={!!busy} className={small}>
                     Rename
                   </button>
@@ -652,6 +660,47 @@ function OnuRow({
                   <div className="flex gap-2">
                     <button type="button" onClick={() => void act({ kind: 'vsol-fix' })} disabled={!!busy} className={button}>
                       {busy === 'vsol-fix' ? 'Setting up…' : 'Set up for V-SOL'}
+                    </button>
+                    <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
+                  </div>
+                </div>
+              ) : null}
+
+              {mode === 'vlan' ? (
+                <div className="mt-4 space-y-2 rounded-lg border border-gray-800 p-3">
+                  <p className="text-xs text-gray-400">
+                    How this ONU&apos;s traffic is carried. Change it when the ONU is online but nothing passes:
+                    an ONU that tags its own traffic needs Tagged, one with VLAN switched off needs Untagged.
+                    The customer drops for a few seconds.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-gray-300">
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" checked={!vlanTagged} onChange={() => setVlanTagged(false)} /> Untagged
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input type="radio" checked={vlanTagged} onChange={() => setVlanTagged(true)} /> Tagged
+                    </label>
+                    <label className="flex items-center gap-1.5 text-gray-400">
+                      VLAN
+                      <input
+                        type="number"
+                        min={1}
+                        max={4094}
+                        value={vlanId}
+                        onChange={(e) => setVlanId(e.target.value)}
+                        className="w-20 rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const v = Number(vlanId)
+                        void act({ kind: 'service', setup: { onuVlan: vlanTagged ? v : null, vlan: v } })
+                      }}
+                      disabled={!!busy || !(Number(vlanId) >= 1 && Number(vlanId) <= 4094)}
+                      className={button}
+                    >
+                      {busy === 'service' ? 'Changing…' : 'Change'}
                     </button>
                     <button type="button" onClick={() => setMode('view')} className={small}>Cancel</button>
                   </div>
@@ -777,6 +826,11 @@ export function OnuPanel({
   onPortChange?: (port: string) => void
 }) {
   const [vlan, setVlan] = useState<number | null>(defaultVlan)
+  const canLearn = oltFeatures(brand).copySetup
+  const [mode, setMode] = useState<SetupMode>(canLearn ? 'learn' : 'untagged')
+  // The ONUs authorized in this visit, checked for data a little later.
+  const [justDone, setJustDone] = useState<OltAuthoriseResult[]>([])
+  const [checking, setChecking] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   // One PON port at a time, or all of them.
   const [port, setPortState] = useState<string>(focus?.port ?? '')
@@ -805,7 +859,7 @@ export function OnuPanel({
       // answering.
       const failedSn: string[] = []
       for (let round = 0; round < 80; round += 1) {
-        const res = await authoriseOnus({ oltId, vlan, items, skip: failedSn })
+        const res = await authoriseOnus({ oltId, vlan, items, skip: failedSn, mode, onuVlan: vlan })
         if (!res.ok) {
           setProblem(
             res.error + (all.length ? ' Stopped after ' + all.filter((r) => r.ok).length + ' authorized.' : '')
@@ -825,6 +879,17 @@ export function OnuPanel({
       setBusy(null)
       setProgress(null)
       onReload()
+      const ok = all.filter((r) => r.ok)
+      if (ok.length) {
+        setJustDone((d) => [...ok, ...d])
+        // Long enough for an ONU to come up and its router to ask for an
+        // address; the list read then shows whether anything passed.
+        setChecking(true)
+        window.setTimeout(() => {
+          onReload()
+          setChecking(false)
+        }, 90_000)
+      }
     }
   }
 
@@ -859,34 +924,7 @@ export function OnuPanel({
       <div className="py-2">
         {banner}
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
-          {writes ? (
-          <label className="flex items-center gap-2 text-xs text-gray-400">
-            Put them on VLAN
-            {vlans.length ? (
-              <select
-                value={vlan ?? ''}
-                onChange={(e) => setVlan(Number(e.target.value) || null)}
-                className="rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
-              >
-                <option value="">Choose…</option>
-                {vlans.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                type="number"
-                min={1}
-                max={4094}
-                value={vlan ?? ''}
-                onChange={(e) => setVlan(Number(e.target.value) || null)}
-                className="w-20 rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-xs text-gray-100"
-              />
-            )}
-          </label>
-          ) : (
-            <p className="max-w-md text-[11px] text-gray-500">{READ_ONLY_NOTE}</p>
-          )}
+          {writes ? null : <p className="max-w-md text-[11px] text-gray-500">{READ_ONLY_NOTE}</p>}
           <div className="flex items-center gap-2">
             <PortFilter ports={lists.pending.map((p) => p.port)} value={port} onChange={setPort} />
             <button type="button" onClick={onReload} disabled={loading || !!busy} className={button + ' bg-gray-700 hover:bg-gray-600'}>
@@ -900,6 +938,27 @@ export function OnuPanel({
           </div>
         </div>
 
+        {writes && canManage && lists.pending.length > 0 ? (
+          <SetupChooser
+            oltId={oltId}
+            canLearn={canLearn}
+            ports={[...new Set((port ? lists.pending.filter((p) => p.port === port) : lists.pending).map((p) => p.port))]}
+            mode={mode}
+            onMode={setMode}
+            vlan={vlan}
+            onVlan={setVlan}
+            vlans={vlans}
+          />
+        ) : null}
+        {justDone.length ? (
+          <DataCheck
+            oltId={oltId}
+            done={justDone}
+            onus={lists.onus}
+            checking={checking || loading}
+            onCheck={onReload}
+          />
+        ) : null}
         {problem ? <p className="mb-3 rounded-lg bg-red-950/30 px-3 py-2 text-xs text-red-300">{problem}</p> : null}
         {succeeded.length ? (
           <p className="mb-3 rounded-lg bg-emerald-950/40 px-3 py-2 text-xs text-emerald-300">
@@ -962,8 +1021,8 @@ export function OnuPanel({
           </div>
         )}
         <p className="pt-3 text-[11px] leading-relaxed text-gray-500">
-          Authorizing registers the ONU and carries its traffic on the VLAN above inside the OLT.
-          Nothing is set on the ONU itself, so it works with VLAN switched off.
+          Authorizing registers the ONU on the OLT and sets how its traffic is carried, as chosen above.
+          Nothing is changed inside the customer&apos;s ONU.
         </p>
       </div>
     )

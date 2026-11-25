@@ -310,6 +310,7 @@ export const gcom: OltDriver = {
   },
 
   async onuAction(target, creds, id, action): Promise<void> {
+    if (action.kind === 'service') throw new CliError('A GCOM sets up its ONUs by itself; their VLAN is set on the OLT profile.')
     if (!ONU_ID.test(id)) throw new CliError('That is not an ONU on this OLT.')
     if (action.kind === 'remove') {
       throw new CliError(

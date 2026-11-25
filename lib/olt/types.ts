@@ -171,6 +171,45 @@ export type OltOnuAction =
    * passes traffic. Set on that one ONU, never on the group.
    */
   | { kind: 'vsol-fix' }
+  /**
+   * Rewrite how this ONU's traffic is carried (tagged or untagged, which
+   * VLAN) without unregistering it. The customer drops for a few seconds.
+   */
+  | { kind: 'service'; setup: OnuServiceSetup }
+
+/**
+ * How an ONU's traffic reaches the uplink. Two halves that have to agree:
+ *
+ *   onuVlan — the tag the ONU itself puts on its traffic. Null when it sends
+ *   plain traffic and never knows a VLAN exists (VLAN switched off on the
+ *   customer's ONU).
+ *
+ *   vlan — the VLAN the OLT carries it on to the uplink.
+ *
+ * Get the first half wrong and the ONU shows as authorized while nothing
+ * passes: the OLT drops tagged traffic it was told would arrive untagged, and
+ * the other way round.
+ */
+export type OnuServiceSetup = {
+  onuVlan: number | null
+  vlan: number
+  /** The upstream profile to use, when copying a setup that names one. */
+  upProfile?: string | null
+}
+
+/** A setup read off ONUs already working on a port. */
+export type LearnedSetup = OnuServiceSetup & {
+  /** The ONU it was read from, e.g. gpon-onu_1/1/3:5. */
+  from: string
+  /** How many of the ONUs read have this exact setup, out of how many read. */
+  agreeing: number
+  read: number
+  /** The configuration lines a new ONU would be given, to show before it is. */
+  lines?: string[]
+}
+
+/** 'learn': copy whatever the working ONUs on the same port use. */
+export type OnuSetupChoice = OnuServiceSetup | 'learn'
 
 export type OltAuthoriseResult = {
   sn: string
@@ -178,6 +217,10 @@ export type OltAuthoriseResult = {
   ok: boolean
   /** The ONU's new id on the OLT, when it worked. */
   id?: string
+  /** The setup it was given, when it worked. */
+  setup?: OnuServiceSetup
+  /** Where that setup came from, when it was learned. */
+  learnedFrom?: string
   error?: string
 }
 
@@ -190,13 +233,19 @@ export type OltDriver = {
   onuDetail(target: CliTarget, creds: OltLogin, id: string): Promise<OltOnuDetail>
   onuAction(target: CliTarget, creds: OltLogin, id: string, action: OltOnuAction): Promise<void>
   /**
-   * Let ONUs on, carrying their traffic on `vlan` inside the OLT. The ONUs
-   * themselves send and receive plain untagged traffic.
+   * Let ONUs on. Each item may say how its traffic is carried; without one,
+   * plain untagged traffic carried on `vlan`. Drivers that cannot set the
+   * ONU side treat every setup as untagged on `vlan`.
    */
   authorise(
     target: CliTarget,
     creds: OltLogin,
-    items: { port: string; sn: string }[],
+    items: { port: string; sn: string; setup?: OnuSetupChoice }[],
     vlan: number
   ): Promise<OltAuthoriseResult[]>
+  /**
+   * Read how the ONUs already working on a port are set up, so a new one can
+   * be set up the same way. Null when none could be read.
+   */
+  learnSetup?(target: CliTarget, creds: OltLogin, port: string): Promise<LearnedSetup | null>
 }
