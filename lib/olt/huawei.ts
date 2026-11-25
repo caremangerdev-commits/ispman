@@ -2,8 +2,8 @@ import 'server-only'
 
 import { CliError, TelnetSession } from '@/lib/olt/telnet'
 import type {
-  OltAuthoriseResult, OltCard, OltDriver, OltInfo, OltLogin, OltOnu, OltOnuDetail, OltOnuLists,
-  OltPendingOnu, OltPonPort,
+  OltAuthoriseResult, OltCard, OltChangePlan, OltConfigChange, OltDriver, OltInfo, OltLogin, OltOnu,
+  OltOnuDetail, OltOnuLists, OltPendingOnu, OltPonPort,
 } from '@/lib/olt/types'
 
 /**
@@ -399,7 +399,151 @@ async function readDetail(session: TelnetSession, id: string): Promise<OltOnuDet
 const word = (raw: string, max: number) =>
   raw.trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9._@#/-]/g, '').slice(0, max)
 
+/* -------------------------------------------------------------------------- */
+/* The OLT's own settings                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Settings changes on a Huawei SmartAX, from Huawei's command reference
+ * (MA5600T/MA5608T/MA5683T, V800R013 onward). NOT YET RUN ON A REAL UNIT:
+ * ISPMan shows these commands but will not send them until running them is
+ * switched on for the OLT (see features.settingsTested).
+ *
+ *   VLAN:        vlan 200 smart            undo vlan 200
+ *   PON port:    interface gpon 0/1 → shutdown 3 / undo shutdown 3 → quit
+ *   Port label:  interface gpon 0/1 → port desc 3 description To-Pole-14 → quit
+ *   Upload:      dba-profile add profile-name UP-20M type4 max 20480
+ *   Download:    traffic table ip name DOWN-20M cir 20480 pir 20480 priority 0 priority-policy local-setting
+ *
+ * The management VLAN is the one with a vlanif address
+ * (`display ip interface brief`), and a VLAN still carrying ONUs has service
+ * ports (`display service-port vlan 200`).
+ */
+async function planHuawei(session: TelnetSession, change: OltConfigChange): Promise<OltChangePlan> {
+  const say = (s: string): never => {
+    throw new CliError(s)
+  }
+  const valid = (v: number) => Number.isInteger(v) && v >= 2 && v <= 4094
+  const mgmt = async () => {
+    const out = new Map<number, string>()
+    for (const line of (await run(session, 'display ip interface brief')).split('\n')) {
+      const m = /^\s*vlanif(\d+)\s+(\d+\.\d+\.\d+\.\d+)/i.exec(line)
+      if (m) out.set(Number(m[1]), m[2])
+    }
+    return out
+  }
+  const pon = (port: string) => {
+    const m = /^(\d+)\/(\d+)\/(\d+)$/.exec(port)
+    if (!m) say('That is not a PON port.')
+    return { iface: 'interface gpon ' + m![1] + '/' + m![2], n: m![3] }
+  }
+  const name = (raw: string) => {
+    const n = String(raw).trim()
+    if (!/^[A-Za-z0-9_.-]{1,32}$/.test(n)) say('Use letters, numbers, dots, dashes or underscores for the name, up to 32.')
+    return n
+  }
+
+  switch (change.kind) {
+    case 'vlan-add': {
+      const v = Number(change.vlan)
+      if (!valid(v)) say('Choose a VLAN from 2 to 4094.')
+      return { summary: 'Create VLAN ' + v, commands: ['vlan ' + v + ' smart'], undo: ['undo vlan ' + v] }
+    }
+    case 'vlan-remove': {
+      const v = Number(change.vlan)
+      if (!valid(v)) say('Choose a VLAN from 2 to 4094.')
+      const m = await mgmt()
+      if (m.has(v)) say('VLAN ' + v + ' is how this OLT is managed: its address ' + m.get(v) + ' is on it. Removing it would cut ISPMan, and you, off from the OLT.')
+      const ports = (await run(session, 'display service-port vlan ' + v)).split('\n').filter((l) => /\bgpon\b/i.test(l)).length
+      if (ports) say('VLAN ' + v + ' still carries ' + ports + (ports === 1 ? ' ONU' : ' ONUs') + '. Move them to another VLAN first.')
+      return { summary: 'Remove VLAN ' + v, commands: ['undo vlan ' + v], undo: ['vlan ' + v + ' smart'] }
+    }
+    case 'pon-enable':
+    case 'pon-disable': {
+      const p = pon(String(change.port))
+      const off = change.kind === 'pon-disable'
+      return {
+        summary: (off ? 'Switch off ' : 'Switch on ') + 'PON ' + change.port,
+        commands: [p.iface, (off ? 'shutdown ' : 'undo shutdown ') + p.n, 'quit'],
+        undo: [p.iface, (off ? 'undo shutdown ' : 'shutdown ') + p.n, 'quit'],
+        warning: off ? 'Every customer on this port loses service until it is switched back on.' : undefined,
+      }
+    }
+    case 'port-description': {
+      const p = pon(String(change.port))
+      const text = String(change.text).trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9_.@#-]/g, '').slice(0, 60)
+      return {
+        summary: text ? 'Label PON ' + change.port + ' "' + text + '"' : 'Remove the label from PON ' + change.port,
+        commands: [p.iface, text ? 'port desc ' + p.n + ' description ' + text : 'undo port desc ' + p.n, 'quit'],
+        undo: [p.iface, 'undo port desc ' + p.n, 'quit'],
+      }
+    }
+    case 'speed-add': {
+      const n = name(change.name)
+      const mbps = Number(change.mbps)
+      if (!(mbps > 0 && mbps <= 10000)) say('Choose a speed from 1 to 10000 Mbps.')
+      const kbps = Math.round(mbps * 1024)
+      return change.direction === 'up'
+        ? {
+            summary: 'Create upload speed profile ' + n + ' (' + mbps + ' Mbps)',
+            commands: ['dba-profile add profile-name ' + n + ' type4 max ' + kbps],
+            undo: ['dba-profile delete profile-name ' + n],
+          }
+        : {
+            summary: 'Create download speed profile ' + n + ' (' + mbps + ' Mbps)',
+            commands: ['traffic table ip name ' + n + ' cir ' + kbps + ' pir ' + kbps + ' priority 0 priority-policy local-setting'],
+            undo: ['undo traffic table ip name ' + n],
+          }
+    }
+    case 'speed-remove': {
+      const n = name(change.name)
+      return change.direction === 'up'
+        ? { summary: 'Remove upload speed profile ' + n, commands: ['dba-profile delete profile-name ' + n], undo: [] }
+        : { summary: 'Remove download speed profile ' + n, commands: ['undo traffic table ip name ' + n], undo: [] }
+    }
+    default:
+      return say('That change is not available on Huawei OLTs from ISPMan yet.')
+  }
+}
+
 export const huawei: OltDriver = {
+  async planChange(target, creds, change): Promise<OltChangePlan> {
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      await run(session, 'config')
+      return await planHuawei(session, change)
+    } finally {
+      session.close()
+    }
+  },
+
+  async runCommands(target, creds, commands): Promise<number> {
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      await run(session, 'config')
+      let ran = 0
+      for (const command of commands) {
+        const out = await run(session, command)
+        if (failed(out)) {
+          throw new CliError(
+            'The OLT refused "' + command + '" after ' + ran + ' of ' + commands.length + ' commands: ' +
+              (/Failure:\s*(.+)/.exec(out)?.[1]?.trim() ?? 'no reason given')
+          )
+        }
+        ran += 1
+      }
+      await run(session, 'quit')
+      await run(session, 'save')
+      return ran
+    } finally {
+      session.close()
+    }
+  },
+
   brand: 'huawei',
   label: 'Huawei MA5608T / MA5683T / MA5800 (not yet tested on a real unit)',
 

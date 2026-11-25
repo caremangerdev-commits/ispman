@@ -10,7 +10,7 @@ import {
 import { linkOnuToCustomer, linkOnusToCustomers, type OnuCustomer } from '@/lib/data/customer-devices'
 import { routerLoginFor } from '@/lib/data/router-logins'
 import { addOltForward, oltForwardPort, removeOltForward } from '@/lib/olt/forward'
-import { setOnuDefaults, setSignalLevels } from '@/lib/data/olt-defaults'
+import { getSettingsUnlocked, setOnuDefaults, setSettingsUnlocked, setSignalLevels } from '@/lib/data/olt-defaults'
 import { cleanLevels, type SignalLevels } from '@/lib/olt/signal-levels'
 import { oltFeatures, READ_ONLY_NOTE } from '@/lib/olt/features'
 import { oltDriver } from '@/lib/olt'
@@ -953,21 +953,57 @@ function cleanChange(raw: OltConfigChange): OltConfigChange | null {
 /** One change at a time on any one OLT: a second person waits rather than interleaving commands. */
 const oltBusy = new Set<number>()
 
-async function reachForChange(oltId: number) {
+/**
+ * The OLT, if this person may change its settings. `running` says whether
+ * commands may actually be sent: always for a brand whose commands have been
+ * run on a real unit, otherwise only where the owner has switched it on for
+ * this one OLT. Previews never need it — they only read.
+ */
+async function reachForChange(oltId: number, running: boolean) {
   const session = await manager()
   if (!session) return { error: 'You do not have permission to change OLT settings.' } as const
   const r = await reach(session.company.id, Number(oltId))
   if ('error' in r) return { error: r.error ?? 'Could not reach the OLT.' } as const
-  if (!oltFeatures(r.olt.brand).writes) return { error: READ_ONLY_NOTE } as const
-  if (!r.driver.planChange || !r.driver.runCommands) {
-    return { error: 'Changing settings from ISPMan is only available on ZTE OLTs so far.' } as const
+  const f = oltFeatures(r.olt.brand)
+  if (!r.driver.planChange || !r.driver.runCommands || f.settings.kinds.length === 0) {
+    return { error: 'Changing settings from ISPMan is not available on this make of OLT yet.' } as const
+  }
+  if (running) {
+    const allowed = f.settings.tested ? f.writes : await getSettingsUnlocked(session.company.id, r.olt.id)
+    if (!allowed) {
+      return {
+        error: f.settings.tested
+          ? READ_ONLY_NOTE
+          : "ISPMan's commands for this make of OLT come from its manual and have not been run on one yet. " +
+            'Running them is off for this OLT. Switch it on at the top of this tab if you want to try them here.',
+      } as const
+    }
   }
   return { session, r } as const
 }
 
+/** Switch on, or off, running untested settings commands on this one OLT. */
+export async function setOltSettingsUnlocked(oltId: number, on: boolean): Promise<OltActionResult> {
+  const session = await manager()
+  if (!session) return { ok: false, error: 'You do not have permission to change this.' }
+  const found = await oltWithLogin(session.company.id, Number(oltId))
+  if (!found) return { ok: false, error: 'That OLT was not found.' }
+  if (!(await setSettingsUnlocked(session.company.id, found.olt.id, on === true))) {
+    return { ok: false, error: 'Could not save that. Migration 0069 may not be applied.' }
+  }
+  await logEvent({
+    type: 'olt_settings_unlocked',
+    tag: '[olt]',
+    details: 'Running untested settings commands switched ' + (on ? 'ON' : 'off') + ' for ' + found.olt.name +
+      ' (' + found.olt.brand + ') | by=' + session.profile.email,
+  })
+  revalidatePath(PATH + '/' + found.olt.id)
+  return { ok: true, message: on ? 'On for this OLT.' : 'Off.' }
+}
+
 /** What a change would do — its commands and anything to weigh — without doing it. */
 export async function previewOltChange(oltId: number, change: OltConfigChange): Promise<PlanResult> {
-  const got = await reachForChange(oltId)
+  const got = await reachForChange(oltId, false)
   if ('error' in got) return { ok: false, error: got.error as string }
   const clean = cleanChange(change)
   if (!clean) return { ok: false, error: 'Unknown change.' }
@@ -984,7 +1020,7 @@ export async function previewOltChange(oltId: number, change: OltConfigChange): 
  * ever run on an OLT as a command.
  */
 export async function applyOltChange(oltId: number, change: OltConfigChange): Promise<OltActionResult> {
-  const got = await reachForChange(oltId)
+  const got = await reachForChange(oltId, true)
   if ('error' in got) return { ok: false, error: got.error as string }
   const { session, r } = got
   const clean = cleanChange(change)
@@ -1070,8 +1106,9 @@ export async function undoOltChange(changeId: number): Promise<OltActionResult> 
   if (!row) return { ok: false, error: 'That change was not found.' }
   if (row.undone_at) return { ok: false, error: 'That change has already been undone.' }
   if (row.undo_of != null) return { ok: false, error: 'That was itself an undo. Make the change again instead.' }
+  if (!row.undo?.length) return { ok: false, error: 'That change has no undo. Make the opposite change instead.' }
 
-  const got = await reachForChange(row.olt_id)
+  const got = await reachForChange(row.olt_id, true)
   if ('error' in got) return { ok: false, error: got.error as string }
   const { r } = got
   if (oltBusy.has(r.olt.id)) return { ok: false, error: 'Another change is being made on this OLT. Try again in a moment.' }

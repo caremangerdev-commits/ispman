@@ -32,14 +32,50 @@ export type OltFeatures = {
    * are set up the same way (tagged or not, which VLAN).
    */
   copySetup: boolean
+  /**
+   * The OLT-wide changes on the Settings tab this brand can make (VLANs,
+   * uplinks, PON ports, labels, speed profiles), and whether its commands have
+   * been run on a real unit. Untested: shown, but sent only once running is
+   * switched on for that one OLT by its owner.
+   */
+  settings: { kinds: SettingKind[]; downSpeed: boolean; tested: boolean }
 }
 
+export type SettingKind =
+  | 'vlan-add' | 'vlan-remove' | 'uplink-vlan-add' | 'uplink-vlan-remove' | 'uplink-mode' | 'uplink-pvid'
+  | 'port-description' | 'pon-enable' | 'pon-disable' | 'speed-add' | 'speed-remove'
+
+const ALL_SETTINGS: SettingKind[] = [
+  'vlan-add', 'vlan-remove', 'uplink-vlan-add', 'uplink-vlan-remove', 'uplink-mode', 'uplink-pvid',
+  'port-description', 'pon-enable', 'pon-disable', 'speed-add', 'speed-remove',
+]
+const NONE = { kinds: [] as SettingKind[], downSpeed: false, tested: false }
+
 const FEATURES: Record<string, OltFeatures> = {
-  zte: { cards: true, uplinks: true, vlans: true, authorise: true, writes: true, copySetup: true },
-  huawei: { cards: true, uplinks: false, vlans: false, authorise: true, writes: false, copySetup: false },
-  vsol: { cards: false, uplinks: false, vlans: false, authorise: true, writes: false, copySetup: false },
-  cdata: { cards: false, uplinks: false, vlans: false, authorise: true, writes: true, copySetup: false },
-  gcom: { cards: false, uplinks: false, vlans: false, authorise: false, writes: true, copySetup: false },
+  zte: {
+    cards: true, uplinks: true, vlans: true, authorise: true, writes: true, copySetup: true,
+    settings: { kinds: ALL_SETTINGS, downSpeed: true, tested: true },
+  },
+  huawei: {
+    cards: true, uplinks: false, vlans: false, authorise: true, writes: false, copySetup: false,
+    settings: {
+      kinds: ['vlan-add', 'vlan-remove', 'pon-enable', 'pon-disable', 'port-description', 'speed-add', 'speed-remove'],
+      downSpeed: true,
+      tested: false,
+    },
+  },
+  vsol: { cards: false, uplinks: false, vlans: false, authorise: true, writes: false, copySetup: false, settings: NONE },
+  cdata: {
+    cards: false, uplinks: true, vlans: true, authorise: true, writes: true, copySetup: false,
+    // Read from a real FD1608S-B1's configuration; the commands that change it
+    // have not been run on one yet.
+    settings: {
+      kinds: ['vlan-add', 'vlan-remove', 'uplink-vlan-add', 'uplink-vlan-remove', 'speed-add', 'speed-remove'],
+      downSpeed: false,
+      tested: false,
+    },
+  },
+  gcom: { cards: false, uplinks: false, vlans: false, authorise: false, writes: true, copySetup: false, settings: NONE },
 }
 
 /** Said wherever a change is refused or hidden for a read-only brand. */
@@ -47,5 +83,5 @@ export const READ_ONLY_NOTE =
   'ISPMan only reads this make of OLT for now. Authorizing, rebooting and other changes switch on once it has been tested on a real unit.'
 
 export function oltFeatures(brand: string): OltFeatures {
-  return FEATURES[brand] ?? { cards: true, uplinks: true, vlans: true, authorise: true, writes: false, copySetup: false }
+  return FEATURES[brand] ?? { cards: true, uplinks: true, vlans: true, authorise: true, writes: false, copySetup: false, settings: NONE }
 }

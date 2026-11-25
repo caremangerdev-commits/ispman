@@ -4,9 +4,10 @@ import { useRouter } from 'next/navigation'
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 
 import {
-  applyOltChange, listOltChanges, previewOltChange, undoOltChange, type OltChange,
+  applyOltChange, listOltChanges, previewOltChange, setOltSettingsUnlocked, undoOltChange, type OltChange,
 } from '@/app/actions/olts'
 import { SavedSetups, SignalLevelsSection } from '@/components/network/OltSettingsExtra'
+import { oltFeatures, type SettingKind } from '@/lib/olt/features'
 import type { SignalLevels } from '@/lib/olt/signal-levels'
 import type { OltChangePlan, OltConfigChange, OltInfo } from '@/lib/olt/types'
 
@@ -75,13 +76,21 @@ export async function safe<T extends { ok: boolean }>(call: () => Promise<T>): P
 }
 
 export function OltSettings({
-  oltId, info, signalLevels = null,
+  oltId, brand, info, signalLevels = null, unlocked = false,
 }: {
   oltId: number
+  brand: string
   info: OltInfo | null
   signalLevels?: SignalLevels | null
+  /** The owner has switched on running untested commands on this OLT. */
+  unlocked?: boolean
 }) {
   const router = useRouter()
+  const caps = oltFeatures(brand).settings
+  const can = (k: SettingKind) => caps.kinds.includes(k)
+  // Commands may be sent: tested on this brand, or switched on for this OLT.
+  const [unlockedNow, setUnlockedNow] = useState(unlocked)
+  const runnable = caps.tested || unlockedNow
   const [pending, setPending] = useState<{ change: OltConfigChange; plan: OltChangePlan } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
@@ -92,7 +101,7 @@ export function OltSettings({
   const [newName, setNewName] = useState('')
   const [addTo, setAddTo] = useState<Record<string, { vlan: string; tagged: boolean }>>({})
   const [describing, setDescribing] = useState<{ port: string; text: string } | null>(null)
-  const [speedDir, setSpeedDir] = useState<'up' | 'down'>('down')
+  const [speedDir, setSpeedDir] = useState<'up' | 'down'>(caps.downSpeed ? 'down' : 'up')
   const [speedName, setSpeedName] = useState('')
   const [speedMbps, setSpeedMbps] = useState('')
   const [pvidFor, setPvidFor] = useState<Record<string, string>>({})
@@ -195,8 +204,8 @@ export function OltSettings({
         {pending.plan.commands.join('\n')}
       </pre>
       <div className="mt-3 flex items-center gap-2">
-        <button type="button" onClick={() => void runIt()} disabled={busy === 'run'} className={primary}>
-          {busy === 'run' ? 'Running…' : 'Run on the OLT'}
+        <button type="button" onClick={() => void runIt()} disabled={busy === 'run' || !runnable} className={primary}>
+          {busy === 'run' ? 'Running…' : runnable ? 'Run on the OLT' : 'Running is off for this OLT'}
         </button>
         <button type="button" onClick={() => setPending(null)} disabled={busy === 'run'} className={small}>
           Cancel
@@ -208,6 +217,30 @@ export function OltSettings({
 
   return (
     <div ref={topRef} className="scroll-mt-4 space-y-4 py-2">
+      {!caps.tested ? (
+        <div className="rounded-lg border border-amber-900/60 bg-amber-950/20 px-4 py-3 text-xs text-amber-200">
+          <p>
+            ISPMan&apos;s commands for this make of OLT come from its manual and have not been run on one yet.
+            Every change below shows exactly what it would send; reading it changes nothing.
+          </p>
+          <label className="mt-2 flex items-center gap-2 text-amber-100">
+            <input
+              type="checkbox"
+              checked={unlockedNow}
+              onChange={async (e) => {
+                const on = e.target.checked
+                const res = await safe(() => setOltSettingsUnlocked(oltId, on))
+                if (res.ok) setUnlockedNow(on)
+                else setNote({ ok: false, text: res.error })
+              }}
+            />
+            Let ISPMan run these commands on this OLT
+          </label>
+          <p className="mt-1 text-[11px] text-amber-300/80">
+            Best on a spare or quiet OLT first. Each change can be undone from the list at the bottom.
+          </p>
+        </div>
+      ) : null}
       {note ? (
         <p className={'rounded-lg px-3 py-2 text-xs ' + (note.ok ? 'bg-emerald-950/40 text-emerald-300' : 'bg-red-950/40 text-red-300')}>
           {note.text}
@@ -273,7 +306,7 @@ export function OltSettings({
         </div>
       </Section>
 
-      {uplinks.length ? (
+      {uplinks.length && can('uplink-vlan-add') ? (
         <Section
           title="Uplinks"
           note="Which VLANs each uplink carries to your router. The VLAN this OLT is managed on cannot be taken off a working uplink from here."
@@ -294,18 +327,23 @@ export function OltSettings({
                     <p className="text-xs">
                       <span className="font-semibold text-gray-100">{portShort(u.name)}</span>{' '}
                       <span className="font-mono text-gray-500">{u.name}</span>{' '}
-                      <span className={u.up ? 'text-emerald-300' : u.enabled ? 'text-red-300' : 'text-gray-500'}>
-                        · {u.up ? 'link up' : u.enabled ? 'no link' : 'switched off'}
-                      </span>
+                      {u.linkKnown === false ? null : (
+                        <span className={u.up ? 'text-emerald-300' : u.enabled ? 'text-red-300' : 'text-gray-500'}>
+                          · {u.up ? 'link up' : u.enabled ? 'no link' : 'switched off'}
+                        </span>
+                      )}
+                      {u.mode ? <span className="text-gray-500"> · {u.mode}</span> : null}
                       {u.description ? <span className="text-gray-400"> · {u.description}</span> : null}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => setDescribing({ port: u.name, text: u.description ?? '' })}
-                      className={small}
-                    >
-                      Label
-                    </button>
+                    {can('port-description') ? (
+                      <button
+                        type="button"
+                        onClick={() => setDescribing({ port: u.name, text: u.description ?? '' })}
+                        className={small}
+                      >
+                        Label
+                      </button>
+                    ) : null}
                   </div>
                   {describeEditor(u.name)}
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -359,6 +397,7 @@ export function OltSettings({
                       {busy === 'ua' + u.name ? 'Checking…' : 'Add'}
                     </button>
                   </div>
+                  {can('uplink-mode') ? (
                   <div className="mt-2 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-400">
                     <label className="flex items-center gap-2">
                       Mode
@@ -401,6 +440,7 @@ export function OltSettings({
                       </label>
                     ) : null}
                   </div>
+                  ) : null}
                 </li>
               )
             })}
@@ -408,7 +448,7 @@ export function OltSettings({
         </Section>
       ) : null}
 
-      {pons.length ? (
+      {pons.length && (can('pon-disable') || can('port-description')) ? (
         <Section title="PON ports" note="Switching a port off drops every customer on it until it is switched back on.">
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -437,17 +477,21 @@ export function OltSettings({
                     </td>
                     <td className={td}>{p.description ?? '—'}</td>
                     <td className={td + ' whitespace-nowrap text-right'}>
-                      <button type="button" onClick={() => setDescribing({ port: p.name, text: p.description ?? '' })} className={small}>
-                        Label
-                      </button>{' '}
-                      <button
-                        type="button"
-                        onClick={() => void preview({ kind: p.enabled ? 'pon-disable' : 'pon-enable', port: p.name }, 'pe' + p.name)}
-                        disabled={!!busy}
-                        className={small + (p.enabled ? ' text-amber-300' : ' text-emerald-300')}
-                      >
-                        {busy === 'pe' + p.name ? 'Checking…' : p.enabled ? 'Switch off' : 'Switch on'}
-                      </button>
+                      {can('port-description') ? (
+                        <button type="button" onClick={() => setDescribing({ port: p.name, text: p.description ?? '' })} className={small}>
+                          Label
+                        </button>
+                      ) : null}{' '}
+                      {can('pon-disable') ? (
+                        <button
+                          type="button"
+                          onClick={() => void preview({ kind: p.enabled ? 'pon-disable' : 'pon-enable', port: p.name }, 'pe' + p.name)}
+                          disabled={!!busy}
+                          className={small + (p.enabled ? ' text-amber-300' : ' text-emerald-300')}
+                        >
+                          {busy === 'pe' + p.name ? 'Checking…' : p.enabled ? 'Switch off' : 'Switch on'}
+                        </button>
+                      ) : null}
                     </td>
                   </tr>
                   {describing?.port === p.name ? (
@@ -502,7 +546,7 @@ export function OltSettings({
         })}
         <div className="flex flex-wrap items-center gap-2">
           <select value={speedDir} onChange={(e) => setSpeedDir(e.target.value === 'up' ? 'up' : 'down')} className={field}>
-            <option value="down">Download</option>
+            {caps.downSpeed ? <option value="down">Download</option> : null}
             <option value="up">Upload</option>
           </select>
           <input

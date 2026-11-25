@@ -62,3 +62,24 @@ export async function setSignalLevels(companyId: number, oltId: number, levels: 
     .eq('id', oltId)
   return !error
 }
+
+/** Whether the owner has switched on running untested settings commands on this OLT (0069). */
+export async function getSettingsUnlocked(companyId: number, oltId: number): Promise<boolean> {
+  const { data, error } = await tenantClient()
+    .from('olts')
+    .select('settings_unlocked')
+    .eq('company_id', companyId)
+    .eq('id', oltId)
+    .maybeSingle()
+  if (error || !data) return false
+  return (data as { settings_unlocked: boolean | null }).settings_unlocked === true
+}
+
+export async function setSettingsUnlocked(companyId: number, oltId: number, on: boolean): Promise<boolean> {
+  const { error } = await tenantClient()
+    .from('olts')
+    .update({ settings_unlocked: on })
+    .eq('company_id', companyId)
+    .eq('id', oltId)
+  return !error
+}

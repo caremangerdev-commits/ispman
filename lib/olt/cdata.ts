@@ -2,8 +2,8 @@ import 'server-only'
 
 import { CliError, TelnetSession } from '@/lib/olt/telnet'
 import type {
-  OltAuthoriseResult, OltDriver, OltInfo, OltLogin, OltOnu, OltOnuDetail, OltOnuLists,
-  OltPendingOnu, OltPonPort,
+  OltAuthoriseResult, OltChangePlan, OltConfigChange, OltDriver, OltInfo, OltLogin, OltOnu, OltOnuDetail,
+  OltOnuLists, OltPendingOnu, OltPonPort,
 } from '@/lib/olt/types'
 
 /**
@@ -42,11 +42,11 @@ const STOPS = new RegExp(
   'i'
 )
 
-async function run(session: TelnetSession, command: string): Promise<string> {
+async function run(session: TelnetSession, command: string, waitMs?: number): Promise<string> {
   session.send(command)
   let out = ''
   for (let i = 0; i < 400; i += 1) {
-    const chunk = await session.until(STOPS, 'running "' + command + '"')
+    const chunk = await session.until(STOPS, 'running "' + command + '"', waitMs)
     out += chunk
     if (MORE.test(chunk)) session.send(' ')
     else if (ASKS_YES_NO.test(chunk)) session.send('y')
@@ -241,6 +241,247 @@ const word = (raw: string, max: number) =>
 
 const lastLine = (text: string) => text.trim().split('\n').pop()?.trim() || 'The OLT refused that.'
 
+/* -------------------------------------------------------------------------- */
+/* The OLT's own settings                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Read from `show current-config`, as a real FD1608S-B1 (V3.2.24) prints it:
+ *
+ *   dba-profile profile-id 1 profile-name dba-profile_1
+ *     type4 max 1024000
+ *     commit
+ *    exit
+ *   vlan 1,20
+ *   interface ge 0/0
+ *    vlan mode 1 trunk
+ *    vlan trunk 1 20
+ *   exit
+ *   interface vlanif 1
+ *    ip address 10.10.4.3 23
+ *
+ * VLANs live in one list, uplinks are numbered inside `interface ge 0/0`
+ * (and `xge 0/0`), upload speed is a DBA profile with a number and a name,
+ * and the VLAN with an address on it is how the OLT is managed. The
+ * configuration also carries ONU serials and settings, which nothing here
+ * keeps.
+ */
+type CdataUplink = { name: string; group: 'ge' | 'xge'; port: number; mode: string; tagged: number[] }
+type CdataConfig = {
+  vlans: number[]
+  uplinks: CdataUplink[]
+  dba: { id: number; name: string; raw: string; kbps: number | null }[]
+  mgmt: Map<number, string>
+  /** Every line, for "is this still used" checks. */
+  lines: string[]
+}
+
+function vlanList(text: string): number[] {
+  const out: number[] = []
+  for (const part of text.split(',')) {
+    const r = /^\s*(\d+)\s*(?:-\s*(\d+))?\s*$/.exec(part)
+    if (!r) continue
+    for (let v = Number(r[1]); v <= Number(r[2] ?? r[1]) && out.length < 4096; v += 1) out.push(v)
+  }
+  return out
+}
+
+function parseConfig(text: string): CdataConfig {
+  const lines = text.replace(/\r/g, '').split('\n')
+  const vlans: number[] = []
+  const uplinks = new Map<string, CdataUplink>()
+  const dba: CdataConfig['dba'] = []
+  const mgmt = new Map<number, string>()
+  let group: 'ge' | 'xge' | null = null
+  let vlanif: number | null = null
+  let profile: { id: number; name: string } | null = null
+
+  const uplink = (g: 'ge' | 'xge', n: number) => {
+    const name = g + '0/0/' + n
+    let u = uplinks.get(name)
+    if (!u) {
+      u = { name, group: g, port: n, mode: 'access', tagged: [] }
+      uplinks.set(name, u)
+    }
+    return u
+  }
+
+  for (const raw of lines) {
+    const line = raw.trim()
+    let m: RegExpExecArray | null
+    if ((m = /^vlan ([\d,\s-]+)$/.exec(line))) vlans.push(...vlanList(m[1]))
+    if ((m = /^interface (ge|xge) 0\/0$/.exec(line))) {
+      group = m[1] as 'ge' | 'xge'
+      continue
+    }
+    if ((m = /^interface vlanif (\d+)$/.exec(line))) {
+      vlanif = Number(m[1])
+      continue
+    }
+    if ((m = /^dba-profile profile-id (\d+) profile-name (\S+)/.exec(line))) {
+      profile = { id: Number(m[1]), name: m[2] }
+      continue
+    }
+    if (line === 'exit') {
+      group = null
+      vlanif = null
+      profile = null
+      continue
+    }
+    if (profile && (m = /^(type\d .+)$/.exec(line))) {
+      const k = /(\d+)\s*$/.exec(m[1])
+      dba.push({ ...profile, raw: m[1].trim(), kbps: k ? Number(k[1]) : null })
+      continue
+    }
+    if (vlanif != null && (m = /^ip address (\d+\.\d+\.\d+\.\d+)/.exec(line))) mgmt.set(vlanif, m[1])
+    if (group) {
+      if ((m = /^vlan mode (\d+) (\S+)$/.exec(line))) uplink(group, Number(m[1])).mode = m[2]
+      else if ((m = /^vlan trunk (\d+) ([\d,\s-]+)$/.exec(line))) uplink(group, Number(m[1])).tagged.push(...vlanList(m[2]))
+      else if ((m = /^port (\d+) /.exec(line))) uplink(group, Number(m[1]))
+    }
+  }
+  return { vlans: [...new Set(vlans)].sort((a, b) => a - b), uplinks: [...uplinks.values()], dba, mgmt, lines }
+}
+
+async function readConfig(session: TelnetSession): Promise<CdataConfig> {
+  // The whole configuration: a few seconds on a small box, longer on a full one.
+  const text = await run(session, 'show current-config', 60_000)
+  if (refused(text) && !/Current configuration/i.test(text)) {
+    throw new CliError('The OLT did not show its configuration.')
+  }
+  return parseConfig(text)
+}
+
+/** For the OLT reading: VLANs, uplinks and upload profiles. Never fails the reading. */
+async function configForInfo(session: TelnetSession): Promise<Pick<OltInfo, 'vlans' | 'uplinks' | 'speedProfiles'>> {
+  try {
+    const c = await readConfig(session)
+    return {
+      vlans: c.vlans.map((id) => ({
+        id,
+        name: null,
+        description: c.mgmt.has(id) ? 'Management (' + c.mgmt.get(id) + ')' : null,
+        untagged: null,
+        tagged: c.uplinks.filter((u) => u.tagged.includes(id)).map((u) => u.name).join(' ') || null,
+      })),
+      uplinks: c.uplinks.map((u) => ({
+        name: u.name,
+        enabled: true,
+        // Its link is not in the configuration; shown as not read rather than down.
+        up: false,
+        linkKnown: false,
+        medium: u.group === 'xge' ? 'fibre' : 'copper',
+        duplex: null,
+        description: null,
+        inBps: null,
+        outBps: null,
+        mode: u.mode,
+      })),
+      speedProfiles: c.dba.map((d) => ({ name: d.name, direction: 'up', kbps: d.kbps, raw: d.raw })),
+    }
+  } catch {
+    return {}
+  }
+}
+
+const CDATA_UPLINK = /^(x?ge)0\/0\/(\d+)$/
+
+async function planCdata(session: TelnetSession, change: OltConfigChange): Promise<OltChangePlan> {
+  const say = (s: string): never => {
+    throw new CliError(s)
+  }
+  const c = await readConfig(session)
+  const valid = (v: number) => Number.isInteger(v) && v >= 2 && v <= 4094
+  const usedBy = (pattern: RegExp) => c.lines.filter((l) => pattern.test(l.trim()) && !l.trim().startsWith('#')).length
+
+  switch (change.kind) {
+    case 'vlan-add': {
+      const v = Number(change.vlan)
+      if (!valid(v)) say('Choose a VLAN from 2 to 4094.')
+      if (c.vlans.includes(v)) say('VLAN ' + v + ' already exists on this OLT.')
+      return { summary: 'Create VLAN ' + v, commands: ['vlan ' + v], undo: ['no vlan ' + v] }
+    }
+    case 'vlan-remove': {
+      const v = Number(change.vlan)
+      if (!valid(v)) say('Choose a VLAN from 2 to 4094.')
+      if (!c.vlans.includes(v)) say('There is no VLAN ' + v + ' on this OLT.')
+      if (c.mgmt.has(v)) {
+        say('VLAN ' + v + ' is how this OLT is managed: its address ' + c.mgmt.get(v) + ' is on it. Removing it would cut ISPMan, and you, off from the OLT.')
+      }
+      const onUplinks = c.uplinks.filter((u) => u.tagged.includes(v)).length
+      const inProfiles = usedBy(new RegExp('(?:gem mapping .*vlan|gemport \\d+ vlan|translation|user-vlan)\\s+' + v + '\\b'))
+      if (onUplinks || inProfiles) {
+        say(
+          'VLAN ' + v + ' is still in use: ' +
+            [onUplinks ? onUplinks + ' uplink' + (onUplinks === 1 ? '' : 's') : '', inProfiles ? inProfiles + ' profile setting' + (inProfiles === 1 ? '' : 's') : '']
+              .filter(Boolean)
+              .join(' and ') +
+            '. Move them to another VLAN first.'
+        )
+      }
+      return { summary: 'Remove VLAN ' + v, commands: ['no vlan ' + v], undo: ['vlan ' + v] }
+    }
+    case 'uplink-vlan-add':
+    case 'uplink-vlan-remove': {
+      const m = CDATA_UPLINK.exec(String(change.port))
+      const u = c.uplinks.find((x) => x.name === change.port)
+      if (!m || !u) say('That is not an uplink port on this OLT.')
+      const v = Number(change.vlan)
+      const iface = 'interface ' + u!.group + ' 0/0'
+      if (change.kind === 'uplink-vlan-add') {
+        if (!c.vlans.includes(v)) say('There is no VLAN ' + v + ' on this OLT yet. Create it first.')
+        if (u!.tagged.includes(v)) say(u!.name + ' already carries VLAN ' + v + '.')
+        if (u!.mode !== 'trunk') say(u!.name + ' is in ' + u!.mode + ' mode. ISPMan adds VLANs to trunk ports on C-Data so far.')
+        if (!change.tagged) say('On C-Data, ISPMan adds VLANs tagged so far. Choose tagged.')
+        return {
+          summary: 'Carry VLAN ' + v + ' tagged on ' + u!.name,
+          commands: [iface, 'vlan trunk ' + u!.port + ' ' + v, 'exit'],
+          undo: [iface, 'no vlan trunk ' + u!.port + ' ' + v, 'exit'],
+        }
+      }
+      if (!u!.tagged.includes(v)) say(u!.name + ' does not carry VLAN ' + v + '.')
+      if (c.mgmt.has(v)) {
+        say('VLAN ' + v + ' carries this OLT\'s management (' + c.mgmt.get(v) + '). Taking it off an uplink could cut ISPMan, and you, off from the OLT.')
+      }
+      return {
+        summary: 'Stop carrying VLAN ' + v + ' on ' + u!.name,
+        commands: [iface, 'no vlan trunk ' + u!.port + ' ' + v, 'exit'],
+        undo: [iface, 'vlan trunk ' + u!.port + ' ' + v, 'exit'],
+      }
+    }
+    case 'speed-add': {
+      if (change.direction !== 'up') say('Download profiles are not available on C-Data from ISPMan yet. Upload profiles are.')
+      const name = String(change.name).trim()
+      if (!/^[A-Za-z0-9_.-]{1,32}$/.test(name)) say('Use letters, numbers, dots, dashes or underscores for the name, up to 32.')
+      if (c.dba.some((d) => d.name === name)) say('There is already an upload profile called ' + name + '.')
+      const mbps = Number(change.mbps)
+      if (!(mbps > 0 && mbps <= 10000)) say('Choose a speed from 1 to 10000 Mbps.')
+      const id = Math.max(-1, ...c.dba.map((d) => d.id)) + 1
+      const kbps = Math.round(mbps * 1024)
+      return {
+        summary: 'Create upload speed profile ' + name + ' (' + mbps + ' Mbps)',
+        commands: ['dba-profile profile-id ' + id + ' profile-name ' + name, 'type4 max ' + kbps, 'commit', 'exit'],
+        undo: ['no dba-profile profile-id ' + id],
+      }
+    }
+    case 'speed-remove': {
+      if (change.direction !== 'up') say('Download profiles are not available on C-Data from ISPMan yet.')
+      const d = c.dba.find((x) => x.name === change.name)
+      if (!d) say('There is no upload profile called ' + change.name + '.')
+      if (d!.id === 0) say(d!.name + ' is the OLT\'s default profile and cannot be removed.')
+      const uses = usedBy(new RegExp('dba-profile-id\\s+' + d!.id + '\\b'))
+      if (uses) say(d!.name + ' is used by ' + uses + ' line profile setting' + (uses === 1 ? '' : 's') + '. Move them to another profile first.')
+      return {
+        summary: 'Remove upload speed profile ' + d!.name,
+        commands: ['no dba-profile profile-id ' + d!.id],
+        undo: ['dba-profile profile-id ' + d!.id + ' profile-name ' + d!.name, d!.raw, 'commit', 'exit'],
+      }
+    }
+    default:
+      return say('That change is not available on C-Data OLTs from ISPMan yet.')
+  }
+}
+
 export const cdata: OltDriver = {
   brand: 'cdata',
   label: 'C-Data FD1601S / FD1604 / FD1608 / FD1616',
@@ -269,6 +510,7 @@ export const cdata: OltDriver = {
           outBps: null,
         })
       }
+      const settings = await configForInfo(session)
       // `show version` on V3.2.24:
       //   Software version V3.2.24
       //   GPON OLT uptime is 0 weeks, 5 days, 9 hours, 11 minutes.
@@ -278,11 +520,44 @@ export const cdata: OltDriver = {
         version: /Software version\s+(\S+)/i.exec(version)?.[1] ?? null,
         uptime: /uptime is\s+([^\n]+?)\.?\s*$/im.exec(version)?.[1] ?? null,
         cards: [],
-        uplinks: [],
+        uplinks: settings.uplinks ?? [],
         ponPorts,
-        vlans: [],
+        vlans: settings.vlans ?? [],
+        speedProfiles: settings.speedProfiles,
         onus: { authorised: onus.length, unauthorised: pending.length, offline: onus.filter((o) => !o.online).length },
       }
+    } finally {
+      session.close()
+    }
+  },
+
+  async planChange(target, creds, change): Promise<OltChangePlan> {
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      return await planCdata(session, change)
+    } finally {
+      session.close()
+    }
+  },
+
+  async runCommands(target, creds, commands): Promise<number> {
+    const session = new TelnetSession(target)
+    await session.open()
+    try {
+      await login(session, creds)
+      let ran = 0
+      for (const command of commands) {
+        const out = await run(session, command)
+        if (refused(out)) {
+          const said = out.split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? ''
+          throw new CliError('The OLT refused "' + command + '" after ' + ran + ' of ' + commands.length + ' commands: ' + said)
+        }
+        ran += 1
+      }
+      await run(session, 'save', 60_000)
+      return ran
     } finally {
       session.close()
     }

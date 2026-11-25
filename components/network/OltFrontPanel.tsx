@@ -135,10 +135,11 @@ function PonCage({ pon, selected, onPick }: { pon: PanelPon; selected: boolean; 
 }
 
 function UplinkCage({ up, onPick }: { up: OltUplink; onPick?: () => void }) {
-  const light: Light = !up.enabled ? 'idle' : up.up ? 'on' : 'down'
+  // Unlit when the OLT's link state was not read, rather than showing it as down.
+  const light: Light = !up.enabled || up.linkKnown === false ? 'idle' : up.up ? 'on' : 'down'
   const p = place(up.name)
   const ten = /^x/i.test(up.name)
-  const said = (ten ? '10G uplink ' : 'Uplink ') + p.port + ': ' + (!up.enabled ? 'switched off' : up.up ? 'link up' : 'no link') +
+  const said = (ten ? '10G uplink ' : 'Uplink ') + p.port + ': ' + (!up.enabled ? 'switched off' : up.linkKnown === false ? 'link not read' : up.up ? 'link up' : 'no link') +
     (up.description ? ' (' + up.description + ')' : '')
   // Copper is an RJ45 jack with its link and activity lights in the top
   // corners; fibre is an SFP cage with its light above, like the PON ports.

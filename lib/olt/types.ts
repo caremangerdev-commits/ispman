@@ -32,7 +32,9 @@ export type OltUplink = {
   /** Bits per second, averaged by the OLT over its own short window. */
   inBps: number | null
   outBps: number | null
-  /** trunk, hybrid or access. ZTE only, read from its settings. */
+  /** False when the OLT's link state was not read (up is then meaningless). */
+  linkKnown?: boolean
+  /** trunk, hybrid or access, read from its settings. */
   mode?: string
   /** Where untagged traffic coming in goes. ZTE only. */
   pvid?: number

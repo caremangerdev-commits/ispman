@@ -116,7 +116,7 @@ function Field({ label, value }: { label: string; value: string }) {
 
 export function OltDetail({
   olt, routerName, checkedText, canManage, autoAuthorise = false, saved = null, focus = null, onuDefaults = null,
-  signalLevels = null,
+  signalLevels = null, settingsUnlocked = false,
 }: {
   olt: Olt
   routerName: string
@@ -131,6 +131,7 @@ export function OltDetail({
   /** How new ONUs were last set up on this OLT. */
   onuDefaults?: OnuDefaults | null
   signalLevels?: SignalLevels | null
+  settingsUnlocked?: boolean
 }) {
   const [auto, setAuto] = useState(autoAuthorise)
   const [autoNote, setAutoNote] = useState<string | null>(null)
@@ -219,7 +220,7 @@ export function OltDetail({
     { id: 'outages', label: 'Outages' },
     has.uplinks ? { id: 'uplinks', label: 'Uplinks', count: uplinks.length } : null,
     has.vlans ? { id: 'vlans', label: 'VLANs', count: vlans.length } : null,
-    has.copySetup && has.writes && canManage ? { id: 'settings', label: 'Settings' } : null,
+    has.settings.kinds.length > 0 && canManage ? { id: 'settings', label: 'Settings' } : null,
   ] as ({ id: Tab; label: string; count?: number } | null)[]).filter(
     (t): t is { id: Tab; label: string; count?: number } => t !== null
   )
@@ -443,7 +444,7 @@ export function OltDetail({
         ) : null}
 
         {tab === 'outages' ? <OutagePanel oltId={olt.id} canManage={canManage} /> : null}
-        {tab === 'settings' ? <OltSettings oltId={olt.id} info={info ?? null} signalLevels={signalLevels} /> : null}
+        {tab === 'settings' ? <OltSettings oltId={olt.id} brand={olt.brand} info={info ?? null} signalLevels={signalLevels} unlocked={settingsUnlocked} /> : null}
         {tab === 'pon' ? (
           pon.length === 0 ? (
             <Empty>No PON ports read yet. They appear once a PON card is set up on the OLT.</Empty>
@@ -504,7 +505,7 @@ export function OltDetail({
                     <tr key={u.name} className="border-t border-gray-800">
                       <td className={td + ' font-mono'}>{u.name}</td>
                       <td className={td}>{u.medium === 'fibre' ? 'Fibre (SFP)' : 'Copper'}</td>
-                      <td className={td}><PortState enabled={u.enabled} up={u.up} /></td>
+                      <td className={td}>{u.linkKnown === false ? <span className="text-gray-500">Not read</span> : <PortState enabled={u.enabled} up={u.up} />}</td>
                       <td className={td + ' tabular-nums'}>{rate(u.inBps)}</td>
                       <td className={td + ' tabular-nums'}>{rate(u.outBps)}</td>
                       <td className={td}>{u.description ?? '—'}</td>
