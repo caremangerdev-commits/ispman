@@ -2,7 +2,7 @@ import 'server-only'
 
 import { effectiveBillDay, ymd } from '@/lib/billing'
 import {
-  addMonthsYmd, buildBillDocument, type BillChargeRow, type BillDocument, type BillInput,
+  addMonthsYmd, buildBillDocument, type BillChargeRow, type BillCreditRow, type BillDocument, type BillInput,
   type BillPaymentRow,
 } from '@/lib/bill/document'
 import type { BillTemplate } from '@/lib/bill/settings'
@@ -186,6 +186,35 @@ export async function loadBill(
       }))
   }
 
+  // --- Credits and discounts (0072): each its own line, with its period.
+  let credits: BillCreditRow[] = []
+  {
+    const { data, error } = await db
+      .from('customer_credits')
+      .select('credited_on, amount, reason, period_start, period_end, carried_balance_before, carried_balance_after')
+      .eq('company_id', companyId)
+      .eq('customer_id', customerId)
+      .order('credited_on', { ascending: true })
+      .limit(500)
+    if (error && !MISSING.has(error.code ?? '')) throw new Error('Bill: credits load failed: ' + error.message)
+    credits = ((data ?? []) as {
+      credited_on: string
+      amount: number | string
+      reason: string
+      period_start: string | null
+      period_end: string | null
+      carried_balance_before: number | string
+      carried_balance_after: number | string
+    }[]).map((r) => ({
+      date: r.credited_on,
+      amount: Number(r.amount),
+      reason: r.reason,
+      period: r.period_start && r.period_end ? { start: r.period_start, end: r.period_end } : null,
+      carriedBefore: Number(r.carried_balance_before),
+      carriedAfter: Number(r.carried_balance_after),
+    }))
+  }
+
   // --- How to pay: in person, by bank, and online when a gateway is on.
   const [gateway, portalUrl] = await Promise.all([
     caps.paymentGateways ? getEnabledGateway(companyId).catch(() => null) : Promise.resolve(null),
@@ -227,6 +256,7 @@ export async function loadBill(
     },
     payments,
     charges,
+    credits,
     howToPay: { inPerson: settings.paymentNote, bank: settings.bankDetails, online },
     month: opts.month ?? null,
     paymentId: opts.paymentId ?? null,

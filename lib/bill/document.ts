@@ -66,6 +66,16 @@ export type BillChargeRow = {
   creditApplied: number
 }
 
+/** A credit or discount on the account (migration 0072). */
+export type BillCreditRow = {
+  date: Ymd
+  amount: number
+  reason: string
+  period: { start: Ymd; end: Ymd } | null
+  carriedBefore: number
+  carriedAfter: number
+}
+
 export type BillInput = {
   template: BillTemplate
   /** The company's own today. */
@@ -96,6 +106,8 @@ export type BillInput = {
   payments: BillPaymentRow[]
   /** Engine charges, any order. Empty for a company billed by hand. */
   charges: BillChargeRow[]
+  /** Credits and discounts, any order. Absent before migration 0072. */
+  credits?: BillCreditRow[]
   howToPay: { inPerson: string | null; bank: string | null; online: string | null }
   /** A calendar month to bill, 'YYYY-MM', or null for the current period. */
   month?: string | null
@@ -260,6 +272,7 @@ type Event =
   | { kind: 'charge'; date: Ymd; order: number; row: BillChargeRow; before: number; after: number }
   | { kind: 'billed'; date: Ymd; order: number; amount: number; before: number; after: number }
   | { kind: 'adjusted'; date: Ymd; order: number; amount: number; before: number; after: number }
+  | { kind: 'credit'; date: Ymd; order: number; row: BillCreditRow; before: number; after: number }
 
 /**
  * Every recorded movement of the carried balance, oldest first, with the
@@ -277,6 +290,9 @@ function history(input: BillInput): Event[] {
   }
   for (const c of input.charges) {
     raw.push({ kind: 'charge', date: c.date, order: 0, row: c, before: c.carriedBefore, after: c.carriedAfter })
+  }
+  for (const c of input.credits ?? []) {
+    raw.push({ kind: 'credit', date: c.date, order: 0.5, row: c, before: c.carriedBefore, after: c.carriedAfter })
   }
   // Same day: charges before payments, as a bill is raised before it is paid;
   // then by the payment's id, the order the till took them.
@@ -339,6 +355,14 @@ function chargeLine(input: BillInput, e: Event): BillLine | null {
       gross: e.amount,
     }
   }
+  if (e.kind === 'credit') {
+    return {
+      description: e.row.reason,
+      detail: 'Credit',
+      period: e.row.period,
+      gross: -e.row.amount,
+    }
+  }
   return null
 }
 
@@ -351,7 +375,7 @@ function addressLines(text: string | null): string[] {
 }
 
 function lineGross(e: Event): number {
-  return e.kind === 'charge' ? e.row.amount : e.kind === 'billed' ? e.amount : 0
+  return e.kind === 'charge' ? e.row.amount : e.kind === 'billed' ? e.amount : e.kind === 'credit' ? -e.row.amount : 0
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +406,9 @@ export function buildBillDocument(input: BillInput): BillDocument {
   const inPeriod = (d: Ymd) => d >= period.start && d <= period.end
 
   // --- Statement lines and summary ------------------------------------------
-  const periodCharges = events.filter((e) => (e.kind === 'charge' || e.kind === 'billed') && inPeriod(e.date))
+  // Credits print as their own lines, below the charges they reduce.
+  const periodCharges = events.filter((e) => (e.kind === 'charge' || e.kind === 'billed' || e.kind === 'credit') && inPeriod(e.date))
+    .sort((a, b) => (a.kind === 'credit' ? 1 : 0) - (b.kind === 'credit' ? 1 : 0))
   let lines = periodCharges.map((e) => chargeLine(input, e)).filter((l): l is BillLine => l !== null)
 
   // THE ONE LINE DRAWN FROM THE PLAN. A prepaid company billed by hand draws
@@ -394,14 +420,14 @@ export function buildBillDocument(input: BillInput): BillDocument {
   // so the strip still adds up, and `lineFromPlan` lets the page say so.
   let lineFromPlan = false
   const expiry = input.customer.expiry
-  if (lines.length === 0 && input.customer.monthlyCharge > EPS && expiry && expiry >= period.start) {
+  if (lines.every((l) => l.gross < 0) && input.customer.monthlyCharge > EPS && expiry && expiry >= period.start) {
     const start = addMonthsYmd(expiry, -1)
     lines = [{
       description: serviceName(input.customer.plan),
       detail: planDetail(input.customer.plan),
       period: { start, end: expiry },
       gross: round2(input.customer.monthlyCharge),
-    }]
+    }, ...lines]
     lineFromPlan = true
   }
 
@@ -452,6 +478,15 @@ export function buildBillDocument(input: BillInput): BillDocument {
         date: e.date,
         detail: 'Payment received' + (e.row.method ? ' · ' + e.row.method : '') +
           (credit > EPS ? ' · ' + money(credit, input.settings.currencySymbol) + ' held as credit' : ''),
+        charge: null,
+        payment: e.row.amount,
+        balance: e.after,
+      }
+    }
+    if (e.kind === 'credit') {
+      return {
+        date: e.date,
+        detail: e.row.reason + (e.row.period ? ' · ' + dayMonth(e.row.period.start) + ' – ' + dayMonth(e.row.period.end) : ''),
         charge: null,
         payment: e.row.amount,
         balance: e.after,

@@ -13,6 +13,7 @@ import {
 } from '@/app/actions/customers'
 import Link from 'next/link'
 
+import { AddCreditModal } from '@/components/customers/AddCreditModal'
 import { AdjustBalanceModal } from '@/components/customers/AdjustBalanceModal'
 import { CorrectExpiryModal } from '@/components/customers/CorrectExpiryModal'
 import { ExpiryRuleRow } from '@/components/customers/ExpiryRuleRow'
@@ -846,6 +847,13 @@ export function CustomerDetail({
                   </span>
                 ) : null}
 
+                {showAdjustBalance && !editing ? (
+                  <AddCreditModal
+                    customerId={c.id}
+                    customerName={name}
+                    monthlyCharge={Number(money?.monthly_rate ?? 0)}
+                  />
+                ) : null}
                 {showAdjustBalance && !editing ? (
                   <AdjustBalanceModal
                     customerId={c.id}
