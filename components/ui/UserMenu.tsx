@@ -2,11 +2,10 @@
 
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, KeyRound, LogOut, Settings, ShieldCheck } from 'lucide-react'
+import { ChevronDown, KeyRound, LogOut, Settings } from 'lucide-react'
 
 import { signOut } from '@/app/actions/auth'
 import { ChangePasswordModal } from '@/components/ui/ChangePasswordModal'
-import { TwoStepModal } from '@/components/ui/TwoStepModal'
 
 export function UserMenu({
   name,
@@ -21,7 +20,6 @@ export function UserMenu({
 }) {
   const [open, setOpen] = useState(false)
   const [changingPassword, setChangingPassword] = useState(false)
-  const [twoStep, setTwoStep] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -88,18 +86,6 @@ export function UserMenu({
             Change Password
           </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false)
-              setTwoStep(true)
-            }}
-            className={linkClass + ' w-full'}
-          >
-            <ShieldCheck className="h-4 w-4" aria-hidden />
-            Two-step Login
-          </button>
-
           <div className="my-1 border-t border-gray-800" />
 
           <form action={signOut}>
@@ -117,7 +103,6 @@ export function UserMenu({
       {changingPassword ? (
         <ChangePasswordModal onClose={() => setChangingPassword(false)} />
       ) : null}
-      {twoStep ? <TwoStepModal onClose={() => setTwoStep(false)} /> : null}
     </div>
   )
 }

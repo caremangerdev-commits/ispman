@@ -5,7 +5,7 @@ import { useActionState, useEffect, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 
 import {
-  createUser, resetUserPassword, resetUserTwoStep, toggleUserActive, updateUser, updateUserRole,
+  createUser, resetUserPassword, toggleUserActive, updateUser, updateUserRole,
   type UserResult,
 } from '@/app/actions/users'
 import { Modal, settingsInput, StatusPill } from '@/components/settings/Modal'
@@ -376,43 +376,6 @@ function ResetPasswordForm({ user, onDone }: { user: CompanyUser; onDone: () => 
   )
 }
 
-/** For staff who lost the phone with their code app: two-step login off. */
-function ResetTwoStep({ user }: { user: CompanyUser }) {
-  const [busy, setBusy] = useState(false)
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
-  const run = async () => {
-    setBusy(true)
-    setNote(null)
-    try {
-      const res = await resetUserTwoStep(user.id)
-      setNote(res.ok
-        ? { ok: true, text: res.removed ? 'Two-step login is off for ' + user.email + '. They sign in with their password alone.' : user.email + ' does not have two-step login on.' }
-        : { ok: false, text: res.error })
-    } catch {
-      setNote({ ok: false, text: 'Could not reach ISPMan. Reload the page and try again.' })
-    }
-    setBusy(false)
-  }
-  return (
-    <div className="mt-5 space-y-2 border-t border-gray-800 pt-4">
-      <p className="text-xs font-medium text-gray-300">Lost their phone?</p>
-      <p className="text-[11px] text-gray-500">
-        Turns off two-step login for this person, so they can sign in with their password alone. They can turn it back on
-        from their account menu.
-      </p>
-      <button
-        type="button"
-        onClick={() => void run()}
-        disabled={busy}
-        className="rounded-lg bg-gray-800 px-3 py-1.5 text-xs font-semibold text-gray-300 transition hover:bg-gray-700 disabled:opacity-60"
-      >
-        {busy ? 'Turning off…' : 'Turn off two-step login'}
-      </button>
-      {note ? <p className={'text-xs ' + (note.ok ? 'text-emerald-300' : 'text-red-300')}>{note.text}</p> : null}
-    </div>
-  )
-}
-
 export function UsersManager({
   users,
   roles,
@@ -614,7 +577,6 @@ export function UsersManager({
       {resetting ? (
         <Modal title="Reset Password" onClose={() => setResetting(null)}>
           <ResetPasswordForm user={resetting} onDone={() => setResetting(null)} />
-          <ResetTwoStep user={resetting} />
         </Modal>
       ) : null}
     </div>

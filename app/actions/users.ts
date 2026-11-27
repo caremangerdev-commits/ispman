@@ -113,7 +113,7 @@ async function loadTarget(
 async function logUserEvent(opts: {
   companyId: number
   actorId: number
-  type: 'user_email_changed' | 'user_password_reset' | 'user_role_changed' | 'user_two_step_reset'
+  type: 'user_email_changed' | 'user_password_reset' | 'user_role_changed'
   details: string
 }) {
   await logEvent({
@@ -495,41 +495,6 @@ export async function resetUserPassword(
 
   revalidatePath('/dashboard/settings/users')
   return { ok: true }
-}
-
-/**
- * Turns two-step login off for someone else, for staff who lost the phone with
- * their authenticator app. Same authority and same checks as resetting their
- * password, and logged the same way. They sign in with their password alone
- * and can turn it back on from their account menu.
- */
-export async function resetUserTwoStep(id: number): Promise<{ ok: true; removed: number } | { ok: false; error: string }> {
-  const { company, profile } = await authorize()
-  const target = await loadTarget(company.id, profile.role, profile.id, id)
-  if (!target.ok) return { ok: false, error: target.error }
-
-  const authUser = await findAuthUser(target.row.email)
-  if (!authUser) return { ok: false, error: 'No sign-in account exists for ' + target.row.email + '.' }
-
-  const admin = createAdminClient()
-  const { data, error } = await admin.auth.admin.mfa.listFactors({ userId: authUser.id })
-  if (error) return { ok: false, error: 'Could not read their two-step login: ' + error.message }
-  const factors = data?.factors ?? []
-  for (const f of factors) {
-    const { error: delError } = await admin.auth.admin.mfa.deleteFactor({ userId: authUser.id, id: f.id })
-    if (delError) return { ok: false, error: 'Could not turn it off: ' + delError.message }
-  }
-  if (factors.length > 0) {
-    await logUserEvent({
-      companyId: company.id,
-      actorId: profile.id,
-      type: 'user_two_step_reset',
-      details:
-        'Two-step login for ' + target.row.email + ' (user #' + id + ') was turned off by ' +
-        (profile.first_name ?? 'an operator'),
-    })
-  }
-  return { ok: true, removed: factors.length }
 }
 
 /** Looks up an auth account by email; GoTrue has no direct get-by-email. */
