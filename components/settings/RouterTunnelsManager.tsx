@@ -524,11 +524,14 @@ function Guide({
           )}
         </Step>
 
-        {tunnel && !keySaved && oneLine ? (
+        {/* Shown until the router is up, key saved or not: ISPMan makes the
+            key when the command is issued, so a router whose paste failed has
+            a key and still needs this one line, not the numbered steps. */}
+        {tunnel && oneLine ? (
           <li>
             <SetupLine tunnelId={tunnel.id} />
             <p className="mt-4 text-xs text-gray-500">
-              Or do it a step at a time:
+              Only if the single command cannot be used: do it a step at a time.
             </p>
           </li>
         ) : null}
