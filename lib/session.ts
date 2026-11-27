@@ -87,6 +87,13 @@ export const getSession = cache(async (): Promise<Session> => {
 
   if (!authUser?.email) redirect('/login')
 
+  // Two-step login (Supabase TOTP). A person who has it on and has only given
+  // their password holds a level-1 session: every page and action resolves
+  // through here, so none of them run until the code is given. Read from the
+  // session token, no network call.
+  const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel()
+  if (aal && aal.nextLevel === 'aal2' && aal.currentLevel !== 'aal2') redirect('/login/verify')
+
   // Reads go through the tenant client because RLS has no policies yet — see
   // lib/supabase/tenant.ts. Scoped to the verified session's own email.
   const db = tenantClient()
