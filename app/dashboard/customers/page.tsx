@@ -116,6 +116,19 @@ export default async function CustomersPage({ searchParams }: PageProps<'/dashbo
         <p className="text-sm text-gray-500">
           {total} {total === 1 ? 'customer' : 'customers'}
           {hasAnyFilter(filters) ? ' matching your filters' : ' in total'}
+          {/* A plain link: the route sends the file, the page stays put. Same
+              filters as the list, so the file is what is on screen. */}
+          {mayImport && total > 0 ? (
+            <>
+              {' · '}
+              <a
+                href={'/api/customers/export?' + new URLSearchParams(base).toString()}
+                className="font-medium text-blue-400 hover:underline"
+              >
+                Export to Excel (CSV)
+              </a>
+            </>
+          ) : null}
         </p>
 
         <div className="flex flex-wrap items-center gap-1.5">

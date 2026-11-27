@@ -5,12 +5,21 @@ import { redirect } from 'next/navigation'
 import { ACTIVITY_GROUPS, listActivity, typeLabel, type ActivityGroup } from '@/lib/data/activity'
 import { getGeneralSettings } from '@/lib/data/company'
 import { formatDateTime, humaniseLogDetail } from '@/lib/format'
+import { readLogDetail } from '@/lib/log-detail'
 import { getSession } from '@/lib/session'
 import { canOpenSetting } from '@/lib/settings-nav'
 
 export const metadata: Metadata = { title: 'Activity Log · ISPMan' }
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/
+
+/** A background job's row names no person, and an operator's is marked. */
+function who(details: string, userName: string | null): string {
+  const d = readLogDetail(details)
+  if (d.viaSystem) return 'ISPMan (automatic)'
+  if (d.viaPlatform) return 'Platform operator'
+  return userName ?? 'ISPMan (automatic)'
+}
 
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? ''
 
@@ -103,7 +112,7 @@ export default async function ActivityPage({ searchParams }: PageProps<'/dashboa
               <li key={r.id} className="grid gap-1 px-5 py-3 sm:grid-cols-[11rem_1fr]">
                 <div className="text-xs text-gray-500">
                   <p>{formatDateTime(r.at, settings.timezone)}</p>
-                  <p className="mt-0.5 text-gray-400">{r.userName ?? 'ISPMan (automatic)'}</p>
+                  <p className="mt-0.5 text-gray-400">{who(r.details, r.userName)}</p>
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-gray-100">
@@ -117,7 +126,7 @@ export default async function ActivityPage({ searchParams }: PageProps<'/dashboa
                       </>
                     ) : null}
                   </p>
-                  <p className="mt-0.5 break-words text-sm text-gray-400">{humaniseLogDetail(r.details)}</p>
+                  <p className="mt-0.5 break-words text-sm text-gray-400">{humaniseLogDetail(r.details).split(' | ').join(' · ')}</p>
                 </div>
               </li>
             ))}
