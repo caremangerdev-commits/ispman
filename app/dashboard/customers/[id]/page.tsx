@@ -235,6 +235,7 @@ export default async function CustomerDetailPage({
           customerName={fullName(customer)}
           charges={charges}
           categories={paymentCategories}
+          canAdd={can(profile.role, 'add_charge')}
           canManage={can(profile.role, 'manage_charges')}
         />
       ) : null}

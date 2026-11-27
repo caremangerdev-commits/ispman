@@ -7,6 +7,8 @@ import { TicketDetail } from '@/components/tickets/TicketDetail'
 import { TicketReply } from '@/components/tickets/TicketReply'
 import { listAgents } from '@/lib/data/checkoff'
 import { getTicket, listTicketMessages } from '@/lib/data/tickets'
+import { listPaymentCategories } from '@/lib/data/payment-categories'
+import { can } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { requirePermission } from '@/lib/session'
 import { ticketRights } from '@/lib/ticket-rules'
@@ -31,6 +33,12 @@ export default async function TicketDetailPage({
   ])
 
   if (!ticket) notFound()
+  // The work done on a visit can be charged as the job is closed: offered for
+  // a ticket on a customer, to anyone who may add a charge (technicians too).
+  const chargeTypes =
+    ticket.customer_id !== null && caps.charges && can(profile.role, 'add_charge')
+      ? await listPaymentCategories(company.id)
+      : null
   const mayReply = ticketRights(profile.role, profile.id, ticket).reply
 
   const fmt = (v: string) =>
@@ -46,7 +54,7 @@ export default async function TicketDetailPage({
         Back to tickets
       </Link>
 
-      <TicketDetail ticket={ticket} agents={agents} role={profile.role} userId={profile.id} />
+      <TicketDetail ticket={ticket} agents={agents} role={profile.role} userId={profile.id} chargeTypes={chargeTypes} />
 
       {caps.portalTier2 ? (
         <section className="space-y-3 rounded-lg border border-gray-800 bg-gray-900/40 p-4">

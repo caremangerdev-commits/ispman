@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
+import { insertCharge } from '@/lib/data/charge-write'
 import { getChargesById } from '@/lib/data/charges'
 import { findOrCreatePaymentCategory } from '@/lib/data/payment-categories'
 import { formatCurrency } from '@/lib/format'
@@ -17,7 +18,8 @@ import { tenantClient } from '@/lib/supabase/tenant'
  *
  * NEITHER TOUCHES THE SERVICE BALANCE, THE EXPIRY OR RADIUS. A charge is money
  * owed that the till can take payment against (app/actions/payments.ts), and
- * nothing else. Both actions are manager-and-above (manage_charges) and both
+ * nothing else. Adding is open to technicians too (add_charge); voiding is
+ * manager-and-above (manage_charges). Both
  * write a log row, so neither joins the list of changes nobody can trace.
  */
 
@@ -44,10 +46,10 @@ function back(customerId: number, message: string, kind?: 'error'): never {
   )
 }
 
-async function authorize() {
+async function authorize(permission: 'add_charge' | 'manage_charges' = 'manage_charges') {
   const session = await getSession()
-  if (!can(session.profile.role, 'manage_charges')) {
-    throw new Error('Forbidden: role "' + session.profile.role + '" lacks manage_charges.')
+  if (!can(session.profile.role, permission)) {
+    throw new Error('Forbidden: role "' + session.profile.role + '" lacks ' + permission + '.')
   }
   return session
 }
@@ -65,7 +67,9 @@ async function customerName(companyId: number, customerId: number): Promise<stri
 }
 
 export async function addCharge(formData: FormData) {
-  const { company, profile } = await authorize()
+  // Technicians may add a charge (the work they did); voiding stays with the
+  // office (manage_charges), so a wrong charge is put right by a manager.
+  const { company, profile } = await authorize('add_charge')
 
   const customerId = Number(str(formData, 'customer_id'))
   if (!Number.isInteger(customerId)) return
@@ -113,37 +117,19 @@ export async function addCharge(formData: FormData) {
   }
 
   const value = round2(amount)
-  const { data: inserted, error } = await tenantClient()
-    .from('customer_charges')
-    .insert({
-      company_id: company.id,
-      customer_id: customerId,
-      payment_category_id: categoryId,
-      amount: value,
-      note: note || null,
-      charged_on: chargedOn,
-      created_by: profile.id,
-      created_by_name: displayName(profile),
-    })
-    .select('id')
-    .single()
-
-  if (error) back(customerId, 'Could not add the charge: ' + error.message, 'error')
-  const chargeId = (inserted as unknown as { id: number }).id
-
-  await logEvent({
+  const res = await insertCharge({
+    companyId: company.id,
+    profile,
+    byName: displayName(profile),
     customerId,
-    type: 'charge_added',
-    tag: '[charges]',
-    details:
-      'One-off charge added for ' + clean(name) +
-      ' | charge=#' + chargeId +
-      ' | category=' + clean(categoryName) +
-      ' | amount=' + formatCurrency(value) +
-      ' | charged_on=' + chargedOn +
-      ' | by=' + profile.email +
-      (note ? ' | note=' + clean(note) : ''),
+    customerName: name as string,
+    categoryId: categoryId as number,
+    categoryName,
+    amount: value,
+    chargedOn,
+    note: note || null,
   })
+  if (!res.ok) back(customerId, 'Could not add the charge: ' + res.error, 'error')
 
   revalidatePath('/dashboard/customers/' + customerId)
   revalidatePath('/dashboard/payments/new')

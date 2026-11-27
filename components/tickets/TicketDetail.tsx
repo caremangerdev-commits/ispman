@@ -77,12 +77,15 @@ export function TicketDetail({
   agents,
   role,
   userId,
+  chargeTypes = null,
 }: {
   ticket: TicketDetailRow
   agents: AgentOption[]
   role: Role
   /** The signed-in user, for "is this ticket theirs". */
   userId: number
+  /** What a visit can be charged as. Null: no charge offered on resolve. */
+  chargeTypes?: { id: number; name: string }[] | null
 }) {
   const [editing, setEditing] = useState(false)
   const [resolving, setResolving] = useState(false)
@@ -210,6 +213,37 @@ export function TicketDetail({
                 capture them now. Skip it and the ticket resolves as normal.
               </p>
               <GpsField id="ticket-gps" name="gps" existing={null} />
+            </div>
+          ) : null}
+
+          {/* Optional: the work done on the visit, charged to the customer. It
+              shows at the till and on their next bill. Blank charges nothing. */}
+          {chargeTypes ? (
+            <div className="mt-4 rounded-lg border border-gray-800 bg-gray-900/60 p-3">
+              <p className="text-xs font-medium text-gray-300">
+                Charge for this visit
+                <span className="ml-1.5 font-normal text-gray-500">Optional</span>
+              </p>
+              <p className="mb-2 mt-0.5 text-[11px] leading-snug text-gray-500">
+                If the customer pays for this work, enter it here. It goes on their account as a one-off charge, shows at
+                the till and on their next bill. Leave the amount empty to charge nothing.
+              </p>
+              {chargeTypes.length === 0 ? (
+                <p className="text-[11px] text-amber-400/90">
+                  No charge types yet. The office adds them (e.g. Service call) when taking an other payment or adding a charge.
+                </p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-[1fr_8rem]">
+                  <select name="charge_category" aria-label="What the charge is for" defaultValue="" className={inputCls}>
+                    <option value="" disabled>What it is for…</option>
+                    {chargeTypes.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                  <input name="charge_amount" type="number" step="0.01" min="0" inputMode="decimal" placeholder="Amount" aria-label="Amount" className={inputCls} />
+                  <input name="charge_note" maxLength={500} placeholder="What was done (prints on the bill)" aria-label="What was done" className={inputCls + ' sm:col-span-2'} />
+                </div>
+              )}
             </div>
           ) : null}
 

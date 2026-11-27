@@ -5,7 +5,9 @@ import { redirect } from 'next/navigation'
 
 import { logEvent } from '@/lib/audit'
 import { readTicketPhoto, uploadTicketPhoto } from '@/lib/data/portal-tickets'
+import { insertCharge } from '@/lib/data/charge-write'
 import { addTicketMessage, getTicket } from '@/lib/data/tickets'
+import { formatCurrency } from '@/lib/format'
 import { hasGps, parseGps } from '@/lib/gps'
 import { can, type Permission } from '@/lib/permissions'
 import { getSchemaCapabilities } from '@/lib/schema'
@@ -502,11 +504,67 @@ export async function resolveTicket(
   // somebody else while they were typing, still gets their ticket closed. The
   // outcome is reported in the toast instead of thrown as an error.
   const note = await captureLocation(company.id, profile, existing, formData)
+  const chargeNote = await captureCharge(company.id, profile, existing, formData)
 
   revalidateTicket(id)
   if (existing.customer_id) revalidatePath('/dashboard/customers/' + existing.customer_id)
 
-  toast('/dashboard/tickets/' + id, 'Ticket resolved.' + note)
+  toast('/dashboard/tickets/' + id, 'Ticket resolved.' + note + chargeNote)
+}
+
+/**
+ * A charge for the visit, if the technician entered one while resolving: the
+ * work done, put on the customer as a one-off charge (0025). It shows at the
+ * till and on their next bill. Optional like the location, and never undoes
+ * the resolve: a problem is reported in the toast. A manager voids a wrong one.
+ */
+async function captureCharge(
+  companyId: number,
+  profile: Parameters<typeof displayName>[0] & { id: number; role: Parameters<typeof can>[0] },
+  ticket: { id: number; title: string; customer_id: number | null },
+  formData: FormData
+): Promise<string> {
+  const raw = str(formData, 'charge_amount')
+  if (!raw) return ''
+  if (ticket.customer_id === null) return ''
+  if (!can(profile.role, 'add_charge')) return ' The charge was not added: you cannot add charges.'
+  const caps = await getSchemaCapabilities()
+  if (!caps.charges) return ''
+
+  const amount = Math.round(Number(raw) * 100) / 100
+  if (!Number.isFinite(amount) || amount <= 0) return ' The charge was not added: the amount must be above zero.'
+  const categoryId = Number(str(formData, 'charge_category'))
+  if (!Number.isInteger(categoryId) || categoryId <= 0) return ' The charge was not added: choose what it is for.'
+  const note = str(formData, 'charge_note').slice(0, 500)
+
+  try {
+    const db = tenantClient()
+    const [{ data: cat }, { data: cust }] = await Promise.all([
+      db.from('payment_categories').select('name').eq('company_id', companyId).eq('id', categoryId).maybeSingle(),
+      db.from('customers').select('first_name, last_name').eq('company_id', companyId).eq('id', ticket.customer_id).maybeSingle(),
+    ])
+    if (!cat || !cust) return ' The charge was not added: that type or customer no longer exists.'
+    const c = cust as { first_name: string | null; last_name: string | null }
+    const categoryName = (cat as { name: string }).name
+    const res = await insertCharge({
+      companyId,
+      profile,
+      byName: displayName(profile),
+      customerId: ticket.customer_id,
+      customerName: [c.first_name, c.last_name].filter(Boolean).join(' ') || 'Customer #' + ticket.customer_id,
+      categoryId,
+      categoryName,
+      amount,
+      chargedOn: new Date().toISOString().slice(0, 10),
+      note: note || 'Ticket #' + ticket.id + ': ' + ticket.title.slice(0, 200),
+      source: 'ticket #' + ticket.id,
+    })
+    if (!res.ok) return ' The charge was not added: ' + res.error
+    revalidatePath('/dashboard/payments/new')
+    return ' ' + categoryName + ' charge of ' + formatCurrency(amount) + ' added to the customer.'
+  } catch {
+    return ' The charge was not added. Add it from the customer page.'
+  }
 }
 
 /**

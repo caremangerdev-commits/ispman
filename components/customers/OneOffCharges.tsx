@@ -52,12 +52,16 @@ export function OneOffCharges({
   customerName,
   charges,
   categories,
+  canAdd,
   canManage,
 }: {
   customerId: number
   customerName: string
   charges: CustomerCharge[]
   categories: PaymentCategory[]
+  /** May put a charge on: technicians too. */
+  canAdd: boolean
+  /** May void one: the office only. */
   canManage: boolean
 }) {
   const { money } = useMoney()
@@ -77,7 +81,7 @@ export function OneOffCharges({
               : 'Nothing outstanding · separate from the service balance'}
           </p>
         </div>
-        {canManage ? (
+        {canAdd ? (
           <button
             type="button"
             onClick={() => setAdding(true)}

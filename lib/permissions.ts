@@ -52,6 +52,7 @@ export type Permission =
   | 'extend_disconnect_customer'
   | 'correct_expiry'
   | 'adjust_carried_balance'
+  | 'add_charge'
   | 'manage_charges'
   | 'record_payment'
   | 'view_all_payments'
@@ -154,6 +155,8 @@ const PERMISSIONS: Record<Permission, Role[]> = {
   // Putting a one-off charge on a customer, or voiding one, decides what they
   // owe — the same authority as adjusting the carried balance, for the same
   // reason. Anyone who may record a payment may TAKE money against a charge.
+  // Technicians record the work they did on a visit; only the office voids.
+  add_charge: ['super_admin', 'company_admin', 'manager', 'technician', 'field_technician'],
   manage_charges: ['super_admin', 'company_admin', 'manager'],
   // TECHNICIAN REMOVED (owner, 21 Oct 2026), with view_customer_billing_history
   // and for the same reason: taking a payment shows what the customer owes, and
