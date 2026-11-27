@@ -817,7 +817,9 @@ export function CustomerDetail({
           <Row
             label="Balance"
             value={
-              <span className="inline-flex items-center gap-2">
+              // Wraps, so the two buttons drop to their own line on a narrow
+              // card instead of pushing off the edge of the page.
+              <span className="inline-flex flex-wrap items-center justify-end gap-2">
                 {/* To the cent, never rounded, and negative when the customer is
                     owed money. */}
                 <span
@@ -848,19 +850,19 @@ export function CustomerDetail({
                 ) : null}
 
                 {showAdjustBalance && !editing ? (
-                  <AddCreditModal
-                    customerId={c.id}
-                    customerName={name}
-                    monthlyCharge={Number(money?.monthly_rate ?? 0)}
-                  />
-                ) : null}
-                {showAdjustBalance && !editing ? (
-                  <AdjustBalanceModal
-                    customerId={c.id}
-                    customerName={name}
-                    currentBalance={owed}
-                    monthlyCharge={Number(money?.monthly_rate ?? 0)}
-                  />
+                  <span className="flex basis-full flex-wrap justify-end gap-2">
+                    <AdjustBalanceModal
+                      customerId={c.id}
+                      customerName={name}
+                      currentBalance={owed}
+                      monthlyCharge={Number(money?.monthly_rate ?? 0)}
+                    />
+                    <AddCreditModal
+                      customerId={c.id}
+                      customerName={name}
+                      monthlyCharge={Number(money?.monthly_rate ?? 0)}
+                    />
+                  </span>
                 ) : null}
               </span>
             }
