@@ -709,7 +709,16 @@ export function routerSetupLine(baseUrl: string, token: string): string {
  * the whole thing, exactly as /import runs the downloaded copy.
  */
 export function routerOneLine(script: string): string {
-  const parts: string[] = []
+  const parts: string[] = [':local ifn "' + ROUTER_INTERFACE + '"']
+  // THE TUNNEL IS NAMED THROUGH A VARIABLE. A line pasted into the terminal is
+  // checked whole before any of it runs, and a literal interface=wg-ispman is
+  // checked against the interfaces that exist at that moment. On a router that
+  // has never had the tunnel, that is none: the paste stops with "input does
+  // not match any value of interface" and nothing at all is done (Smartcomm's
+  // second Keysham router, 27 Nov 2026). A variable is only read when its step
+  // runs, by which point the step before has made the tunnel. /import runs a
+  // file line by line, so the downloaded copy never had this problem.
+  script = script.replace(/\b((?:in-|out-)?interface)=wg-ispman\b/g, '$1=$ifn')
   for (const raw of script.split('\n')) {
     let line = raw.trim()
     if (!line || line.startsWith('#')) continue
