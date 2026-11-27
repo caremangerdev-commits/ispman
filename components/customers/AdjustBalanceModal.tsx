@@ -55,10 +55,16 @@ export function AdjustBalanceModal({
   const [value, setValue] = useState(String(currentBalance))
   const [reason, setReason] = useState('')
 
-  const parsed = Number(value)
+  // A plain text box, not a number box: a number box refuses "3,500" and
+  // "J$3500" outright (some browsers by blocking the keys, others by silently
+  // emptying the value), so staff could not type a balance the way they write
+  // one. Commas, spaces and the currency sign are dropped here and only the
+  // cleaned figure is submitted.
+  const cleaned = value.replace(/[^0-9.-]/g, '')
+  const parsed = Number(cleaned)
   // Negative is allowed: the customer is owed money. Saved as typed, to the
   // cent (adjustCarriedBalance; needs migration 0027).
-  const valid = value !== '' && Number.isFinite(parsed)
+  const valid = cleaned !== '' && cleaned !== '-' && cleaned !== '.' && Number.isFinite(parsed)
   const unchanged = valid && Math.round(parsed * 100) === Math.round(currentBalance * 100)
   const ready = valid && !unchanged && reason.trim() !== ''
 
@@ -98,11 +104,12 @@ export function AdjustBalanceModal({
                 <label htmlFor="adjust_balance_value" className="block text-xs font-medium text-gray-400">
                   Corrected Balance
                 </label>
+                <input type="hidden" name="balance" value={valid ? String(parsed) : ''} />
                 <input
                   id="adjust_balance_value"
-                  name="balance"
-                  type="number"
-                  step="0.01"
+                  type="text"
+                  inputMode="decimal"
+                  autoComplete="off"
                   required
                   value={value}
                   onChange={(e) => setValue(e.target.value)}

@@ -50,7 +50,8 @@ export function AddCreditModal({
 
   const days = start && end ? daysBetween(start, end) : 0
   const suggested = days && monthlyCharge > 0 ? Math.round((monthlyCharge * days * 100) / daysInMonth(start)) / 100 : 0
-  const value = Number(amount)
+  // Text, not a number box, so "1,200" and "J$1200" can be typed; see AdjustBalanceModal.
+  const value = Number(amount.replace(/[^0-9.]/g, '')) || 0
   const ready = amount !== '' && value > 0 && reason.trim() !== '' && (!start === !end) && (!start || days > 0)
 
   const save = async () => {
@@ -137,7 +138,7 @@ export function AddCreditModal({
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1.5">
                     <label htmlFor="credit_amount" className={label}>Amount off</label>
-                    <input id="credit_amount" type="number" step="0.01" min="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} className={settingsInput} />
+                    <input id="credit_amount" type="text" inputMode="decimal" autoComplete="off" value={amount} onChange={(e) => setAmount(e.target.value)} className={settingsInput} />
                   </div>
                   <div className="space-y-1.5">
                     <label htmlFor="credit_on" className={label}>Date on the account</label>
