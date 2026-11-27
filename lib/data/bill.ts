@@ -1,8 +1,9 @@
 import 'server-only'
 
+import { listOpenCharges } from '@/lib/data/charges'
 import { effectiveBillDay, ymd } from '@/lib/billing'
 import {
-  addMonthsYmd, buildBillDocument, type BillChargeRow, type BillCreditRow, type BillDocument, type BillInput,
+  addMonthsYmd, buildBillDocument, type BillChargeRow, type BillCreditRow, type BillOtherCharge, type BillDocument, type BillInput,
   type BillPaymentRow,
 } from '@/lib/bill/document'
 import type { BillTemplate } from '@/lib/bill/settings'
@@ -215,6 +216,15 @@ export async function loadBill(
     }))
   }
 
+  // --- One-off charges still owed (0025): a technician's visit, hardware.
+  const otherCharges: BillOtherCharge[] = (await listOpenCharges(companyId, customerId)).map((c) => ({
+    date: c.chargedOn,
+    description: c.note ? c.category + ': ' + c.note : c.category,
+    amount: c.amount,
+    paid: c.paid,
+    outstanding: c.outstanding,
+  }))
+
   // --- How to pay: in person, by bank, and online when a gateway is on.
   const [gateway, portalUrl] = await Promise.all([
     caps.paymentGateways ? getEnabledGateway(companyId).catch(() => null) : Promise.resolve(null),
@@ -257,6 +267,7 @@ export async function loadBill(
     payments,
     charges,
     credits,
+    otherCharges,
     howToPay: { inPerson: settings.paymentNote, bank: settings.bankDetails, online },
     month: opts.month ?? null,
     paymentId: opts.paymentId ?? null,

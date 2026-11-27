@@ -340,6 +340,49 @@ function totalsBlock(ctx: Ctx, top: number, rows: { label: string; value: number
   return y + 2 * MM
 }
 
+/**
+ * One-off charges still owed (a technician's visit, hardware), under their own
+ * heading after the service charges, and the total to pay with them. Draws
+ * nothing for a customer who owes none.
+ */
+function otherChargesBlock(ctx: Ctx, top: number): number {
+  const { bill } = ctx
+  if (bill.otherCharges.length === 0) return top
+  const page = ctx.doc.page
+  const th = px(11.5)
+  const td = px(13.5)
+  const sub = px(12)
+  const dateX = LEFT + CONTENT * 0.5
+  let y = top + 6 * MM + px(12.5)
+  page.text('Other charges', LEFT, y, px(12.5), { font: 'F2' })
+  y += 3 * MM + th
+  page.text('Description', LEFT, y, th, { font: 'F2', colour: MUTED })
+  page.text('Date', dateX, y, th, { font: 'F2', colour: MUTED })
+  page.text('Still owed', RIGHT, y, th, { font: 'F2', colour: MUTED, align: 'right' })
+  y += 2.5 * MM
+  for (const c of bill.otherCharges) {
+    page.hline(LEFT, RIGHT, y, 0.75, HAIR)
+    const rowTop = y + 3 * MM
+    let yy = rowTop + td * 0.8
+    for (const part of wrapText(c.description, td, false, CONTENT * 0.5 - 6 * MM)) {
+      page.text(part, LEFT, yy, td)
+      yy += td * 1.3
+    }
+    if (c.paid > 0.005) {
+      yy += 0.8 * MM - td * 0.3
+      page.text(ctx.m(c.amount) + ', ' + ctx.m(c.paid) + ' paid', LEFT, yy + sub * 0.5, sub, { colour: MUTED })
+      yy += sub * 1.3
+    }
+    page.text(dayLong(c.date), dateX, rowTop + td * 0.8, td)
+    page.text(ctx.m(c.outstanding), RIGHT, rowTop + td * 0.8, td, { align: 'right' })
+    y = yy + 3 * MM - td * 0.5
+  }
+  return totalsBlock(ctx, y + 6 * MM, [
+    { label: 'Service amount due', value: Math.max(0, bill.summary.totalDue) },
+    { label: 'Other charges', value: bill.otherOwed },
+  ], { label: 'Total to pay', value: bill.totalToPay })
+}
+
 function taxRowLabel(ctx: Ctx): string {
   return ctx.bill.tax.label + ' ' + formatRate(ctx.bill.tax.rate)
 }
@@ -457,7 +500,7 @@ function legal(ctx: Ctx, page: Page) {
 
 function statement(ctx: Ctx) {
   const { bill, doc } = ctx
-  const page = doc.page
+  let page = doc.page
 
   // --- Header: the letterhead, or the generated block ----------------------
   let y: number
@@ -547,8 +590,16 @@ function statement(ctx: Ctx) {
     { label: 'Subtotal', value: bill.totals.net },
     { label: taxRowLabel(ctx), value: bill.totals.tax, tax: true },
   ], { label: sameAsDue ? 'Total due' : 'Total this period', value: bill.totals.gross })
+  y = otherChargesBlock(ctx, y)
 
   // --- How to pay ------------------------------------------------------------
+  // Other charges can push the page past one sheet: carry on over the page
+  // rather than print over the footer.
+  if (y + 40 * MM > FLOOR) {
+    legal(ctx, page)
+    page = doc.addPage()
+    y = TOP
+  }
   y = payBlock(ctx, y, 'How to pay', false)
 
   // --- The tear-off stub, at the foot so it tears off cleanly ---------------
@@ -562,11 +613,16 @@ function statement(ctx: Ctx) {
       : '')
   const noteLines = wrapText(note, noteSize, false, 90 * MM)
   const stubH = 5 * MM + Math.max(noteLines.length * noteLead, px(11) * 1.6 + px(19))
+  if (y + 11 * MM + stubH > FLOOR) {
+    legal(ctx, page)
+    page = doc.addPage()
+    y = TOP
+  }
   const stubTop = Math.max(y + 11 * MM, FLOOR - stubH)
   page.hline(LEFT, RIGHT, stubTop, 1.1, LINE, 3)
   noteLines.forEach((l, i) => page.text(l, LEFT, stubTop + 5 * MM + (i + 0.8) * noteLead, noteSize, { colour: MUTED }))
   const stubBottom = stubTop + stubH
-  page.text(ctx.m(Math.max(0, s.totalDue)), RIGHT, stubBottom - 1, px(19), { font: 'F2', align: 'right' })
+  page.text(ctx.m(bill.totalToPay), RIGHT, stubBottom - 1, px(19), { font: 'F2', align: 'right' })
   page.text('Account ' + bill.customer.accountNumber + ' · Invoice ' + bill.number, RIGHT,
     stubBottom - px(19) - 2, px(11), { colour: MUTED, align: 'right' })
 
@@ -710,6 +766,15 @@ function ledger(ctx: Ctx) {
       { label: 'Charges in period', value: net },
       { label: taxRowLabel(ctx), value: Math.round((lg.charged - net) * 100) / 100, tax: true },
     ], { label: 'Total charged', value: lg.charged })
+  }
+
+  if (bill.otherCharges.length > 0) {
+    if (y + (30 + bill.otherCharges.length * 9) * MM > FLOOR) {
+      legal(ctx, page)
+      page = doc.addPage()
+      y = TOP
+    }
+    y = otherChargesBlock({ ...ctx, doc }, y)
   }
 
   if (y + 35 * MM > FLOOR) {

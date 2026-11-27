@@ -76,6 +76,20 @@ export type BillCreditRow = {
   carriedAfter: number
 }
 
+/**
+ * A one-off charge still owed: a technician's visit, hardware, a reconnection.
+ * Kept apart from the service balance on purpose (0025: it never decides
+ * access), so the bill lists it under its own heading and adds it to the
+ * total to pay, instead of folding it into the service lines.
+ */
+export type BillOtherCharge = {
+  date: Ymd
+  description: string
+  amount: number
+  paid: number
+  outstanding: number
+}
+
 export type BillInput = {
   template: BillTemplate
   /** The company's own today. */
@@ -108,6 +122,8 @@ export type BillInput = {
   charges: BillChargeRow[]
   /** Credits and discounts, any order. Absent before migration 0072. */
   credits?: BillCreditRow[]
+  /** One-off charges with something still owed. */
+  otherCharges?: BillOtherCharge[]
   howToPay: { inPerson: string | null; bank: string | null; online: string | null }
   /** A calendar month to bill, 'YYYY-MM', or null for the current period. */
   month?: string | null
@@ -171,6 +187,11 @@ export type BillDocument = {
     outstanding: number
   } | null
   serviceRunsTo: Ymd | null
+  /** One-off charges still owed, and their total. Empty for most customers. */
+  otherCharges: BillOtherCharge[]
+  otherOwed: number
+  /** What to hand over: the service amount due plus the one-off charges. */
+  totalToPay: number
   howToPay: { inPerson: string | null; bank: string | null; online: string | null }
   legal: string
   symbol: string
@@ -577,6 +598,9 @@ export function buildBillDocument(input: BillInput): BillDocument {
   // different things.
   const taxRegLine = s.taxRegistered && s.taxRegistrationNumber ? s.taxLabel + ' reg. ' + s.taxRegistrationNumber : null
   const legalBits = [input.company.name, taxIdLine, taxRegLine].filter(Boolean) as string[]
+  const others = (input.otherCharges ?? []).filter((c) => c.outstanding > EPS)
+  const otherOwed = round2(others.reduce((t, c) => t + c.outstanding, 0))
+
   const legal =
     template === 'ledger'
       ? 'Queries about this statement should be raised within 30 days. ' + legalBits.join(' · ')
@@ -623,6 +647,9 @@ export function buildBillDocument(input: BillInput): BillDocument {
     },
     receipt,
     serviceRunsTo: runsTo,
+    otherCharges: others,
+    otherOwed,
+    totalToPay: round2(Math.max(0, totalDue) + otherOwed),
     howToPay: input.howToPay,
     legal,
     symbol: s.currencySymbol,

@@ -55,6 +55,8 @@ export function billEmail(
       [bill.numberLabel, bill.number],
       ['Period', rangeText(bill.period.start, bill.period.end)],
       [due < -0.005 ? 'In credit' : 'Amount due', m(Math.abs(due) < 0.005 ? 0 : Math.abs(due))],
+      ['Other charges', bill.otherOwed > 0.005 ? m(bill.otherOwed) : null],
+      ['Total to pay', bill.otherOwed > 0.005 ? m(bill.totalToPay) : null],
       ['Due by', due > 0.005 && bill.due ? dayLong(bill.due) : null],
       ['Service runs to', bill.serviceRunsTo ? dayLong(bill.serviceRunsTo) : null],
     )
