@@ -25,6 +25,9 @@ const ICONS: Record<SettingsIcon, LucideIcon> = {
 
 export function SettingsNav({ sections }: { sections: SettingsSection[] }) {
   const pathname = usePathname()
+  // Not on the Settings page itself: its cards already list every section,
+  // and a second list beside them only took width from the cards.
+  if (pathname === '/dashboard/settings') return null
 
   return (
     <nav className="w-56 shrink-0" aria-label="Settings">

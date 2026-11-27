@@ -4,8 +4,18 @@ export type SettingsIcon =
   | 'building' | 'gauge' | 'package' | 'tags' | 'users' | 'userCog' | 'messageSquare' | 'receipt'
   | 'network' | 'creditCard' | 'fileText'
 
+/** The headings the Settings page groups its cards under, in order. */
+export const SETTINGS_GROUPS = [
+  { key: 'company', label: 'Company and staff' },
+  { key: 'billing', label: 'Billing and payments' },
+  { key: 'plans', label: 'Plans and services' },
+  { key: 'network', label: 'Network and messages' },
+] as const
+export type SettingsGroup = (typeof SETTINGS_GROUPS)[number]['key']
+
 export type SettingsSection = {
   key: string
+  group: SettingsGroup
   label: string
   href: string
   icon: SettingsIcon
@@ -28,18 +38,20 @@ export type SettingsSection = {
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     key: 'company',
+    group: 'company',
     label: 'General Settings',
     href: '/dashboard/settings/company',
     icon: 'building',
-    description: 'Company profile, branding, regional and network settings.',
+    description: 'Company name, logo and colours, time zone, currency and network settings.',
     permission: 'manage_company_settings',
   },
   {
     key: 'billing',
+    group: 'billing',
     label: 'Billing',
     href: '/dashboard/settings/billing',
     icon: 'receipt',
-    description: 'Billing model and engine, bill and cut-off days, first period, rates and thresholds.',
+    description: 'When bills run, the bill and cut-off days, the first month, and rates.',
     permission: 'manage_company_settings',
   },
   {
@@ -47,23 +59,26 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     // them (owner, 21 Oct 2026). Logo, colour and letterhead are the company's
     // identity everywhere, so they stay in General's Branding card.
     key: 'bill-design',
+    group: 'billing',
     label: 'Bill Design',
     href: '/dashboard/settings/bill-design',
     icon: 'fileText',
-    description: 'The bill template (Statement, Ledger or Receipt), tax line and rate, tax and registration numbers, invoice prefix, bank details, and emailing bills.',
+    description: 'How bills look, tax details, invoice numbers, bank details and emailing bills.',
     permission: 'manage_company_settings',
   },
   {
     key: 'service-plans',
+    group: 'plans',
     label: 'Service Plans',
     href: '/dashboard/settings/service-plans',
     icon: 'gauge',
-    description: 'Speed tiers and their monthly pricing.',
+    description: 'Internet plans, their speeds and monthly prices.',
     permission: 'manage_company_settings',
     needsCatalog: true,
   },
   {
     key: 'additional-services',
+    group: 'plans',
     label: 'Additional Services',
     href: '/dashboard/settings/additional-services',
     icon: 'package',
@@ -73,45 +88,50 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     key: 'misc-categories',
+    group: 'company',
     label: 'Misc Categories',
     href: '/dashboard/settings/misc-categories',
     icon: 'tags',
-    description: 'Classify customers as school, hotel, government and so on.',
+    description: 'Group customers as school, hotel, government and so on.',
     permission: 'manage_company_settings',
     needsCatalog: true,
   },
   {
     key: 'sms',
+    group: 'network',
     label: 'Notifications',
     href: '/dashboard/settings/sms',
     icon: 'messageSquare',
-    description: 'SMS and email: pair a phone, choose which messages send and by which channel, and edit their wording.',
+    description: 'SMS and email to customers: which messages go, how, and what they say.',
     permission: 'manage_company_settings',
     needsSms: true,
   },
   {
     key: 'payments',
+    group: 'billing',
     label: 'Online Payments',
     href: '/dashboard/settings/payments',
     icon: 'creditCard',
-    description: 'The Fygaro gateway that takes card payments from the portal: credentials, the webhook URL, and the on/off switch.',
+    description: 'Card payments from the customer portal, through Fygaro.',
     permission: 'manage_company_settings',
     needsGateways: true,
   },
   {
     key: 'users',
+    group: 'company',
     label: 'Users',
     href: '/dashboard/settings/users',
     icon: 'userCog',
-    description: 'Staff accounts and the roles they hold.',
+    description: 'Staff accounts and what each one can do.',
     permission: 'manage_users',
   },
   {
     key: 'tunnels',
+    group: 'network',
     label: 'Router Tunnels',
     href: '/dashboard/settings/tunnels',
     icon: 'network',
-    description: "WireGuard tunnels that carry each router's RADIUS to the server, from an address that never changes.",
+    description: 'The secure link from each of your routers to ISPMan.',
     permission: 'manage_router_tunnels',
     needsTunnels: true,
   },
