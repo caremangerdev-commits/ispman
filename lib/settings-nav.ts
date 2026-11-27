@@ -2,7 +2,7 @@ import { can, type Permission, type Role } from '@/lib/permissions'
 
 export type SettingsIcon =
   | 'building' | 'gauge' | 'package' | 'tags' | 'users' | 'userCog' | 'messageSquare' | 'receipt'
-  | 'network' | 'creditCard' | 'fileText'
+  | 'network' | 'creditCard' | 'fileText' | 'history'
 
 /** The headings the Settings page groups its cards under, in order. */
 export const SETTINGS_GROUPS = [
@@ -123,6 +123,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     href: '/dashboard/settings/users',
     icon: 'userCog',
     description: 'Staff accounts and what each one can do.',
+    permission: 'manage_users',
+  },
+  {
+    key: 'activity',
+    group: 'company',
+    label: 'Activity Log',
+    href: '/dashboard/settings/activity',
+    icon: 'history',
+    description: 'Everything staff changed, across every customer, payment and setting.',
     permission: 'manage_users',
   },
   {

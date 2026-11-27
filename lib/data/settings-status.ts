@@ -1,6 +1,7 @@
 import 'server-only'
 
 import { BILL_TEMPLATE_LABELS } from '@/lib/bill/settings'
+import { recentActivityCount } from '@/lib/data/activity'
 import { getBillSettings } from '@/lib/data/bill-settings'
 import { getGeneralSettings } from '@/lib/data/company'
 import { getEnabledGateway } from '@/lib/data/payment-gateways'
@@ -47,7 +48,7 @@ const plural = (n: number, one: string, many: string) => n + ' ' + (n === 1 ? on
  */
 export async function settingsStatus(companyId: number): Promise<Record<string, SettingStatus>> {
   const caps = await getSchemaCapabilities()
-  const [general, bill, messaging, gateway, tunnels, handshakes, users, plans, addons, misc] = await Promise.all([
+  const [general, bill, messaging, gateway, tunnels, handshakes, users, plans, addons, misc, recent] = await Promise.all([
     safely(() => getGeneralSettings(companyId)),
     safely(() => getBillSettings(companyId)),
     safely(() => getMessagingSettings(companyId)),
@@ -58,6 +59,7 @@ export async function settingsStatus(companyId: number): Promise<Record<string, 
     caps.catalog ? safely(() => countOf('service_plans', companyId)) : Promise.resolve(null),
     caps.catalog ? safely(() => countOf('additional_services', companyId)) : Promise.resolve(null),
     caps.catalog ? safely(() => countOf('misc_categories', companyId)) : Promise.resolve(null),
+    safely(() => recentActivityCount(companyId)),
   ])
   const out: Record<string, SettingStatus> = {}
 
@@ -118,6 +120,8 @@ export async function settingsStatus(companyId: number): Promise<Record<string, 
   if (plans !== null) out['service-plans'] = plans === 0 ? { text: 'No plans yet', tone: 'attention' } : { text: plural(plans, 'plan', 'plans'), tone: 'off' }
   if (addons !== null) out['additional-services'] = { text: addons === 0 ? 'None yet' : plural(addons, 'add-on', 'add-ons'), tone: 'off' }
   if (misc !== null) out['misc-categories'] = { text: misc === 0 ? 'None yet' : plural(misc, 'category', 'categories'), tone: 'off' }
+
+  if (recent !== null) out.activity = { text: plural(recent, 'change', 'changes') + ' in the last 7 days', tone: 'off' }
 
   return out
 }

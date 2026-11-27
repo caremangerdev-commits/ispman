@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
-  ArrowLeft, Building2, CreditCard, FileText, Gauge, MessageSquare, Network, Package, Receipt, Tags,
+  ArrowLeft, Building2, CreditCard, FileText, Gauge, History, MessageSquare, Network, Package, Receipt, Tags,
   UserCog, Users, type LucideIcon,
 } from 'lucide-react'
 
@@ -21,6 +21,7 @@ const ICONS: Record<SettingsIcon, LucideIcon> = {
   network: Network,
   creditCard: CreditCard,
   fileText: FileText,
+  history: History,
 }
 
 export function SettingsNav({ sections }: { sections: SettingsSection[] }) {

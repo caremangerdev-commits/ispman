@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
 import {
-  Building2, CreditCard, FileText, Gauge, MessageSquare, Network, Package, Receipt, Tags, UserCog,
+  Building2, CreditCard, FileText, Gauge, History, MessageSquare, Network, Package, Receipt, Tags, UserCog,
   Users, type LucideIcon,
 } from 'lucide-react'
 
@@ -24,6 +24,7 @@ const ICONS: Record<SettingsIcon, LucideIcon> = {
   network: Network,
   creditCard: CreditCard,
   fileText: FileText,
+  history: History,
 }
 
 const TONE: Record<StatusTone, { dot: string; text: string }> = {
