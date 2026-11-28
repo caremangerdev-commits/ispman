@@ -90,10 +90,11 @@ export type BillSettings = {
   /** settings.invoice_prefix (0042): put in front of every invoice number, or null. */
   invoicePrefix: string | null
   /**
-   * settings.bill_due_on (0073): what "Due by" prints. 'service_end': the day
-   * service runs out. 'bill_day': the bill day the bill was made on.
+   * settings.bill_due_on (0073, 0074): what "Due by" prints. 'service_end':
+   * the day service runs out. 'month_start': the 1st of the month service runs
+   * out in; the days from there to the cut-off are grace.
    */
-  dueOn: 'service_end' | 'bill_day'
+  dueOn: 'service_end' | 'month_start'
 }
 
 /** Whether a tax line is printed: registered AND a rate to print. */

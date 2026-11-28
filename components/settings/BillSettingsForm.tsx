@@ -341,7 +341,7 @@ export function BillSettingsForm({
           <Field
             label="The bill says it is due"
             htmlFor="bill_due_on"
-            hint="Either way, customers keep service until their service date, as set under Billing."
+            hint="Either way, customers keep service until their service date, as set under Billing. A customer who owes nothing reads Nothing due."
           >
             <select
               id="bill_due_on"
@@ -351,7 +351,7 @@ export function BillSettingsForm({
               className={lockedClass(!locked)}
             >
               <option value="service_end">On the day their service runs out</option>
-              <option value="bill_day">On the bill day</option>
+              <option value="month_start">On the 1st; the days to the cut-off are grace</option>
             </select>
           </Field>
         </Card>

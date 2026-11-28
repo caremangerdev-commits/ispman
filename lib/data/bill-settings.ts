@@ -62,7 +62,7 @@ export async function getBillSettings(companyId: number): Promise<BillSettings> 
 
   // 0073, read on its own so a database without it still gives the rest.
   const dueRes = await db.from('settings').select('bill_due_on').eq('company_id', companyId).maybeSingle()
-  const dueOn = (dueRes.data as { bill_due_on?: string } | null)?.bill_due_on === 'bill_day' ? 'bill_day' : 'service_end'
+  const dueOn = (dueRes.data as { bill_due_on?: string } | null)?.bill_due_on === 'month_start' ? 'month_start' : 'service_end'
 
   const contactAddress = ((companyRes.data as { address?: string | null } | null)?.address ?? '').trim()
   const currency = (s.currency ?? 'JMD').trim() || 'JMD'

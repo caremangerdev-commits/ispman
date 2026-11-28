@@ -111,7 +111,7 @@ export async function saveBillSettings(
   }
 
   const dueOnRaw = formData.get('bill_due_on')
-  const dueOn = dueOnRaw === 'bill_day' ? 'bill_day' : dueOnRaw === 'service_end' ? 'service_end' : null
+  const dueOn = dueOnRaw === 'month_start' ? 'month_start' : dueOnRaw === 'service_end' ? 'service_end' : null
 
   const before = await getBillSettings(company.id)
   const messagingBefore = caps.emailBills ? await getMessagingSettings(company.id) : null
@@ -142,7 +142,7 @@ export async function saveBillSettings(
     ['tax label', before.taxLabelOverride, patch.tax_label],
     ['bank details', before.bankDetails, patch.bank_details],
   ]
-  if (dueOn) compare.push(['due date', before.dueOn === 'bill_day' ? 'bill day' : 'service end', dueOn === 'bill_day' ? 'bill day' : 'service end'])
+  if (dueOn) compare.push(['due date', before.dueOn === 'month_start' ? 'the 1st' : 'service end', dueOn === 'month_start' ? 'the 1st' : 'service end'])
   if ('invoice_prefix' in patch) compare.push(['invoice prefix', before.invoicePrefix, patch.invoice_prefix])
   if ('tax_rate' in patch) compare.push(['tax rate', before.taxRate, patch.tax_rate])
   if ('notify_bill_monthly_enabled' in patch) {
