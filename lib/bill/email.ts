@@ -37,9 +37,8 @@ export function billEmail(
       ['Paid on', dayLong(bill.receipt.paidOn)],
       ['Paid by', bill.receipt.paidBy],
       ['Amount', m(bill.receipt.amount)],
-      bill.receipt.nextDue !== bill.receipt.runsTo
-        ? ['Next payment due', bill.receipt.nextDue ? dayLong(bill.receipt.nextDue) : null]
-        : ['Service runs to', bill.receipt.runsTo ? dayLong(bill.receipt.runsTo) : null],
+      ['Service runs to', bill.receipt.runsToShown ? dayLong(bill.receipt.runsToShown) : null],
+      ['Next payment due', bill.receipt.nextDue && bill.receipt.nextDue !== bill.receipt.runsTo ? dayLong(bill.receipt.nextDue) : null],
       ['Still to pay', bill.receipt.outstanding > 0.005 ? m(bill.receipt.outstanding) : null],
     )
   } else if (bill.template === 'ledger') {

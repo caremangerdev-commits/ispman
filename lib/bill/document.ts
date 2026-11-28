@@ -190,9 +190,18 @@ export type BillDocument = {
      * grace days are never printed, or customers wait for them.
      */
     nextDue: Ymd | null
+    /**
+     * The service date to print: the service date itself, or with a grace
+     * period (0074) the last day of the month before it, where the paid
+     * period ends; the grace days after it are never printed.
+     */
+    runsToShown: Ymd | null
     outstanding: number
   } | null
-  /** The service date to print. Null for a company with a grace period (0074): never shown. */
+  /**
+   * The service date to print. With a grace period (0074), the end of the paid
+   * period (the last day of the month before the cut-off), never the cut-off.
+   */
   serviceRunsTo: Ymd | null
   /** One-off charges still owed, and their total. Empty for most customers. */
   otherCharges: BillOtherCharge[]
@@ -555,6 +564,8 @@ export function buildBillDocument(input: BillInput): BillDocument {
   // shows the cut-off: customers who see it pay on it. Its bills give the 1st,
   // and a month paid reads as that calendar month.
   const hideGrace = input.settings.dueOn === 'month_start'
+  /** The paid period's last day for a service date carrying grace days: 5 Jan gives 31 Dec. */
+  const periodEndOf = (d: Ymd | null): Ymd | null => (d ? monthEnd(addMonthsYmd(monthStart(d), -1)) : null)
   let receipt: BillDocument['receipt'] = null
   let receiptLines: BillLine[] = []
   if (template === 'receipt' && payment) {
@@ -580,6 +591,7 @@ export function buildBillDocument(input: BillInput): BillDocument {
       amount: payment.amount,
       runsTo,
       nextDue: runsTo && hideGrace ? monthStart(runsTo) : runsTo,
+      runsToShown: hideGrace ? periodEndOf(runsTo) : runsTo,
       outstanding: payment.carriedAfter ?? Math.max(0, netNow),
     }
   }
@@ -679,7 +691,7 @@ export function buildBillDocument(input: BillInput): BillDocument {
       charged: ledgerCharged,
     },
     receipt,
-    serviceRunsTo: hideGrace ? null : runsTo,
+    serviceRunsTo: hideGrace ? periodEndOf(runsTo) : runsTo,
     otherCharges: others,
     otherOwed,
     totalToPay: round2(Math.max(0, totalDue) + otherOwed),

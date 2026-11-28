@@ -853,9 +853,7 @@ function receipt(ctx: Ctx) {
   const boxes: [string, string, boolean][] = [
     ['Paid on', dayLong(r.paidOn), false],
     ['Paid by', r.paidBy, false],
-    r.nextDue !== r.runsTo
-      ? ['Next payment due', r.nextDue ? dayShort(r.nextDue) : 'Unchanged', true]
-      : ['Your service runs to', r.runsTo ? dayShort(r.runsTo) : 'Unchanged', true],
+    ['Your service runs to', r.runsToShown ? dayShort(r.runsToShown) : 'Unchanged', true],
   ]
   let x = LEFT
   boxes.forEach(([dt, dd, big], i) => {
