@@ -634,14 +634,17 @@ export function buildBillDocument(input: BillInput): BillDocument {
   const legal =
     template === 'ledger'
       ? 'Queries about this statement should be raised within 30 days. ' + legalBits.join(' · ')
-      : legalBits.join(' · ') + ' · ' + (taxShown ? 'Tax invoice' : template === 'receipt' ? 'Receipt' : 'Invoice') +
+      : legalBits.join(' · ') + ' · ' + (taxShown ? 'Tax invoice' : template === 'receipt' ? 'Receipt' : 'Bill') +
         ' — retain for your records.'
 
   return {
     template,
-    title: template === 'receipt' ? 'Receipt' : template === 'ledger' ? 'Statement of account' : 'Invoice',
+    // "Bill", not "Invoice": the word customers here use (owner, 27 Nov 2026).
+    // A tax-registered company's footer still says "Tax invoice", the
+    // document the tax rules name.
+    title: template === 'receipt' ? 'Receipt' : template === 'ledger' ? 'Statement of account' : 'Bill',
     number,
-    numberLabel: template === 'receipt' ? 'No.' : template === 'ledger' ? 'Statement' : 'Invoice',
+    numberLabel: template === 'receipt' ? 'No.' : template === 'ledger' ? 'Statement' : 'Bill',
     issued: today,
     due,
     company: {

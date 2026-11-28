@@ -635,7 +635,7 @@ function statement(ctx: Ctx) {
   noteLines.forEach((l, i) => page.text(l, LEFT, stubTop + 5 * MM + (i + 0.8) * noteLead, noteSize, { colour: MUTED }))
   const stubBottom = stubTop + stubH
   page.text(ctx.m(bill.paidUp ? bill.totals.gross : bill.totalToPay), RIGHT, stubBottom - 1, px(19), { font: 'F2', align: 'right' })
-  page.text('Account ' + bill.customer.accountNumber + ' · Invoice ' + bill.number + (bill.paidUp ? ' · Paid' : ''), RIGHT,
+  page.text('Account ' + bill.customer.accountNumber + ' · Bill ' + bill.number + (bill.paidUp ? ' · Paid' : ''), RIGHT,
     stubBottom - px(19) - 2, px(11), { colour: MUTED, align: 'right' })
 
   legal(ctx, page)
@@ -938,6 +938,6 @@ export function billPdf(bill: BillDocument): Uint8Array {
 
 /** "invoice-10140-202610.pdf" and the like. */
 export function billFilename(bill: BillDocument): string {
-  const kind = bill.template === 'receipt' ? 'receipt' : bill.template === 'ledger' ? 'statement' : 'invoice'
+  const kind = bill.template === 'receipt' ? 'receipt' : bill.template === 'ledger' ? 'statement' : 'bill'
   return kind + '-' + bill.number.replace(/[^A-Za-z0-9-]/g, '') + '.pdf'
 }
