@@ -1,13 +1,14 @@
 import 'server-only'
 
 import { billEmail } from '@/lib/bill/email'
+import { billSms } from '@/lib/bill/sms'
 import { loadBill } from '@/lib/data/bill'
 import { portalUrlForCompany } from '@/lib/data/portal'
 import { getSmsSettings } from '@/lib/data/sms'
 import { formatCurrency } from '@/lib/format'
 import { companySymbol } from '@/lib/data/currency'
 import type { RecipientSource } from '@/lib/messaging/adapter'
-import { channelReadiness, enqueueForRoute } from '@/lib/messaging/enqueue'
+import { channelReadiness, enqueueForRoute, enqueueMessage } from '@/lib/messaging/enqueue'
 import { adapterFor } from '@/lib/messaging/registry'
 import { getSchemaCapabilities } from '@/lib/schema'
 import { SERVICE_RESTORED_EMAIL, SERVICE_RESTORED_SMS } from '@/lib/sms/templates'
@@ -325,4 +326,84 @@ export async function billEmailOffer(
   if (!ready.ready) return { shown: true, blocked: ready.reason }
   const verdict = email.recipientFor(customer, settings)
   return { shown: true, blocked: verdict.ok ? null : verdict.reason }
+}
+
+export type BillChannelPreview =
+  | { ok: true; to: string; subject: string | null; body: string }
+  | { ok: false; reason: string }
+
+/**
+ * What "Send bill" would send, per channel, before anything is sent: the email
+ * (subject and cover note; the PDF goes with it) and the bill worded as a text,
+ * each with the address it goes to, or why that channel cannot be used for
+ * this customer. Asked of the same adapter rules the sends go through.
+ */
+export async function billSendPreview(
+  companyId: number,
+  customerId: number
+): Promise<{ email: BillChannelPreview; sms: BillChannelPreview; title: string; template: string } | null> {
+  const ready = await prepare(companyId, customerId)
+  if (!ready) return null
+  const { settings, customer } = ready
+  const bill = await loadBill(companyId, customerId)
+  if (!bill) return null
+
+  const caps = await getSchemaCapabilities()
+  let email: BillChannelPreview
+  if (!caps.emailBills) email = { ok: false, reason: 'Emailing bills needs migration 0042.' }
+  else if (!settings.billEmail) email = { ok: false, reason: 'Emailing bills is off. Turn it on in Settings > Bill Design.' }
+  else {
+    const t = await adapterFor('email').tenantReady(companyId, settings)
+    const v = adapterFor('email').recipientFor(customer, settings)
+    const text = billEmail(bill, { firstName: customer.first_name })
+    email = !t.ready ? { ok: false, reason: t.reason }
+      : !v.ok ? { ok: false, reason: v.reason }
+        : { ok: true, to: v.address, subject: text.subject, body: text.body }
+  }
+
+  const st = await adapterFor('sms').tenantReady(companyId, settings)
+  const sv = adapterFor('sms').recipientFor(customer, settings)
+  const sms: BillChannelPreview = !st.ready ? { ok: false, reason: st.reason }
+    : !sv.ok ? { ok: false, reason: sv.reason }
+      : { ok: true, to: sv.address, subject: null, body: billSms(bill, { firstName: customer.first_name }) }
+
+  return { email, sms, title: bill.title, template: bill.template }
+}
+
+/**
+ * Queues the bill as a text to the customer's phone. `text` is the wording
+ * staff saw, and may have edited, in the preview; it goes as written. Same
+ * gates as every SMS: the company's SMS switch and paired phone, the
+ * customer's number and opt-out.
+ */
+export async function smsBill(opts: {
+  companyId: number
+  customerId: number
+  text: string
+}): Promise<{ ok: true; to: string } | { ok: false; error: string }> {
+  try {
+    const body = opts.text.trim()
+    if (!body) return { ok: false, error: 'The text is empty.' }
+    if (body.length > 640) return { ok: false, error: 'The text is too long: keep it under 640 characters (four texts).' }
+    const ready = await prepare(opts.companyId, opts.customerId)
+    if (!ready) return { ok: false, error: 'That customer could not be found, or messaging is not set up.' }
+    const t = await adapterFor('sms').tenantReady(opts.companyId, ready.settings)
+    if (!t.ready) return { ok: false, error: t.reason }
+    const v = adapterFor('sms').recipientFor(ready.customer, ready.settings)
+    if (!v.ok) return { ok: false, error: v.reason }
+    const res = await enqueueMessage({
+      companyId: opts.companyId,
+      channel: 'sms',
+      kind: 'customer_bill',
+      customerId: opts.customerId,
+      recipient: v.address,
+      subject: null,
+      body,
+      dedupeKey: 'billsms:' + opts.customerId + ':' + Math.floor(Date.now() / 60_000),
+    })
+    if (!res.queued) return { ok: false, error: res.reason }
+    return { ok: true, to: v.address }
+  } catch (err) {
+    return { ok: false, error: 'The text could not be queued: ' + (err as Error).message }
+  }
 }
