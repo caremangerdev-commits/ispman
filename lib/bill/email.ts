@@ -37,7 +37,9 @@ export function billEmail(
       ['Paid on', dayLong(bill.receipt.paidOn)],
       ['Paid by', bill.receipt.paidBy],
       ['Amount', m(bill.receipt.amount)],
-      ['Service runs to', bill.receipt.runsTo ? dayLong(bill.receipt.runsTo) : null],
+      bill.receipt.nextDue !== bill.receipt.runsTo
+        ? ['Next payment due', bill.receipt.nextDue ? dayLong(bill.receipt.nextDue) : null]
+        : ['Service runs to', bill.receipt.runsTo ? dayLong(bill.receipt.runsTo) : null],
       ['Still to pay', bill.receipt.outstanding > 0.005 ? m(bill.receipt.outstanding) : null],
     )
   } else if (bill.template === 'ledger') {
@@ -54,10 +56,12 @@ export function billEmail(
     facts.push(
       [bill.numberLabel, bill.number],
       ['Period', rangeText(bill.period.start, bill.period.end)],
-      [due < -0.005 ? 'In credit' : 'Amount due', m(Math.abs(due) < 0.005 ? 0 : Math.abs(due))],
+      bill.paidUp
+        ? ['Amount due', m(bill.totals.gross) + ' (paid)']
+        : [due < -0.005 ? 'In credit' : 'Amount due', m(Math.abs(due) < 0.005 ? 0 : Math.abs(due))],
       ['Other charges', bill.otherOwed > 0.005 ? m(bill.otherOwed) : null],
       ['Total to pay', bill.otherOwed > 0.005 ? m(bill.totalToPay) : null],
-      ['Due by', due > 0.005 && bill.due ? dayLong(bill.due) : null],
+      ['Due by', (due > 0.005 || bill.paidUp) && bill.due ? dayLong(bill.due) : null],
       ['Service runs to', bill.serviceRunsTo ? dayLong(bill.serviceRunsTo) : null],
     )
   }

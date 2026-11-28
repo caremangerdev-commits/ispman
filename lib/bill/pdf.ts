@@ -41,6 +41,8 @@ const px = (n: number) => n * 0.75
 
 const INK: Rgb = [25, 31, 38]
 const MUTED: Rgb = [99, 110, 123]
+/** The Paid mark on a bill already covered. */
+const PAID: Rgb = [21, 128, 61]
 const LINE: Rgb = [217, 223, 229]
 const HAIR: Rgb = [236, 239, 242]
 const SOFT: Rgb = [250, 251, 252]
@@ -197,7 +199,7 @@ function fieldRows(bill: BillDocument): [string, string][] {
   // "On receipt" means pay now: only for a bill with money owed and no date.
   // A customer who owes nothing is told so, not asked to pay at once.
   if (bill.template !== 'receipt') {
-    rows.push(['Due', bill.due ? dayShort(bill.due) : bill.totalToPay > 0.005 ? 'On receipt' : 'Nothing due'])
+    rows.push(['Due', bill.due ? dayShort(bill.due) : bill.totalToPay > 0.005 ? 'On receipt' : 'Paid'])
   }
   return rows
 }
@@ -570,7 +572,10 @@ function statement(ctx: Ctx) {
     ['Previous balance', ctx.m(s.previousBalance)],
     ['Payments received', s.payments > 0.005 ? '-' + ctx.m(s.payments) : ctx.m(0)],
     ['Charges this period', ctx.m(s.charges)],
-    [credit ? 'In credit' : 'Total due', ctx.m(Math.abs(s.totalDue))],
+    // Paid up: the bill's amount, marked Paid, rather than J$0.00.
+    bill.paidUp
+      ? ['Amount due', ctx.m(bill.totals.gross)]
+      : [credit ? 'In credit' : 'Total due', ctx.m(Math.abs(s.totalDue))],
   ]
   const cellW = CONTENT / 4
   const bodyTop = y + headH
@@ -583,6 +588,9 @@ function statement(ctx: Ctx) {
     page.text(dd, x + 5 * MM, bodyTop + 5 * MM + px(11.5) + 1.5 * MM + (last ? px(21) : px(17)) * 0.8,
       last ? px(21) : px(17), { font: 'F2' })
   })
+  if (bill.paidUp) {
+    page.text('Paid', RIGHT - 5 * MM, bodyTop + 5 * MM + px(11.5) * 0.8, px(11.5), { font: 'F2', colour: PAID, align: 'right' })
+  }
   y += stripH
 
   // --- Charges ---------------------------------------------------------------
@@ -626,8 +634,8 @@ function statement(ctx: Ctx) {
   page.hline(LEFT, RIGHT, stubTop, 1.1, LINE, 3)
   noteLines.forEach((l, i) => page.text(l, LEFT, stubTop + 5 * MM + (i + 0.8) * noteLead, noteSize, { colour: MUTED }))
   const stubBottom = stubTop + stubH
-  page.text(ctx.m(bill.totalToPay), RIGHT, stubBottom - 1, px(19), { font: 'F2', align: 'right' })
-  page.text('Account ' + bill.customer.accountNumber + ' · Invoice ' + bill.number, RIGHT,
+  page.text(ctx.m(bill.paidUp ? bill.totals.gross : bill.totalToPay), RIGHT, stubBottom - 1, px(19), { font: 'F2', align: 'right' })
+  page.text('Account ' + bill.customer.accountNumber + ' · Invoice ' + bill.number + (bill.paidUp ? ' · Paid' : ''), RIGHT,
     stubBottom - px(19) - 2, px(11), { colour: MUTED, align: 'right' })
 
   legal(ctx, page)
@@ -845,7 +853,9 @@ function receipt(ctx: Ctx) {
   const boxes: [string, string, boolean][] = [
     ['Paid on', dayLong(r.paidOn), false],
     ['Paid by', r.paidBy, false],
-    ['Your service runs to', r.runsTo ? dayShort(r.runsTo) : 'Unchanged', true],
+    r.nextDue !== r.runsTo
+      ? ['Next payment due', r.nextDue ? dayShort(r.nextDue) : 'Unchanged', true]
+      : ['Your service runs to', r.runsTo ? dayShort(r.runsTo) : 'Unchanged', true],
   ]
   let x = LEFT
   boxes.forEach(([dt, dd, big], i) => {
@@ -898,7 +908,7 @@ function receipt(ctx: Ctx) {
     const s = px(12.5)
     const lead = s * 1.7
     y += lead * 0.75
-    page.text(r.runsTo ? 'Due by ' + dayLong(r.runsTo) : 'Pay whenever you are ready', LEFT, y, s, { font: 'F2' })
+    page.text(r.nextDue ? 'Due by ' + dayLong(r.nextDue) : 'Pay whenever you are ready', LEFT, y, s, { font: 'F2' })
     for (const w of ways) {
       for (const part of wrapText(w, s, false, CONTENT)) {
         y += lead

@@ -184,12 +184,24 @@ export type BillDocument = {
     paidBy: string
     amount: number
     runsTo: Ymd | null
+    /**
+     * When the next payment is due. The service date itself, unless the company
+     * keeps a grace period (0074), where it is the 1st of that month: the
+     * grace days are never printed, or customers wait for them.
+     */
+    nextDue: Ymd | null
     outstanding: number
   } | null
+  /** The service date to print. Null for a company with a grace period (0074): never shown. */
   serviceRunsTo: Ymd | null
   /** One-off charges still owed, and their total. Empty for most customers. */
   otherCharges: BillOtherCharge[]
   otherOwed: number
+  /**
+   * Nothing owed, but a bill for the period: the bill shows its amount as the
+   * amount due, marked Paid, rather than J$0.00.
+   */
+  paidUp: boolean
   /** What to hand over: the service amount due plus the one-off charges. */
   totalToPay: number
   howToPay: { inPerson: string | null; bank: string | null; online: string | null }
@@ -539,18 +551,27 @@ export function buildBillDocument(input: BillInput): BillDocument {
   // rather than an empty receipt.
   const template: BillTemplate = input.template === 'receipt' && !payment ? 'statement' : input.template
 
+  // A company that bills "due the 1st, grace to the cut-off" (0074) never
+  // shows the cut-off: customers who see it pay on it. Its bills give the 1st,
+  // and a month paid reads as that calendar month.
+  const hideGrace = input.settings.dueOn === 'month_start'
   let receipt: BillDocument['receipt'] = null
   let receiptLines: BillLine[] = []
   if (template === 'receipt' && payment) {
     const runsTo = payment.runsTo ?? null
     const months = Math.max(1, payment.monthsPaid || 1)
+    const paidPeriod = runsTo && payment.monthsPaid >= 1
+      ? hideGrace
+        ? { start: monthStart(addMonthsYmd(runsTo, -months)), end: monthEnd(addMonthsYmd(runsTo, -1)) }
+        : { start: addMonthsYmd(runsTo, -months), end: runsTo }
+      : null
     receiptLines = [{
       description: payment.monthsPaid >= 1
         ? (input.customer.plan ? input.customer.plan.name + ' internet' : 'Internet service')
         : 'Payment on account',
       detail: [planDetail(input.customer.plan), payment.monthsPaid > 1 ? payment.monthsPaid + ' months' : null]
         .filter(Boolean).join(' · ') || null,
-      period: runsTo && payment.monthsPaid >= 1 ? { start: addMonthsYmd(runsTo, -months), end: runsTo } : null,
+      period: paidPeriod,
       gross: payment.amount,
     }]
     receipt = {
@@ -558,6 +579,7 @@ export function buildBillDocument(input: BillInput): BillDocument {
       paidBy: payment.method ?? 'Payment',
       amount: payment.amount,
       runsTo,
+      nextDue: runsTo && hideGrace ? monthStart(runsTo) : runsTo,
       outstanding: payment.carriedAfter ?? Math.max(0, netNow),
     }
   }
@@ -585,19 +607,20 @@ export function buildBillDocument(input: BillInput): BillDocument {
 
   const runsTo = template === 'receipt' && receipt ? receipt.runsTo : expiry
   const owing = (template === 'ledger' ? round2(input.customer.carried) : totalDue) > EPS
-  // Nothing owed, nothing due: the header says so (pdf.ts) rather than give a
-  // date that reads as a demand. Owed: by default the day service runs out;
-  // for a company that bills "due the 1st, grace to the cut-off" (0074), the
-  // 1st of the month service runs out in, since the service date already
-  // includes the grace days. With no service date, the last bill day.
+  // By default the day service runs out. For a company that bills "due the
+  // 1st, grace to the cut-off" (0074), the 1st of the month service runs out
+  // in, since the service date already includes the grace days; for a
+  // customer who has paid ahead that is their NEXT due date, which the bill
+  // shows with the amount marked Paid (owner, 27 Nov 2026: as Splynx, Sonar
+  // and Visp show a paid invoice, not "nothing due").
   const due: Ymd | null =
     template === 'receipt'
-      ? runsTo
-      : !owing
-        ? null
-        : s.dueOn === 'month_start'
-          ? (expiry ? expiry.slice(0, 8) + '01' : billDayBetween(null, today, input.customer.billDay))
-          : expiry && expiry > today ? expiry : today
+      ? (receipt?.nextDue ?? null)
+      : s.dueOn === 'month_start'
+        ? (expiry ? expiry.slice(0, 8) + '01' : owing ? billDayBetween(null, today, input.customer.billDay) : null)
+        : owing
+          ? (expiry && expiry > today ? expiry : today)
+          : expiry && expiry > today ? expiry : null
 
   const taxIdLine = s.taxId ? s.taxIdLabel + ' ' + s.taxId : null
   // A registration number is only printed by a company that says it is
@@ -653,10 +676,11 @@ export function buildBillDocument(input: BillInput): BillDocument {
       charged: ledgerCharged,
     },
     receipt,
-    serviceRunsTo: runsTo,
+    serviceRunsTo: hideGrace ? null : runsTo,
     otherCharges: others,
     otherOwed,
     totalToPay: round2(Math.max(0, totalDue) + otherOwed),
+    paidUp: template !== 'receipt' && totalDue <= EPS && otherOwed <= EPS && gross > EPS,
     howToPay: input.howToPay,
     legal,
     symbol: s.currencySymbol,
