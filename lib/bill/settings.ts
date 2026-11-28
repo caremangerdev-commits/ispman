@@ -89,6 +89,11 @@ export type BillSettings = {
   letterheadPath: string | null
   /** settings.invoice_prefix (0042): put in front of every invoice number, or null. */
   invoicePrefix: string | null
+  /**
+   * settings.bill_due_on (0073): what "Due by" prints. 'service_end': the day
+   * service runs out. 'bill_day': the bill day the bill was made on.
+   */
+  dueOn: 'service_end' | 'bill_day'
 }
 
 /** Whether a tax line is printed: registered AND a rate to print. */

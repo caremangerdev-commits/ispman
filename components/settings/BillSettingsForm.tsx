@@ -337,6 +337,25 @@ export function BillSettingsForm({
           </p>
         </Card>
 
+        <Card title="Due Date">
+          <Field
+            label="The bill says it is due"
+            htmlFor="bill_due_on"
+            hint="Either way, customers keep service until their service date, as set under Billing."
+          >
+            <select
+              id="bill_due_on"
+              name="bill_due_on"
+              defaultValue={settings.dueOn}
+              disabled={locked}
+              className={lockedClass(!locked)}
+            >
+              <option value="service_end">On the day their service runs out</option>
+              <option value="bill_day">On the bill day</option>
+            </select>
+          </Field>
+        </Card>
+
         <Card title="How to Pay">
           <Field
             label="Bank details"

@@ -60,6 +60,10 @@ export async function getBillSettings(companyId: number): Promise<BillSettings> 
     invoice_prefix?: string | null
   } | null) ?? {}
 
+  // 0073, read on its own so a database without it still gives the rest.
+  const dueRes = await db.from('settings').select('bill_due_on').eq('company_id', companyId).maybeSingle()
+  const dueOn = (dueRes.data as { bill_due_on?: string } | null)?.bill_due_on === 'bill_day' ? 'bill_day' : 'service_end'
+
   const contactAddress = ((companyRes.data as { address?: string | null } | null)?.address ?? '').trim()
   const currency = (s.currency ?? 'JMD').trim() || 'JMD'
   const rate = Number(s.tax_rate ?? 0)
@@ -84,6 +88,7 @@ export async function getBillSettings(companyId: number): Promise<BillSettings> 
     paymentNote: trimmed(s.portal_payment_note),
     letterheadPath: trimmed(s.letterhead_path),
     invoicePrefix: trimmed(s.invoice_prefix),
+    dueOn,
   }
 }
 

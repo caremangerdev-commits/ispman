@@ -110,6 +110,9 @@ export async function saveBillSettings(
     return { ok: false, error: 'The tax rate needs migration 0007 before a tax line can be printed.' }
   }
 
+  const dueOnRaw = formData.get('bill_due_on')
+  const dueOn = dueOnRaw === 'bill_day' ? 'bill_day' : dueOnRaw === 'service_end' ? 'service_end' : null
+
   const before = await getBillSettings(company.id)
   const messagingBefore = caps.emailBills ? await getMessagingSettings(company.id) : null
   const emailBefore = messagingBefore?.billEmail ?? false
@@ -121,6 +124,11 @@ export async function saveBillSettings(
     ? await db.from('settings').update(patch).eq('company_id', company.id)
     : await db.from('settings').insert({ ...patch, company_id: company.id })
   if (error) return { ok: false, error: 'Could not save bill settings: ' + error.message }
+  // 0073 on its own, so a database without the column still saves the rest.
+  if (dueOn) {
+    const { error: dueError } = await db.from('settings').update({ bill_due_on: dueOn }).eq('company_id', company.id)
+    if (dueError) return { ok: false, error: 'Saved, except the due date: ' + dueError.message }
+  }
 
   // What changed, in words, for the log.
   const changes: string[] = []
@@ -134,6 +142,7 @@ export async function saveBillSettings(
     ['tax label', before.taxLabelOverride, patch.tax_label],
     ['bank details', before.bankDetails, patch.bank_details],
   ]
+  if (dueOn) compare.push(['due date', before.dueOn === 'bill_day' ? 'bill day' : 'service end', dueOn === 'bill_day' ? 'bill day' : 'service end'])
   if ('invoice_prefix' in patch) compare.push(['invoice prefix', before.invoicePrefix, patch.invoice_prefix])
   if ('tax_rate' in patch) compare.push(['tax rate', before.taxRate, patch.tax_rate])
   if ('notify_bill_monthly_enabled' in patch) {

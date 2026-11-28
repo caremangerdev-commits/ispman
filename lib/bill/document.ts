@@ -585,12 +585,18 @@ export function buildBillDocument(input: BillInput): BillDocument {
 
   const runsTo = template === 'receipt' && receipt ? receipt.runsTo : expiry
   const owing = (template === 'ledger' ? round2(input.customer.carried) : totalDue) > EPS
+  // A company that asks for its bill day (0073) gets the bill day the bill was
+  // made on, whether or not service runs past it; otherwise the day service
+  // runs out, as before. Nothing owed, nothing due either way.
+  const lastBillDay = billDayBetween(null, today, input.customer.billDay)
   const due: Ymd | null =
     template === 'receipt'
       ? runsTo
-      : owing
-        ? (expiry && expiry > today ? expiry : today)
-        : expiry && expiry > today ? expiry : null
+      : s.dueOn === 'bill_day'
+        ? (owing ? lastBillDay : null)
+        : owing
+          ? (expiry && expiry > today ? expiry : today)
+          : expiry && expiry > today ? expiry : null
 
   const taxIdLine = s.taxId ? s.taxIdLabel + ' ' + s.taxId : null
   // A registration number is only printed by a company that says it is
