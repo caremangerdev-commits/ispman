@@ -194,7 +194,11 @@ function fieldRows(bill: BillDocument): [string, string][] {
   if (bill.template === 'ledger') rows.push(['Account', bill.customer.accountNumber])
   rows.push([bill.numberLabel, bill.number])
   rows.push(['Issued', dayShort(bill.issued)])
-  if (bill.template !== 'receipt') rows.push(['Due', bill.due ? dayShort(bill.due) : 'On receipt'])
+  // "On receipt" means pay now: only for a bill with money owed and no date.
+  // A customer who owes nothing is told so, not asked to pay at once.
+  if (bill.template !== 'receipt') {
+    rows.push(['Due', bill.due ? dayShort(bill.due) : bill.totalToPay > 0.005 ? 'On receipt' : 'Nothing due'])
+  }
   return rows
 }
 
